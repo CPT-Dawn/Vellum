@@ -1,0 +1,169 @@
+use anyhow::{Context, Result};
+use clap::Parser;
+use std::path::PathBuf;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{UnixListener, UnixStream};
+use tokio::select;
+use tokio::sync::watch;
+use tracing::{error, info, warn};
+use vellum_ipc::{Request, RequestEnvelope, Response, ResponseEnvelope};
+
+#[derive(Debug, Parser)]
+#[command(name = "vellumd", about = "Vellum wallpaper daemon")]
+struct Args {
+    #[arg(long, value_name = "PATH")]
+    socket: Option<PathBuf>,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_target(false)
+        .compact()
+        .init();
+
+    let args = Args::parse();
+    let socket_path = resolve_socket_path(args.socket)?;
+
+    if socket_path.exists() {
+        std::fs::remove_file(&socket_path).with_context(|| {
+            format!("failed to remove stale socket at {}", socket_path.display())
+        })?;
+    }
+
+    let listener = UnixListener::bind(&socket_path)
+        .with_context(|| format!("failed to bind daemon socket at {}", socket_path.display()))?;
+    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+
+    info!(path = %socket_path.display(), "vellumd listening");
+
+    loop {
+        select! {
+            accept_result = listener.accept() => {
+                let (stream, _) = accept_result.context("socket accept failed")?;
+                let shutdown_tx = shutdown_tx.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = handle_client(stream, shutdown_tx).await {
+                        warn!(error = %err, "client session ended with error");
+                    }
+                });
+            }
+
+            signal_result = tokio::signal::ctrl_c() => {
+                signal_result.context("failed to listen for Ctrl-C")?;
+                info!("Ctrl-C received, shutting down");
+                break;
+            }
+
+            changed = shutdown_rx.changed() => {
+                changed.context("shutdown channel unexpectedly closed")?;
+                if *shutdown_rx.borrow_and_update() {
+                    info!("shutdown requested by client");
+                    break;
+                }
+            }
+        }
+    }
+
+    if socket_path.exists() {
+        std::fs::remove_file(&socket_path).with_context(|| {
+            format!(
+                "failed to remove daemon socket at {}",
+                socket_path.display()
+            )
+        })?;
+    }
+
+    info!("vellumd terminated cleanly");
+    Ok(())
+}
+
+fn resolve_socket_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
+    if let Some(path) = explicit {
+        return Ok(path);
+    }
+
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+        .context("XDG_RUNTIME_DIR is not set; pass --socket explicitly")?;
+    Ok(PathBuf::from(runtime_dir).join("vellum.sock"))
+}
+
+async fn handle_client(stream: UnixStream, shutdown_tx: watch::Sender<bool>) -> Result<()> {
+    let (reader, mut writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+        let bytes = reader
+            .read_line(&mut line)
+            .await
+            .context("failed to read from client socket")?;
+
+        if bytes == 0 {
+            return Ok(());
+        }
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let envelope = match serde_json::from_str::<RequestEnvelope>(trimmed) {
+            Ok(envelope) => envelope,
+            Err(err) => {
+                let response = Response::Error {
+                    message: format!("invalid request json: {err}"),
+                };
+                send_response(&mut writer, &response).await?;
+                continue;
+            }
+        };
+
+        if let Err(err) = envelope.validate_version() {
+            let response = Response::Error {
+                message: err.to_string(),
+            };
+            send_response(&mut writer, &response).await?;
+            continue;
+        }
+
+        let request = envelope.request;
+
+        let response = match request {
+            Request::Ping => Response::Pong,
+            Request::SetWallpaper { .. } => Response::Ok,
+            Request::GetMonitors => Response::Monitors { names: Vec::new() },
+            Request::KillDaemon => {
+                let response = Response::Ok;
+                send_response(&mut writer, &response).await?;
+                let _ = shutdown_tx.send(true);
+                return Ok(());
+            }
+        };
+
+        if let Err(err) = send_response(&mut writer, &response).await {
+            error!(error = %err, "failed sending response to client");
+            return Err(err);
+        }
+    }
+}
+
+async fn send_response(
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    response: &Response,
+) -> Result<()> {
+    let envelope = ResponseEnvelope::new(response.clone());
+    let payload = serde_json::to_string(&envelope).context("failed to serialize response")?;
+    writer
+        .write_all(payload.as_bytes())
+        .await
+        .context("failed to write response payload")?;
+    writer
+        .write_all(b"\n")
+        .await
+        .context("failed to write response newline")?;
+    writer.flush().await.context("failed to flush response")?;
+    Ok(())
+}

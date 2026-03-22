@@ -1,0 +1,21 @@
+[package]
+name = "vellum-ipc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+description = "Shared IPC protocol types for vellumd and vellum-tui"
+
+[lib]
+name = "vellum_ipc"
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
