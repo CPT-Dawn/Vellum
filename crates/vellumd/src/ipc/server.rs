@@ -1,10 +1,11 @@
 use anyhow::{Context, Result};
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::sync::{watch, Mutex};
-use tracing::error;
+use tracing::{debug, error};
 use vellum_ipc::{RequestEnvelope, Response, ResponseEnvelope};
 
 use crate::ipc::handlers::handle_request;
@@ -66,6 +67,11 @@ pub(crate) async fn run_client_session(
         .await?;
 
         if let Err(err) = send_response(&mut writer, &outcome.response).await {
+            if is_client_disconnect_error(&err) {
+                debug!(error = %err, "client disconnected before response write completed");
+                return Ok(());
+            }
+
             error!(error = %err, "failed sending response to client");
             return Err(err);
         }
@@ -75,6 +81,22 @@ pub(crate) async fn run_client_session(
             return Ok(());
         }
     }
+}
+
+fn is_client_disconnect_error(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .map(|io| {
+                matches!(
+                    io.kind(),
+                    ErrorKind::BrokenPipe
+                        | ErrorKind::ConnectionReset
+                        | ErrorKind::ConnectionAborted
+                )
+            })
+            .unwrap_or(false)
+    })
 }
 
 async fn send_response(

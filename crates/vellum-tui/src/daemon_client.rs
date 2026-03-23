@@ -7,6 +7,9 @@ use tokio::net::UnixStream;
 use tokio::time::{timeout, Duration};
 use vellum_ipc::{Request, RequestEnvelope, Response, ResponseEnvelope};
 
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
+
 pub(crate) fn resolve_socket_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(path) = explicit {
         return Ok(path);
@@ -55,7 +58,7 @@ pub(crate) fn send_request_blocking(socket_path: &PathBuf, request: Request) -> 
 }
 
 pub(crate) async fn send_request(socket_path: &PathBuf, request: Request) -> Result<Response> {
-    let stream = timeout(Duration::from_secs(2), UnixStream::connect(socket_path))
+    let stream = timeout(CONNECT_TIMEOUT, UnixStream::connect(socket_path))
         .await
         .context("timed out while connecting to daemon socket")?
         .with_context(|| format!("failed to connect to daemon at {}", socket_path.display()))?;
@@ -76,7 +79,7 @@ pub(crate) async fn send_request(socket_path: &PathBuf, request: Request) -> Res
     writer.flush().await.context("failed to flush request")?;
 
     let mut line = String::new();
-    timeout(Duration::from_secs(2), reader.read_line(&mut line))
+    timeout(RESPONSE_TIMEOUT, reader.read_line(&mut line))
         .await
         .context("timed out waiting for daemon response")?
         .context("failed to read daemon response")?;

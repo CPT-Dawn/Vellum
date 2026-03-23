@@ -1,4 +1,3 @@
-use image::GenericImageView;
 use std::path::Path;
 
 #[derive(Debug, Clone, Default)]
@@ -22,17 +21,10 @@ impl ImagePipeline {
 
         preflight.exists = true;
 
-        match image::ImageReader::open(path) {
-            Ok(reader) => {
+        match image::image_dimensions(path) {
+            Ok(dimensions) => {
                 preflight.readable = true;
-                match reader.decode() {
-                    Ok(image) => {
-                        preflight.dimensions = Some(image.dimensions());
-                    }
-                    Err(err) => {
-                        preflight.decode_error = Some(err.to_string());
-                    }
-                }
+                preflight.dimensions = Some(dimensions);
             }
             Err(err) => {
                 preflight.decode_error = Some(err.to_string());
@@ -67,7 +59,7 @@ mod tests {
 
         let report = pipeline.inspect(&sample);
         assert!(report.exists);
-        assert!(report.readable);
+        assert!(!report.readable);
         assert!(report.dimensions.is_none());
         assert!(report.decode_error.is_some());
 
