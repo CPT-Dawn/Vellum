@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -20,7 +20,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::time::{timeout, Duration};
 use tracing::info;
-use vellum_ipc::{AssignmentEntry, Request, RequestEnvelope, Response, ResponseEnvelope};
+use vellum_ipc::{
+    AssignmentEntry, Request, RequestEnvelope, Response, ResponseEnvelope, ScaleMode,
+};
 
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -58,10 +60,30 @@ enum Command {
 
         #[arg(long, value_name = "NAME")]
         monitor: Option<String>,
+
+        #[arg(long, value_enum, default_value_t = CliScaleMode::Fit)]
+        mode: CliScaleMode,
     },
     Monitors,
     Assignments,
     Kill,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliScaleMode {
+    Fit,
+    Fill,
+    Crop,
+}
+
+impl From<CliScaleMode> for ScaleMode {
+    fn from(value: CliScaleMode) -> Self {
+        match value {
+            CliScaleMode::Fit => ScaleMode::Fit,
+            CliScaleMode::Fill => ScaleMode::Fill,
+            CliScaleMode::Crop => ScaleMode::Crop,
+        }
+    }
 }
 
 struct App {
@@ -80,6 +102,7 @@ struct App {
     monitor_targets: Vec<String>,
     target_index: usize,
     assignments: Vec<AssignmentEntry>,
+    scale_mode: ScaleMode,
 }
 
 #[derive(Clone)]
@@ -130,13 +153,18 @@ async fn main() -> Result<()> {
                 other => anyhow::bail!("unexpected ping response from daemon: {other:?}"),
             }
         }
-        Command::Set { path, monitor } => {
+        Command::Set {
+            path,
+            monitor,
+            mode,
+        } => {
             let socket_path = resolve_socket_path(args.socket)?;
             let response = send_request(
                 &socket_path,
                 Request::SetWallpaper {
                     path: path.display().to_string(),
                     monitor,
+                    mode: mode.into(),
                 },
             )
             .await?;
@@ -285,7 +313,7 @@ fn run_ui_loop(
                 let selected = app.selected_file_name().unwrap_or("None selected");
                 let assignments = app.assignments_overview();
                 let metadata = Paragraph::new(format!(
-                    "Root: {}\nTotal images: {}\nCursor: {}\nSelected: {}\nMonitor: {}x{} ({:.2}:1) [{}]\nTarget Output: {}\nAssignments: {}\nPreview: {}\nDaemon: {}\n\nMode: Normal\nHint: press ? for full keymap",
+                    "Root: {}\nTotal images: {}\nCursor: {}\nSelected: {}\nMonitor: {}x{} ({:.2}:1) [{}]\nTarget Output: {}\nScale Mode: {}\nAssignments: {}\nPreview: {}\nDaemon: {}\n\nMode: Normal\nHint: press ? for full keymap",
                     app.image_root.display(),
                     app.files.len(),
                     app.selected,
@@ -295,6 +323,7 @@ fn run_ui_loop(
                     app.monitor_profile.aspect_ratio(),
                     app.monitor_profile.source,
                     app.current_target_label(),
+                    app.scale_mode_label(),
                     assignments,
                     app.preview_info,
                     app.daemon_status(),
@@ -342,7 +371,7 @@ fn run_ui_loop(
                 }
 
                 let status_line = if app.show_help {
-                    "h/j/k/l move  gg/G top/bottom  Ctrl-u/Ctrl-d page  Enter|Space apply  t cycle-target  m monitors  a assignments  r reload  ? help  q quit"
+                    "h/j/k/l move  gg/G top/bottom  Ctrl-u/Ctrl-d page  Enter|Space apply  t cycle-target  s cycle-scale  m monitors  a assignments  r reload  ? help  q quit"
                         .to_string()
                 } else {
                     app.status.clone()
@@ -385,6 +414,7 @@ fn run_ui_loop(
                 }
                 KeyCode::Enter | KeyCode::Char(' ') => app.apply_selected_wallpaper(),
                 KeyCode::Char('t') => app.cycle_monitor_target(),
+                KeyCode::Char('s') => app.cycle_scale_mode(),
                 KeyCode::Char('m') => app.fetch_monitors(),
                 KeyCode::Char('a') => app.fetch_assignments(),
                 KeyCode::Char('r') => app.reload_files(),
@@ -446,6 +476,7 @@ impl App {
             monitor_targets: Vec::new(),
             target_index: 0,
             assignments: Vec::new(),
+            scale_mode: ScaleMode::Fit,
         };
         app.refresh_preview();
         app.refresh_monitor_targets();
@@ -599,6 +630,7 @@ impl App {
         let response = self.send_daemon_request(Request::SetWallpaper {
             path: path.display().to_string(),
             monitor,
+            mode: self.scale_mode,
         });
 
         match response {
@@ -662,7 +694,7 @@ impl App {
                                 .and_then(|name| name.to_str())
                                 .unwrap_or("<path>")
                                 .to_string();
-                            format!("{monitor}:{file}")
+                            format!("{monitor}:{file}({})", scale_mode_label(entry.mode))
                         })
                         .collect::<Vec<_>>()
                         .join(" | ");
@@ -707,6 +739,15 @@ impl App {
         self.status = format!("Target output: {}", self.current_target_label());
     }
 
+    fn cycle_scale_mode(&mut self) {
+        self.scale_mode = match self.scale_mode {
+            ScaleMode::Fit => ScaleMode::Fill,
+            ScaleMode::Fill => ScaleMode::Crop,
+            ScaleMode::Crop => ScaleMode::Fit,
+        };
+        self.status = format!("Scale mode: {}", self.scale_mode_label());
+    }
+
     fn current_target_name(&self) -> Option<String> {
         if self.target_index == 0 {
             None
@@ -718,6 +759,10 @@ impl App {
     fn current_target_label(&self) -> String {
         self.current_target_name()
             .unwrap_or_else(|| "all outputs".to_string())
+    }
+
+    fn scale_mode_label(&self) -> &'static str {
+        scale_mode_label(self.scale_mode)
     }
 
     fn send_daemon_request(&self, request: Request) -> Result<Response> {
@@ -752,7 +797,7 @@ impl App {
                     .and_then(|name| name.to_str())
                     .unwrap_or("<path>")
                     .to_string();
-                format!("{monitor}:{file}")
+                format!("{monitor}:{file}({})", scale_mode_label(entry.mode))
             })
             .collect::<Vec<_>>()
             .join(" | ");
@@ -1041,6 +1086,18 @@ fn print_assignment_entries(entries: &[AssignmentEntry]) {
 
     for entry in entries {
         let monitor = entry.monitor.as_deref().unwrap_or("all");
-        println!("{monitor} -> {}", entry.path);
+        println!(
+            "{monitor} -> {} ({})",
+            entry.path,
+            scale_mode_label(entry.mode)
+        );
+    }
+}
+
+fn scale_mode_label(mode: ScaleMode) -> &'static str {
+    match mode {
+        ScaleMode::Fit => "fit",
+        ScaleMode::Fill => "fill",
+        ScaleMode::Crop => "crop",
     }
 }

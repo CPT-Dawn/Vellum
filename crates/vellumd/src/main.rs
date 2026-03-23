@@ -11,7 +11,9 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::select;
 use tokio::sync::{watch, Mutex};
 use tracing::{error, info, warn};
-use vellum_ipc::{AssignmentEntry, Request, RequestEnvelope, Response, ResponseEnvelope};
+use vellum_ipc::{
+    AssignmentEntry, Request, RequestEnvelope, Response, ResponseEnvelope, ScaleMode,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "vellumd", about = "Vellum wallpaper daemon")]
@@ -23,7 +25,12 @@ struct Args {
 #[derive(Default)]
 struct DaemonState {
     // `None` means "all outputs" target; Some(name) is per-monitor targeting.
-    assignments: HashMap<Option<String>, PathBuf>,
+    assignments: HashMap<Option<String>, WallpaperAssignment>,
+}
+
+struct WallpaperAssignment {
+    path: PathBuf,
+    mode: ScaleMode,
 }
 
 #[tokio::main]
@@ -150,9 +157,13 @@ async fn handle_client(
 
         let response = match request {
             Request::Ping => Response::Pong,
-            Request::SetWallpaper { path, monitor } => {
+            Request::SetWallpaper {
+                path,
+                monitor,
+                mode,
+            } => {
                 let mut state = daemon_state.lock().await;
-                match apply_wallpaper_native(&path, monitor.as_deref(), &mut state) {
+                match apply_wallpaper_native(&path, monitor.as_deref(), mode, &mut state) {
                     Ok(()) => Response::Ok,
                     Err(err) => Response::Error {
                         message: format!("failed to apply wallpaper: {err:#}"),
@@ -189,6 +200,7 @@ async fn handle_client(
 fn apply_wallpaper_native(
     path: &str,
     monitor: Option<&str>,
+    mode: ScaleMode,
     daemon_state: &mut DaemonState,
 ) -> Result<()> {
     let input = PathBuf::from(path);
@@ -216,19 +228,28 @@ fn apply_wallpaper_native(
     }
 
     let key = monitor.map(str::to_string);
-    daemon_state.assignments.insert(key, canonical.clone());
-    info!(path = %canonical.display(), target = ?monitor, "accepted native wallpaper assignment");
+    daemon_state.assignments.insert(
+        key,
+        WallpaperAssignment {
+            path: canonical.clone(),
+            mode,
+        },
+    );
+    info!(path = %canonical.display(), target = ?monitor, ?mode, "accepted native wallpaper assignment");
 
     // Rendering pipeline wiring (SCTK + layer-shell + wl_shm) is introduced incrementally.
     Ok(())
 }
 
-fn assignment_entries(assignments: &HashMap<Option<String>, PathBuf>) -> Vec<AssignmentEntry> {
+fn assignment_entries(
+    assignments: &HashMap<Option<String>, WallpaperAssignment>,
+) -> Vec<AssignmentEntry> {
     let mut entries: Vec<AssignmentEntry> = assignments
         .iter()
-        .map(|(monitor, path)| AssignmentEntry {
+        .map(|(monitor, assignment)| AssignmentEntry {
             monitor: monitor.clone(),
-            path: path.display().to_string(),
+            path: assignment.path.display().to_string(),
+            mode: assignment.mode,
         })
         .collect();
 

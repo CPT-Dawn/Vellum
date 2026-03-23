@@ -53,6 +53,7 @@ cargo run -p vellum-tui -- monitors
 cargo run -p vellum-tui -- assignments
 cargo run -p vellum-tui -- set /absolute/path/image.png
 cargo run -p vellum-tui -- set /absolute/path/image.png --monitor DP-1
+cargo run -p vellum-tui -- set /absolute/path/image.png --mode fill
 cargo run -p vellum-tui -- kill
 ```
 
@@ -63,6 +64,7 @@ cargo run -p vellum-tui -- kill
 - `Ctrl-u` / `Ctrl-d`: page up/down
 - `Enter` / `Space`: apply selected wallpaper
 - `t`: cycle target output (all outputs or one monitor)
+- `s`: cycle scaling mode (`fit` -> `fill` -> `crop`)
 - `m`: refresh monitor list from daemon
 - `a`: refresh and show assignment summary from daemon
 - `r`: reload image directory

@@ -10,6 +10,7 @@ pub enum Request {
     SetWallpaper {
         path: String,
         monitor: Option<String>,
+        mode: ScaleMode,
     },
     GetMonitors,
     GetAssignments,
@@ -30,6 +31,15 @@ pub enum Response {
 pub struct AssignmentEntry {
     pub monitor: Option<String>,
     pub path: String,
+    pub mode: ScaleMode,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ScaleMode {
+    Fit,
+    Fill,
+    Crop,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
