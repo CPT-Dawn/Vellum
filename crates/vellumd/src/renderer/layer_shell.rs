@@ -5,6 +5,7 @@ use tracing::info;
 use vellum_ipc::ScaleMode;
 
 use crate::renderer::shm_pool::ShmPool;
+use crate::renderer::swaybg::SwaybgController;
 
 #[derive(Debug, Clone)]
 struct OutputSurface {
@@ -29,10 +30,11 @@ impl Default for OutputSurface {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(crate) struct LayerShellSession {
     surfaces: BTreeMap<String, OutputSurface>,
     shm_pool: ShmPool,
+    presenter: SwaybgController,
 }
 
 impl LayerShellSession {
@@ -55,6 +57,7 @@ impl LayerShellSession {
                     self.shm_pool.release(buffer_id);
                 }
             }
+            self.presenter.remove_output(&output);
         }
 
         for output in incoming.keys() {
@@ -95,11 +98,13 @@ impl LayerShellSession {
             Some(target) => {
                 if let Some(surface) = self.surfaces.get_mut(target) {
                     Self::render_to_surface(surface, &mut self.shm_pool, path, mode)?;
+                    self.presenter.apply_to_output(target, path, mode)?;
                 }
             }
             None => {
-                for surface in self.surfaces.values_mut() {
+                for (output, surface) in &mut self.surfaces {
                     Self::render_to_surface(surface, &mut self.shm_pool, path, mode)?;
+                    self.presenter.apply_to_output(output, path, mode)?;
                 }
             }
         }
@@ -124,6 +129,7 @@ impl LayerShellSession {
             surface.current_path = None;
             surface.current_mode = None;
         }
+        self.presenter.clear_all();
 
         self.shm_pool.reclaim_unused(0);
         info!(
@@ -182,6 +188,11 @@ impl LayerShellSession {
             .and_then(|surface| surface.current_path.as_ref())
             .is_some()
     }
+
+    #[cfg(test)]
+    pub(crate) fn presenter_process_count(&self) -> usize {
+        self.presenter.running_count()
+    }
 }
 
 #[cfg(test)]
@@ -219,6 +230,7 @@ mod tests {
         assert!(session.clear_assignments().is_ok());
         assert_eq!(session.leased_buffer_count(), 0);
         assert_eq!(session.pool_entry_count(), 0);
+        assert_eq!(session.presenter_process_count(), 0);
     }
 
     #[test]

@@ -5,6 +5,7 @@ mod layer_shell;
 mod output_registry;
 mod perf_checks;
 mod shm_pool;
+mod swaybg;
 
 use std::path::PathBuf;
 use tracing::{info, warn};

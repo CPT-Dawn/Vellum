@@ -31,6 +31,11 @@ The project is functional, but the fully self-sustained native Wayland renderer 
 The daemon now accepts native wallpaper assignments internally. The full SCTK + layer-shell
 rendering path is being completed incrementally.
 
+Current visible output path in daemon:
+
+- On Wayland sessions, `vellumd` now manages `swaybg` per output to present wallpapers.
+- Ensure `swaybg` is installed on your system for wallpaper changes to be visible.
+
 ## Quick Start
 
 ### 1) Build and verify
