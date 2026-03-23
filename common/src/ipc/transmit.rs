@@ -26,6 +26,20 @@ use crate::mmap::MmappedStr;
 
 const MAX_IPC_SHM_LEN: usize = 256 * 1024 * 1024;
 
+#[inline]
+fn read_u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
+    let raw = bytes.get(offset..offset + 4)?;
+    Some(u32::from_ne_bytes([raw[0], raw[1], raw[2], raw[3]]))
+}
+
+#[inline]
+fn read_u64_at(bytes: &[u8], offset: usize) -> Option<u64> {
+    let raw = bytes.get(offset..offset + 8)?;
+    Some(u64::from_ne_bytes([
+        raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+    ]))
+}
+
 // could be enum
 pub struct RawMsg {
     code: Code,
@@ -102,11 +116,9 @@ impl From<RawMsg> for RequestRecv {
                 let mut outputs = Vec::with_capacity(len);
                 let mut i = 1;
                 for _ in 0..len {
-                    if i + 4 > bytes.len() {
+                    let Some(output_len) = read_u32_at(bytes, i).map(|v| v as usize) else {
                         return Self::Invalid;
-                    }
-                    let output_len =
-                        u32::from_ne_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
+                    };
                     if i + 4 + output_len > bytes.len() {
                         return Self::Invalid;
                     }
@@ -147,7 +159,9 @@ impl From<RawMsg> for RequestRecv {
                     if i + 4 > bytes.len() {
                         return Self::Invalid;
                     }
-                    let path_len = u32::from_ne_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
+                    let Some(path_len) = read_u32_at(bytes, i).map(|v| v as usize) else {
+                        return Self::Invalid;
+                    };
                     if i + 4 + path_len > bytes.len() {
                         return Self::Invalid;
                     }
@@ -156,9 +170,10 @@ impl From<RawMsg> for RequestRecv {
                     if img_len_index + 4 > bytes.len() {
                         return Self::Invalid;
                     }
-                    let img_len = u32::from_ne_bytes(
-                        bytes[img_len_index..img_len_index + 4].try_into().unwrap(),
-                    ) as usize;
+                    let Some(img_len) = read_u32_at(bytes, img_len_index).map(|v| v as usize)
+                    else {
+                        return Self::Invalid;
+                    };
                     let img_end = img_len_index + 4 + img_len;
                     if img_end + 9 > bytes.len() {
                         return Self::Invalid;
@@ -178,11 +193,9 @@ impl From<RawMsg> for RequestRecv {
                     i += 1;
                     let mut out = Vec::with_capacity(n_outputs);
                     for _ in 0..n_outputs {
-                        if i + 4 > bytes.len() {
+                        let Some(output_len) = read_u32_at(bytes, i).map(|v| v as usize) else {
                             return Self::Invalid;
-                        }
-                        let output_len =
-                            u32::from_ne_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
+                        };
                         if i + 4 + output_len > bytes.len() {
                             return Self::Invalid;
                         }
@@ -393,8 +406,13 @@ impl IpcSocket {
             return Err(Errno::BADMSG).context(IpcErrorKind::Read);
         }
 
-        let code = u64::from_ne_bytes(buf[0..8].try_into().unwrap()).try_into()?;
-        let len = u64::from_ne_bytes(buf[8..16].try_into().unwrap()) as usize;
+        let code = read_u64_at(&buf, 0)
+            .ok_or(Errno::BADMSG)
+            .context(IpcErrorKind::MalformedMsg)?
+            .try_into()?;
+        let len = read_u64_at(&buf, 8)
+            .ok_or(Errno::BADMSG)
+            .context(IpcErrorKind::MalformedMsg)? as usize;
 
         if len > MAX_IPC_SHM_LEN {
             return Err(Errno::MSGSIZE).context(IpcErrorKind::MalformedMsg);

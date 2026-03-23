@@ -1,11 +1,9 @@
 use std::{
     borrow::Cow,
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     fs, io,
     num::NonZeroU8,
     path::{Path, PathBuf},
-    sync::Arc,
-    sync::OnceLock,
     time::{Duration, Instant},
 };
 
@@ -38,7 +36,7 @@ use serde_json::Value;
 use tokio::{
     process::Command,
     sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
-    task::{JoinHandle, JoinSet},
+    task::JoinHandle,
     time,
 };
 use tokio_util::sync::CancellationToken;
@@ -51,7 +49,6 @@ const IPC_APPLY_TIMEOUT: Duration = Duration::from_secs(8);
 const MONITOR_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const DEFAULT_PROFILE_NAME: &str = "default";
 const NAV_HALF_PAGE_STEP: isize = 4;
-const LOG_CAPACITY: usize = 1200;
 
 const EASING_PRESETS: [&str; 4] = ["linear", "ease-in", "ease-out", "ease-in-out"];
 const TRANSITION_EFFECTS: [&str; 4] = ["simple", "fade", "wipe", "grow"];
@@ -101,7 +98,6 @@ enum PaneFocus {
     Browser,
     Monitor,
     Transition,
-    Logs,
 }
 
 impl PaneFocus {
@@ -109,17 +105,15 @@ impl PaneFocus {
         match self {
             Self::Browser => Self::Monitor,
             Self::Monitor => Self::Transition,
-            Self::Transition => Self::Logs,
-            Self::Logs => Self::Browser,
+            Self::Transition => Self::Browser,
         }
     }
 
     fn prev(self) -> Self {
         match self {
-            Self::Browser => Self::Logs,
+            Self::Browser => Self::Transition,
             Self::Monitor => Self::Browser,
             Self::Transition => Self::Monitor,
-            Self::Logs => Self::Transition,
         }
     }
 
@@ -128,7 +122,6 @@ impl PaneFocus {
             Self::Browser => "Browser",
             Self::Monitor => "Monitor",
             Self::Transition => "Transition",
-            Self::Logs => "Logs",
         }
     }
 }
@@ -251,54 +244,15 @@ struct MonitorEntry {
 
 struct ApplyTarget {
     namespace: String,
-    monitors: Vec<MonitorApplyTarget>,
-}
-
-#[derive(Debug, Clone)]
-struct MonitorApplyTarget {
-    output: String,
+    outputs: Vec<String>,
     dim: (u32, u32),
     format: PixelFormat,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DaemonState {
-    Stopped,
-    Starting,
-    Running,
-    Stopping,
-    Crashed,
-}
-
-impl DaemonState {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Stopped => "STOPPED",
-            Self::Starting => "STARTING",
-            Self::Running => "RUNNING",
-            Self::Stopping => "STOPPING",
-            Self::Crashed => "CRASHED",
-        }
-    }
-
-    fn color(self) -> Color {
-        match self {
-            Self::Stopped => COLOR_WARN,
-            Self::Starting => COLOR_ACCENT,
-            Self::Running => COLOR_OK,
-            Self::Stopping => COLOR_WARN,
-            Self::Crashed => COLOR_ERR,
-        }
-    }
 }
 
 #[derive(Debug)]
 struct BackendRuntime {
     task: Option<JoinHandle<Result<()>>>,
-    shutdown: Option<CancellationToken>,
     namespace: String,
-    state: DaemonState,
-    restart_requested: bool,
     last_error: Option<String>,
 }
 
@@ -306,61 +260,10 @@ impl Default for BackendRuntime {
     fn default() -> Self {
         Self {
             task: None,
-            shutdown: None,
             namespace: String::from("vellum-tui"),
-            state: DaemonState::Stopped,
-            restart_requested: false,
             last_error: None,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum UiLogLevel {
-    Trace,
-    Debug,
-    Info,
-    Warn,
-    Error,
-}
-
-impl UiLogLevel {
-    fn from_common(level: common::log::Filter) -> Self {
-        match level {
-            common::log::Filter::Trace => Self::Trace,
-            common::log::Filter::Debug => Self::Debug,
-            common::log::Filter::Info => Self::Info,
-            common::log::Filter::Warn => Self::Warn,
-            common::log::Filter::Error | common::log::Filter::Fatal => Self::Error,
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Trace => "TRACE",
-            Self::Debug => "DEBUG",
-            Self::Info => "INFO",
-            Self::Warn => "WARN",
-            Self::Error => "ERROR",
-        }
-    }
-
-    fn color(self) -> Color {
-        match self {
-            Self::Trace => COLOR_MUTED,
-            Self::Debug => COLOR_ACCENT_ALT,
-            Self::Info => COLOR_TEXT,
-            Self::Warn => COLOR_WARN,
-            Self::Error => COLOR_ERR,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct LogEntry {
-    at: Instant,
-    level: UiLogLevel,
-    message: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -384,17 +287,7 @@ impl StatusLevel {
 
 enum AppEvent {
     ApplyBrowserFilter,
-    ApplyFinished(std::result::Result<String, ApplyError>),
-    DaemonExited(std::result::Result<(), String>),
-    Log(UiLogLevel, String),
-}
-
-#[derive(Debug, thiserror::Error)]
-enum ApplyError {
-    #[error("IPC request timed out after {0}ms")]
-    Timeout(u128),
-    #[error(transparent)]
-    Other(#[from] anyhow::Error),
+    ApplyFinished(Result<String>),
 }
 
 struct AppState {
@@ -437,10 +330,6 @@ struct AppState {
     last_playlist_tick: Instant,
 
     ipc_in_flight: bool,
-    apply_all_monitors: bool,
-
-    logs: VecDeque<LogEntry>,
-    log_scroll: usize,
     event_tx: UnboundedSender<AppEvent>,
 }
 
@@ -485,9 +374,6 @@ impl AppState {
             playlist_interval: Duration::from_secs(15),
             last_playlist_tick: Instant::now(),
             ipc_in_flight: false,
-            apply_all_monitors: false,
-            logs: VecDeque::with_capacity(LOG_CAPACITY),
-            log_scroll: 0,
             event_tx,
         }
     }
@@ -500,31 +386,6 @@ impl AppState {
     fn selected_browser_entry(&self) -> Option<&BrowserEntry> {
         let idx = *self.browser_view_indices.get(self.browser_selected)?;
         self.browser_all_entries.get(idx)
-    }
-
-    fn push_log(&mut self, level: UiLogLevel, message: impl Into<String>) {
-        if self.logs.len() >= LOG_CAPACITY {
-            self.logs.pop_front();
-        }
-
-        self.logs.push_back(LogEntry {
-            at: Instant::now(),
-            level,
-            message: message.into(),
-        });
-
-        self.log_scroll = 0;
-    }
-}
-
-static LOG_EVENT_TX: OnceLock<UnboundedSender<AppEvent>> = OnceLock::new();
-
-fn forward_common_log(level: common::log::Filter, message: &str) {
-    if let Some(tx) = LOG_EVENT_TX.get() {
-        let _ = tx.send(AppEvent::Log(
-            UiLogLevel::from_common(level),
-            message.to_owned(),
-        ));
     }
 }
 
@@ -578,9 +439,6 @@ async fn run_app() -> io::Result<()> {
     let (event_tx, mut event_rx): (UnboundedSender<AppEvent>, UnboundedReceiver<AppEvent>) =
         mpsc::unbounded_channel();
 
-    let _ = LOG_EVENT_TX.set(event_tx.clone());
-    common::log::set_hook(Some(forward_common_log));
-
     let mut state = AppState::new(event_tx);
 
     if let Err(err) = reload_browser_directory(&mut state) {
@@ -623,53 +481,12 @@ async fn handle_app_event(state: &mut AppState, event: AppEvent) {
         AppEvent::ApplyFinished(result) => {
             state.ipc_in_flight = false;
             match result {
-                Ok(message) => {
-                    state.push_log(UiLogLevel::Info, message.clone());
-                    state.set_status(StatusLevel::Ok, message);
-                }
-                Err(err) => {
-                    state.push_log(UiLogLevel::Error, format!("apply request failed: {err:#}"));
-                    state.set_status(
-                        StatusLevel::Error,
-                        format!("IPC request failed: {err:#}. Press 's' to start/recover daemon."),
-                    )
-                }
+                Ok(message) => state.set_status(StatusLevel::Ok, message),
+                Err(err) => state.set_status(
+                    StatusLevel::Error,
+                    format!("IPC request failed: {err}. Press 'b' to restart backend."),
+                ),
             }
-        }
-        AppEvent::DaemonExited(result) => match result {
-            Ok(()) => {
-                let graceful = state
-                    .backend
-                    .shutdown
-                    .as_ref()
-                    .is_some_and(CancellationToken::is_cancelled);
-                state.backend.shutdown = None;
-                state.backend.task = None;
-                if graceful {
-                    state.backend.state = DaemonState::Stopped;
-                    state.push_log(UiLogLevel::Info, "daemon stopped");
-                    state.set_status(StatusLevel::Warn, "Daemon stopped");
-                    if state.backend.restart_requested {
-                        state.backend.restart_requested = false;
-                        start_native_backend(state);
-                    }
-                } else {
-                    state.backend.state = DaemonState::Crashed;
-                    state.push_log(UiLogLevel::Error, "daemon exited unexpectedly");
-                    state.set_status(StatusLevel::Error, "Daemon exited unexpectedly");
-                }
-            }
-            Err(err) => {
-                state.backend.shutdown = None;
-                state.backend.task = None;
-                state.backend.state = DaemonState::Crashed;
-                state.backend.last_error = Some(err.clone());
-                state.push_log(UiLogLevel::Error, format!("daemon crashed: {err}"));
-                state.set_status(StatusLevel::Error, format!("Daemon crashed: {err}"));
-            }
-        },
-        AppEvent::Log(level, message) => {
-            state.push_log(level, message);
         }
     }
 }
@@ -715,9 +532,9 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
                         state.set_status(StatusLevel::Info, "Search mode");
                     }
                 }
-                KeyCode::Char('b') | KeyCode::Char('s') => start_native_backend(state),
-                KeyCode::Char('S') => stop_native_backend(state).await,
-                KeyCode::Char('R') => restart_native_backend(state).await,
+                KeyCode::Char('b') => {
+                    start_native_backend(state);
+                }
                 KeyCode::Char('r') => {
                     state.needs_monitor_refresh = true;
                     state.set_status(StatusLevel::Info, "Manual monitor refresh requested");
@@ -728,16 +545,6 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
                         StatusLevel::Info,
                         format!("Aspect mode: {}", state.aspect_mode.as_str()),
                     );
-                }
-                KeyCode::Char('a') => {
-                    state.apply_all_monitors = !state.apply_all_monitors;
-                    let mode = if state.apply_all_monitors {
-                        "all monitors"
-                    } else {
-                        "selected monitor"
-                    };
-                    state.push_log(UiLogLevel::Info, format!("apply scope changed to {mode}"));
-                    state.set_status(StatusLevel::Info, format!("Apply scope: {mode}"));
                 }
                 KeyCode::Char(' ') => {
                     state.playlist_running = !state.playlist_running;
@@ -781,9 +588,6 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
                             state.transition.selected_field =
                                 state.transition.selected_field.saturating_sub(2);
                         }
-                        PaneFocus::Logs => {
-                            state.log_scroll = (state.log_scroll + 8).min(state.logs.len());
-                        }
                     }
                 }
                 KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -796,9 +600,6 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
                         PaneFocus::Transition => {
                             state.transition.selected_field =
                                 (state.transition.selected_field + 2).min(3);
-                        }
-                        PaneFocus::Logs => {
-                            state.log_scroll = state.log_scroll.saturating_sub(8);
                         }
                     }
                 }
@@ -823,9 +624,6 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
                     }
                     PaneFocus::Monitor => move_monitor_selection(state, -1),
                     PaneFocus::Transition => state.transition.select_prev_field(),
-                    PaneFocus::Logs => {
-                        state.log_scroll = (state.log_scroll + 1).min(state.logs.len());
-                    }
                 },
                 KeyCode::Down | KeyCode::Char('j') => match state.focus {
                     PaneFocus::Browser => {
@@ -834,9 +632,6 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
                     }
                     PaneFocus::Monitor => move_monitor_selection(state, 1),
                     PaneFocus::Transition => state.transition.select_next_field(),
-                    PaneFocus::Logs => {
-                        state.log_scroll = state.log_scroll.saturating_sub(1);
-                    }
                 },
                 KeyCode::Left => {
                     if state.focus == PaneFocus::Transition {
@@ -875,7 +670,6 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
                         sync_monitor_list_state(state);
                     }
                     PaneFocus::Transition => state.transition.selected_field = 0,
-                    PaneFocus::Logs => state.log_scroll = state.logs.len(),
                 },
                 KeyCode::Char('g') if key.modifiers.is_empty() => {
                     if state.pending_g {
@@ -891,7 +685,6 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
                                 sync_monitor_list_state(state);
                             }
                             PaneFocus::Transition => state.transition.selected_field = 0,
-                            PaneFocus::Logs => state.log_scroll = state.logs.len(),
                         }
                     } else {
                         state.pending_g = true;
@@ -908,7 +701,6 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
                         sync_monitor_list_state(state);
                     }
                     PaneFocus::Transition => state.transition.selected_field = 3,
-                    PaneFocus::Logs => state.log_scroll = 0,
                 },
                 KeyCode::Enter => {
                     if state.focus == PaneFocus::Browser {
@@ -1054,27 +846,21 @@ fn schedule_browser_filter(state: &mut AppState) {
 }
 
 fn start_native_backend(state: &mut AppState) {
-    if matches!(
-        state.backend.state,
-        DaemonState::Starting | DaemonState::Running | DaemonState::Stopping
-    ) {
-        state.set_status(StatusLevel::Warn, "Daemon already active");
+    if state
+        .backend
+        .task
+        .as_ref()
+        .is_some_and(|task| !task.is_finished())
+    {
+        state.set_status(StatusLevel::Warn, "Backend already running");
         return;
     }
 
     let namespace = state.backend.namespace.clone();
-    let cancel = CancellationToken::new();
     state.backend.last_error = None;
-    state.backend.restart_requested = false;
-    state.backend.shutdown = Some(cancel.clone());
-    state.backend.state = DaemonState::Starting;
-    state.push_log(
-        UiLogLevel::Info,
-        format!("starting daemon in namespace '{namespace}'"),
-    );
     state.set_status(
         StatusLevel::Info,
-        format!("Starting daemon in namespace '{namespace}'"),
+        format!("Starting backend in namespace '{namespace}'"),
     );
 
     state.backend.task = Some(tokio::task::spawn_blocking(move || {
@@ -1086,69 +872,6 @@ fn start_native_backend(state: &mut AppState) {
         let server = VellumServer::new(config);
         server.run().map_err(anyhow::Error::new)
     }));
-    state.backend.state = DaemonState::Running;
-
-    let tx = state.event_tx.clone();
-    let namespace = state.backend.namespace.clone();
-    tokio::spawn(async move {
-        tokio::select! {
-            _ = cancel.cancelled() => {
-                let result = request_daemon_kill(namespace).await;
-                if let Err(err) = result {
-                    let _ = tx.send(AppEvent::Log(UiLogLevel::Warn, format!("daemon stop signal failed: {err:#}")));
-                }
-            }
-            else => {}
-        }
-    });
-}
-
-async fn stop_native_backend(state: &mut AppState) {
-    if !matches!(
-        state.backend.state,
-        DaemonState::Starting | DaemonState::Running
-    ) {
-        state.set_status(StatusLevel::Warn, "Daemon is not running");
-        return;
-    }
-
-    if let Some(cancel) = state.backend.shutdown.as_ref() {
-        cancel.cancel();
-    }
-
-    state.backend.state = DaemonState::Stopping;
-    state.push_log(UiLogLevel::Info, "stopping daemon");
-    state.set_status(StatusLevel::Warn, "Stopping daemon...");
-}
-
-async fn restart_native_backend(state: &mut AppState) {
-    if matches!(
-        state.backend.state,
-        DaemonState::Starting | DaemonState::Running
-    ) {
-        state.backend.restart_requested = true;
-        stop_native_backend(state).await;
-        return;
-    }
-
-    start_native_backend(state);
-}
-
-async fn request_daemon_kill(namespace: String) -> Result<()> {
-    run_blocking_with_timeout(IPC_QUERY_TIMEOUT, move || {
-        let socket = IpcSocket::client(&namespace)
-            .or_else(|_| IpcSocket::client(""))
-            .map_err(anyhow::Error::new)
-            .context("cannot connect to daemon socket for stop")?;
-
-        RequestSend::Kill
-            .send(&socket)
-            .map_err(anyhow::Error::new)
-            .context("failed to send Kill request")?;
-        Ok(())
-    })
-    .await
-    .map_err(|err| anyhow!(err.to_string()))
 }
 
 async fn poll_backend_status(state: &mut AppState) {
@@ -1164,13 +887,19 @@ async fn poll_backend_status(state: &mut AppState) {
     let Some(task) = state.backend.task.take() else {
         return;
     };
-
-    let event = match task.await {
-        Ok(Ok(())) => AppEvent::DaemonExited(Ok(())),
-        Ok(Err(err)) => AppEvent::DaemonExited(Err(err.to_string())),
-        Err(err) => AppEvent::DaemonExited(Err(err.to_string())),
-    };
-    let _ = state.event_tx.send(event);
+    match task.await {
+        Ok(Ok(())) => state.set_status(StatusLevel::Warn, "Backend exited"),
+        Ok(Err(err)) => {
+            let message = err.to_string();
+            state.backend.last_error = Some(message.clone());
+            state.set_status(StatusLevel::Error, format!("Backend error: {message}"));
+        }
+        Err(err) => {
+            let message = err.to_string();
+            state.backend.last_error = Some(message.clone());
+            state.set_status(StatusLevel::Error, format!("Backend join error: {message}"));
+        }
+    }
 }
 
 async fn refresh_monitors_if_due(state: &mut AppState) {
@@ -1392,7 +1121,10 @@ fn reload_browser_directory(state: &mut AppState) -> Result<()> {
 // Filter stores indices to avoid cloning BrowserEntry values during every query.
 fn apply_browser_filter(state: &mut AppState) {
     if state.browser_query.is_empty() {
-        state.browser_view_indices = (0..state.browser_all_entries.len()).collect();
+        state.browser_view_indices.clear();
+        state
+            .browser_view_indices
+            .extend(0..state.browser_all_entries.len());
     } else {
         let pattern = Pattern::parse(
             &state.browser_query,
@@ -1425,7 +1157,15 @@ fn apply_browser_filter(state: &mut AppState) {
             })
         });
 
-        state.browser_view_indices = scored.into_iter().map(|(_, idx)| idx).collect();
+        state.browser_view_indices.clear();
+        state.browser_view_indices.reserve(
+            scored
+                .len()
+                .saturating_sub(state.browser_view_indices.capacity()),
+        );
+        for (_, idx) in scored {
+            state.browser_view_indices.push(idx);
+        }
     }
 
     state.browser_selected = state
@@ -1560,21 +1300,13 @@ fn request_apply_for_path(state: &mut AppState, file_path: PathBuf) {
         .monitors
         .get(state.monitor_selected)
         .map(|m| m.name.clone());
-    let apply_all = state.apply_all_monitors;
     let transition = build_transition_from_state(&state.transition);
     let tx = state.event_tx.clone();
 
     // IPC is isolated from the draw/input loop and returns via channel event.
     tokio::spawn(async move {
-        let result = perform_apply_request(
-            file_path,
-            transition,
-            namespace,
-            preferred_output,
-            apply_all,
-            tx.clone(),
-        )
-        .await;
+        let result =
+            perform_apply_request(file_path, transition, namespace, preferred_output).await;
         let _ = tx.send(AppEvent::ApplyFinished(result));
     });
 }
@@ -1584,35 +1316,16 @@ async fn perform_apply_request(
     transition: Transition,
     namespace: String,
     preferred_output: Option<String>,
-    apply_all: bool,
-    event_tx: UnboundedSender<AppEvent>,
-) -> std::result::Result<String, ApplyError> {
-    let target = query_apply_target(&namespace, preferred_output, apply_all).await?;
-    let batch = apply_wallpaper_request(file_path.clone(), transition, target).await?;
-
-    for failure in &batch.failures {
-        let _ = event_tx.send(AppEvent::Log(UiLogLevel::Warn, failure.clone()));
-    }
-
-    if batch.succeeded == 0 {
-        return Err(ApplyError::Other(anyhow!(
-            "failed to apply wallpaper to every monitor"
-        )));
-    }
-
-    Ok(format!(
-        "Applied {} monitor(s), {} failed: {}",
-        batch.succeeded,
-        batch.failures.len(),
-        file_path.display()
-    ))
+) -> Result<String> {
+    let target = query_apply_target(&namespace, preferred_output).await?;
+    apply_wallpaper_request(file_path.clone(), transition, target).await?;
+    Ok(format!("Applied wallpaper: {}", file_path.display()))
 }
 
 async fn query_apply_target(
     namespace: &str,
     preferred_output: Option<String>,
-    apply_all: bool,
-) -> std::result::Result<ApplyTarget, ApplyError> {
+) -> Result<ApplyTarget> {
     let namespace = namespace.to_owned();
 
     run_blocking_with_timeout(IPC_QUERY_TIMEOUT, move || {
@@ -1633,31 +1346,18 @@ async fn query_apply_target(
             bail!("unexpected daemon response to query request");
         };
 
-        let selected_outputs = if apply_all {
-            outputs.iter().collect::<Vec<_>>()
-        } else if let Some(name) = preferred_output {
-            outputs
-                .iter()
-                .filter(|output| output.name.as_ref() == name)
-                .collect::<Vec<_>>()
+        let selected = if let Some(name) = preferred_output {
+            outputs.iter().find(|output| output.name.as_ref() == name)
         } else {
-            outputs.iter().take(1).collect::<Vec<_>>()
-        };
-
-        if selected_outputs.is_empty() {
-            bail!("no output information available from daemon");
+            outputs.first()
         }
+        .ok_or_else(|| anyhow!("no output information available from daemon"))?;
 
         Ok(ApplyTarget {
             namespace: resolved_namespace,
-            monitors: selected_outputs
-                .into_iter()
-                .map(|output| MonitorApplyTarget {
-                    output: output.name.to_string(),
-                    dim: output.real_dim(),
-                    format: output.pixel_format,
-                })
-                .collect(),
+            outputs: vec![selected.name.to_string()],
+            dim: selected.real_dim(),
+            format: selected.pixel_format,
         })
     })
     .await
@@ -1693,166 +1393,71 @@ async fn apply_wallpaper_request(
     file_path: PathBuf,
     transition: Transition,
     target: ApplyTarget,
-) -> std::result::Result<ApplyBatchResult, ApplyError> {
-    let image_path = Arc::new(file_path);
-    let namespace = Arc::new(target.namespace);
-    let mode = Arc::new(String::from("fit"));
-    let filter = Arc::new(String::from("lanczos3"));
+) -> Result<()> {
+    run_blocking_with_timeout(IPC_APPLY_TIMEOUT, move || {
+        let display_path = file_path.to_string_lossy().into_owned();
 
-    let mut build_jobs = JoinSet::new();
-    for monitor in target.monitors {
-        let image_path = image_path.clone();
-        let output = monitor.output;
-        let dim = monitor.dim;
-        let pixel_format = monitor.format;
+        let decoded = ImageReader::open(&file_path)
+            .map_err(anyhow::Error::new)
+            .with_context(|| format!("cannot open image '{}'", display_path))?
+            .decode()
+            .map_err(anyhow::Error::new)
+            .with_context(|| format!("cannot decode image '{}'", display_path))?;
 
-        build_jobs.spawn(async move {
-            run_blocking_with_timeout(IPC_APPLY_TIMEOUT, move || {
-                let decoded = ImageReader::open(image_path.as_ref())
-                    .map_err(anyhow::Error::new)
-                    .with_context(|| format!("cannot open image '{}'", image_path.display()))?
-                    .decode()
-                    .map_err(anyhow::Error::new)
-                    .with_context(|| format!("cannot decode image '{}'", image_path.display()))?;
+        let resized = decoded.resize_exact(target.dim.0, target.dim.1, FilterType::Lanczos3);
+        let (img_bytes, pixel_format) =
+            convert_dynamic_image_for_pixel_format(resized, target.format);
 
-                let resized = decoded.resize_exact(dim.0, dim.1, FilterType::Lanczos3);
-                let (img_bytes, format) =
-                    convert_dynamic_image_for_pixel_format(resized, pixel_format);
+        let img_send = ImgSend {
+            path: file_path.to_string_lossy().to_string(),
+            dim: target.dim,
+            format: pixel_format,
+            img: img_bytes.into_boxed_slice(),
+        };
 
-                Ok::<PreparedMonitorApply, anyhow::Error>(PreparedMonitorApply {
-                    output,
-                    img: ImgSend {
-                        path: image_path.to_string_lossy().to_string(),
-                        dim,
-                        format,
-                        img: img_bytes.into_boxed_slice(),
-                    },
-                })
-            })
-            .await
-        });
-    }
+        let mut builder = ImageRequestBuilder::new(transition)
+            .map_err(anyhow::Error::new)
+            .context("request mmap failed")?;
 
-    let mut prepared = Vec::new();
-    let mut failures = Vec::new();
+        builder.push(
+            img_send,
+            &target.namespace,
+            "fit",
+            "lanczos3",
+            &target.outputs,
+            None,
+        );
 
-    while let Some(result) = build_jobs.join_next().await {
-        match result {
-            Ok(Ok(apply)) => prepared.push(apply),
-            Ok(Err(err)) => failures.push(format!("monitor build failed: {err:#}")),
-            Err(err) => failures.push(format!("monitor build task failed: {err}")),
-        }
-    }
+        let socket = IpcSocket::client(&target.namespace)
+            .map_err(anyhow::Error::new)
+            .context("failed to connect to daemon IPC socket")?;
 
-    let mut send_jobs = JoinSet::new();
-    for prepared in prepared {
-        let namespace = namespace.clone();
-        let mode = mode.clone();
-        let filter = filter.clone();
-        let transition = duplicate_transition(&transition);
+        RequestSend::Img(builder.build())
+            .send(&socket)
+            .map_err(anyhow::Error::new)
+            .context("failed to send image request")?;
 
-        send_jobs.spawn(async move {
-            let output_name = prepared.output.clone();
-            let output_for_builder = output_name.clone();
-            let output_for_result = output_name.clone();
-            let send_result = run_blocking_with_timeout(IPC_APPLY_TIMEOUT, move || {
-                let mut builder = ImageRequestBuilder::new(transition)
-                    .map_err(anyhow::Error::new)
-                    .context("request mmap failed")?;
+        let _ = Answer::receive(
+            socket
+                .recv()
+                .map_err(anyhow::Error::new)
+                .context("failed to receive daemon apply response")?,
+        );
 
-                builder.push(
-                    prepared.img,
-                    namespace.as_ref(),
-                    mode.as_ref(),
-                    filter.as_ref(),
-                    std::slice::from_ref(&output_for_builder),
-                    None,
-                );
-
-                let socket = IpcSocket::client(namespace.as_ref())
-                    .map_err(anyhow::Error::new)
-                    .context("failed to connect to daemon IPC socket")?;
-
-                RequestSend::Img(builder.build())
-                    .send(&socket)
-                    .map_err(anyhow::Error::new)
-                    .context("failed to send image request")?;
-
-                let _ = Answer::receive(
-                    socket
-                        .recv()
-                        .map_err(anyhow::Error::new)
-                        .context("failed to receive daemon apply response")?,
-                );
-
-                Ok::<String, anyhow::Error>(output_for_result)
-            })
-            .await;
-
-            match send_result {
-                Ok(name) => Ok(name),
-                Err(err) => Err(format!("output '{output_name}' failed: {err:#}")),
-            }
-        });
-    }
-
-    let mut succeeded = 0usize;
-    while let Some(result) = send_jobs.join_next().await {
-        match result {
-            Ok(Ok(_name)) => succeeded += 1,
-            Ok(Err(err)) => failures.push(err),
-            Err(err) => failures.push(format!("output send task failed: {err}")),
-        }
-    }
-
-    Ok(ApplyBatchResult {
-        succeeded,
-        failures,
+        Ok(())
     })
+    .await
 }
 
-struct PreparedMonitorApply {
-    output: String,
-    img: ImgSend,
-}
-
-#[derive(Debug)]
-struct ApplyBatchResult {
-    succeeded: usize,
-    failures: Vec<String>,
-}
-
-fn duplicate_transition(transition: &Transition) -> Transition {
-    Transition {
-        transition_type: transition.transition_type,
-        duration: transition.duration,
-        step: transition.step,
-        fps: transition.fps,
-        angle: transition.angle,
-        pos: transition.pos.clone(),
-        bezier: transition.bezier,
-        wave: transition.wave,
-        invert_y: transition.invert_y,
-    }
-}
-
-async fn run_blocking_with_timeout<T, F>(
-    timeout: Duration,
-    f: F,
-) -> std::result::Result<T, ApplyError>
+async fn run_blocking_with_timeout<T, F>(timeout: Duration, f: F) -> Result<T>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T> + Send + 'static,
 {
     let handle = tokio::task::spawn_blocking(f);
     match time::timeout(timeout, handle).await {
-        Ok(joined) => {
-            let inner = joined
-                .map_err(anyhow::Error::new)
-                .map_err(ApplyError::from)?;
-            inner.map_err(ApplyError::from)
-        }
-        Err(_) => Err(ApplyError::Timeout(timeout.as_millis())),
+        Ok(joined) => joined.map_err(anyhow::Error::new)?,
+        Err(_) => bail!("operation timed out after {}ms", timeout.as_millis()),
     }
 }
 
@@ -1904,7 +1509,8 @@ fn build_transition_from_state(state: &TransitionState) -> Transition {
     Transition {
         transition_type,
         duration: state.duration_ms as f32 / 1000.0,
-        step: NonZeroU8::new(2).unwrap_or(NonZeroU8::MIN),
+        // SAFETY: literal 2 is always non-zero.
+        step: unsafe { NonZeroU8::new_unchecked(2) },
         fps: state.fps,
         angle: 0.0,
         pos: Position::new(Coord::Percent(0.5), Coord::Percent(0.5)),
@@ -2024,17 +1630,22 @@ fn draw_ui(frame: &mut Frame<'_>, state: &mut AppState) {
 }
 
 fn draw_header(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let backend_running = state
+        .backend
+        .task
+        .as_ref()
+        .is_some_and(|task| !task.is_finished());
+
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
         .split(area);
 
-    let tabs = Tabs::new(vec![" Browser ", " Monitor ", " Transition ", " Logs "])
+    let tabs = Tabs::new(vec![" Browser ", " Monitor ", " Transition "])
         .select(match state.focus {
             PaneFocus::Browser => 0,
             PaneFocus::Monitor => 1,
             PaneFocus::Transition => 2,
-            PaneFocus::Logs => 3,
         })
         .style(Style::default().fg(COLOR_MUTED).bg(COLOR_PANEL))
         .highlight_style(
@@ -2080,9 +1691,17 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         ),
         Span::styled("| BACKEND ", Style::default().fg(COLOR_MUTED)),
         Span::styled(
-            state.backend.state.as_str(),
+            if backend_running {
+                "RUNNING"
+            } else {
+                "STOPPED"
+            },
             Style::default()
-                .fg(state.backend.state.color())
+                .fg(if backend_running {
+                    COLOR_OK
+                } else {
+                    COLOR_WARN
+                })
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" | OUT ", Style::default().fg(COLOR_MUTED)),
@@ -2108,17 +1727,15 @@ fn draw_body(frame: &mut Frame<'_>, area: Rect, state: &mut AppState) {
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(28),
-            Constraint::Percentage(24),
-            Constraint::Percentage(24),
-            Constraint::Percentage(24),
+            Constraint::Percentage(35),
+            Constraint::Percentage(33),
+            Constraint::Percentage(32),
         ])
         .split(area);
 
     draw_browser_pane(frame, columns[0], state);
     draw_monitor_pane(frame, columns[1], state);
     draw_transition_pane(frame, columns[2], state);
-    draw_logs_pane(frame, columns[3], state);
 }
 
 fn border_style_for_focus(active: PaneFocus, pane: PaneFocus) -> Style {
@@ -2401,12 +2018,26 @@ fn draw_transition_pane(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 
     frame.render_widget(table, rows[0]);
 
+    let backend_running = state
+        .backend
+        .task
+        .as_ref()
+        .is_some_and(|task| !task.is_finished());
+
     let runtime = Paragraph::new(Line::from(vec![
         Span::styled("Backend: ", Style::default().fg(COLOR_MUTED)),
         Span::styled(
-            state.backend.state.as_str(),
+            if backend_running {
+                "running"
+            } else {
+                "stopped"
+            },
             Style::default()
-                .fg(state.backend.state.color())
+                .fg(if backend_running {
+                    COLOR_OK
+                } else {
+                    COLOR_WARN
+                })
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" | NS: ", Style::default().fg(COLOR_MUTED)),
@@ -2440,91 +2071,13 @@ fn draw_transition_pane(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         ),
         Span::raw("\n"),
         Span::styled(
-            "s start | S stop | R restart | a all outputs | F8/F9 profile",
+            "Space toggle | p add | c clear | +/- interval | F8/F9 profile",
             Style::default().fg(COLOR_ACCENT),
         ),
     ]))
     .style(Style::default().bg(COLOR_PANEL_DIM));
 
     frame.render_widget(runtime, rows[1]);
-}
-
-fn draw_logs_pane(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let block = Block::default()
-        .title(Line::from(vec![
-            Span::styled(
-                " Logs ",
-                Style::default().fg(COLOR_TEXT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("{} entries", state.logs.len()),
-                Style::default().fg(COLOR_MUTED),
-            ),
-        ]))
-        .style(Style::default().bg(COLOR_PANEL))
-        .borders(Borders::ALL)
-        .border_set(border::ROUNDED)
-        .border_style(border_style_for_focus(state.focus, PaneFocus::Logs));
-
-    frame.render_widget(block.clone(), area);
-
-    let inner = padded(block.inner(area));
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Min(1)])
-        .split(inner);
-
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("source: common::log hook", Style::default().fg(COLOR_MUTED)),
-            Span::styled(
-                " | scroll: j/k, Ctrl+u/d",
-                Style::default().fg(COLOR_ACCENT),
-            ),
-        ]))
-        .style(Style::default().bg(COLOR_PANEL_DIM)),
-        rows[0],
-    );
-
-    let viewport = rows[1].height.max(1) as usize;
-    let len = state.logs.len();
-    let end = len.saturating_sub(state.log_scroll);
-    let start = end.saturating_sub(viewport);
-
-    let lines = if len == 0 {
-        vec![Line::from(Span::styled(
-            "No log entries yet",
-            Style::default().fg(COLOR_MUTED),
-        ))]
-    } else {
-        state
-            .logs
-            .iter()
-            .skip(start)
-            .take(end.saturating_sub(start))
-            .map(|entry| {
-                let age_ms = entry.at.elapsed().as_millis();
-                Line::from(vec![
-                    Span::styled(
-                        format!("[{age_ms:>6}ms] "),
-                        Style::default().fg(COLOR_MUTED),
-                    ),
-                    Span::styled(
-                        format!("{:>5} ", entry.level.as_str()),
-                        Style::default()
-                            .fg(entry.level.color())
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(entry.message.as_str(), Style::default().fg(COLOR_TEXT)),
-                ])
-            })
-            .collect::<Vec<_>>()
-    };
-
-    frame.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(COLOR_PANEL_DIM)),
-        rows[1],
-    );
 }
 
 fn render_monitor_details(state: &AppState) -> String {

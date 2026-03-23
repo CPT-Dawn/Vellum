@@ -1,45 +1,28 @@
 include!(concat!(env!("OUT_DIR"), "/wayland_protocols.rs"));
 
 use common::log;
-use thiserror::Error;
 use waybackend::{Waybackend, objman::ObjectManager, wire::Receiver};
 
 use crate::WaylandObject;
 
-#[derive(Debug, Error)]
-pub enum WaylandConnectError {
-    #[error("file descriptor in WAYLAND_SOCKET is not a number")]
-    InvalidWaylandSocket,
-    #[error("failed to get WAYLAND_SOCKET metadata: {0}")]
-    GetSocketName(String),
-    #[error("WAYLAND_SOCKET has unsupported family: {0}")]
-    WrongSocketFamily(u32),
-    #[error("invalid Wayland socket address: {0}")]
-    InvalidSocketAddress(String),
-    #[error("failed to create Wayland socket: {0}")]
-    CreateSocket(String),
-    #[error("failed to connect to Wayland socket: {0}")]
-    ConnectSocket(String),
-}
-
-pub fn connect() -> Result<(Waybackend, ObjectManager<WaylandObject>, Receiver), WaylandConnectError>
-{
+pub fn connect() -> (Waybackend, ObjectManager<WaylandObject>, Receiver) {
     use rustix::fd::{FromRawFd, OwnedFd};
     use rustix::net::AddressFamily;
 
     if let Some(txt) = unsafe { common::getenv(c"WAYLAND_SOCKET") } {
         // We should connect to the provided WAYLAND_SOCKET
-        let fd = parse_cstr_to_rawfd(txt).ok_or(WaylandConnectError::InvalidWaylandSocket)?;
+        let fd =
+            parse_cstr_to_rawfd(txt).expect("file descriptor in WAYLAND_SOCKET is not a number");
 
         let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-        let socket_addr = rustix::net::getsockname(&fd)
-            .map_err(|err| WaylandConnectError::GetSocketName(err.to_string()))?;
+        let socket_addr = rustix::net::getsockname(&fd).expect("failed to getsocketname");
         if socket_addr.address_family() == AddressFamily::UNIX {
-            Ok(unsafe { waybackend::connect_from_fd(WaylandObject::Display, fd) })
+            unsafe { waybackend::connect_from_fd(WaylandObject::Display, fd) }
         } else {
-            Err(WaylandConnectError::WrongSocketFamily(u32::from(
-                socket_addr.address_family().as_raw(),
-            )))
+            panic!(
+                "Socket in WAYLAND_SOCKET has wrong family: {}",
+                socket_addr.address_family().as_raw()
+            );
         }
     } else {
         let socket_name = unsafe { common::getenv(c"WAYLAND_DISPLAY") }.unwrap_or_else(|| {
@@ -48,8 +31,7 @@ pub fn connect() -> Result<(Waybackend, ObjectManager<WaylandObject>, Receiver),
         });
 
         let unix_addr = if socket_name.to_bytes().first() == Some(&b'/') {
-            rustix::net::SocketAddrUnix::new(socket_name)
-                .map_err(|err| WaylandConnectError::InvalidSocketAddress(err.to_string()))?
+            rustix::net::SocketAddrUnix::new(socket_name).unwrap()
         } else {
             let mut socket_fullpath = common::path::PathBuf::new();
             match unsafe { common::getenv(c"XDG_RUNTIME_DIR") } {
@@ -63,8 +45,7 @@ pub fn connect() -> Result<(Waybackend, ObjectManager<WaylandObject>, Receiver),
                 }
             }
             socket_fullpath.push_cstr(socket_name);
-            rustix::net::SocketAddrUnix::new(socket_fullpath)
-                .map_err(|err| WaylandConnectError::InvalidSocketAddress(err.to_string()))?
+            rustix::net::SocketAddrUnix::new(socket_fullpath).unwrap()
         };
 
         let socket = rustix::net::socket_with(
@@ -73,10 +54,10 @@ pub fn connect() -> Result<(Waybackend, ObjectManager<WaylandObject>, Receiver),
             rustix::net::SocketFlags::CLOEXEC,
             None,
         )
-        .map_err(|err| WaylandConnectError::CreateSocket(err.to_string()))?;
+        .expect("failed to create socket");
 
         waybackend::connect_to(WaylandObject::Display, socket, &unix_addr)
-            .map_err(|err| WaylandConnectError::ConnectSocket(err.to_string()))
+            .expect("failed to connect to socket")
     }
 }
 

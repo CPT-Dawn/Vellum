@@ -6,7 +6,9 @@
 
 use ::alloc::format;
 use ::alloc::string::String;
+use ::alloc::string::ToString;
 use ::alloc::vec::Vec;
+use core::fmt;
 
 use rustix::path::Arg;
 use rustix::{buffer, fd, fs, io};
@@ -32,6 +34,33 @@ pub struct CacheEntry<'a> {
     pub img_path: &'a str,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CacheParseError {
+    MissingField {
+        output_name: String,
+        field: &'static str,
+    },
+    InvalidUtf8 {
+        output_name: String,
+    },
+}
+
+impl fmt::Display for CacheParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingField { output_name, field } => {
+                write!(
+                    f,
+                    "cache file for output {output_name} is in the wrong format (missing {field})"
+                )
+            }
+            Self::InvalidUtf8 { output_name } => {
+                write!(f, "cache file for output {output_name} is not valid utf8")
+            }
+        }
+    }
+}
+
 impl<'a> CacheEntry<'a> {
     pub(crate) fn new(
         namespace: &'a str,
@@ -47,27 +76,39 @@ impl<'a> CacheEntry<'a> {
         }
     }
 
-    fn parse_file<'b>(output_name: &str, data: &'b [u8]) -> Result<Vec<CacheEntry<'b>>, String> {
+    fn parse_file<'b>(
+        output_name: &str,
+        data: &'b [u8],
+    ) -> Result<Vec<CacheEntry<'b>>, CacheParseError> {
         let mut v = Vec::new();
         let mut strings = data.split(|ch| *ch == 0);
         while let Some(namespace) = strings.next() {
-            let resize = strings.next().ok_or_else(|| {
-                format!("cache file for output {output_name} is in the wrong format (no resize)")
-            })?;
-            let filter = strings.next().ok_or_else(|| {
-                format!("cache file for output {output_name} is in the wrong format (no filter)")
-            })?;
-            let img_path = strings.next().ok_or_else(|| {
-                format!(
-                    "cache file for output {output_name} is in the wrong format (no image path)"
-                )
-            })?;
+            let resize = strings
+                .next()
+                .ok_or_else(|| CacheParseError::MissingField {
+                    output_name: output_name.to_string(),
+                    field: "resize",
+                })?;
+            let filter = strings
+                .next()
+                .ok_or_else(|| CacheParseError::MissingField {
+                    output_name: output_name.to_string(),
+                    field: "filter",
+                })?;
+            let img_path = strings
+                .next()
+                .ok_or_else(|| CacheParseError::MissingField {
+                    output_name: output_name.to_string(),
+                    field: "image path",
+                })?;
 
-            let err = format!("cache file for output {output_name} is not valid utf8");
-            let namespace = str::from_utf8(namespace).map_err(|_| err.clone())?;
-            let resize = str::from_utf8(resize).map_err(|_| err.clone())?;
-            let filter = str::from_utf8(filter).map_err(|_| err.clone())?;
-            let img_path = str::from_utf8(img_path).map_err(|_| err)?;
+            let utf8_err = || CacheParseError::InvalidUtf8 {
+                output_name: output_name.to_string(),
+            };
+            let namespace = str::from_utf8(namespace).map_err(|_| utf8_err())?;
+            let resize = str::from_utf8(resize).map_err(|_| utf8_err())?;
+            let filter = str::from_utf8(filter).map_err(|_| utf8_err())?;
+            let img_path = str::from_utf8(img_path).map_err(|_| utf8_err())?;
 
             v.push(CacheEntry {
                 namespace,
@@ -194,7 +235,7 @@ pub fn get_previous_image_cache<'a>(
     output_name: &str,
     namespace: &str,
     cache_data: &'a CacheData,
-) -> Result<Option<CacheEntry<'a>>, String> {
+) -> Result<Option<CacheEntry<'a>>, CacheParseError> {
     let entries = CacheEntry::parse_file(output_name, &cache_data.0)?;
 
     Ok(entries

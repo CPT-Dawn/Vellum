@@ -12,9 +12,9 @@ mod wallpaper;
 mod wayland;
 use common::log::{Filter, debug, error, info, trace, warn};
 use rustix::{fd::OwnedFd, fs::Timespec};
-use thiserror::Error;
 
 use smallvec::SmallVec;
+use thiserror::Error;
 use wallpaper::WallpaperCell;
 
 use waybackend::{objman, types::ObjectId};
@@ -104,11 +104,29 @@ impl VellumServer {
 #[derive(Debug, Error)]
 pub enum VellumServerError {
     #[error("wayland initialization failed: {0}")]
-    WaylandInit(#[source] wayland::WaylandConnectError),
+    WaylandInit(String),
     #[error("socket initialization failed: {0}")]
-    SocketInit(#[source] SocketInitError),
+    SocketInit(#[from] SocketInitError),
     #[error("daemon runtime failure: {0}")]
-    Runtime(String),
+    Runtime(#[from] rustix::io::Errno),
+    #[error("daemon runtime failure: {0}")]
+    RuntimeMessage(String),
+}
+
+#[derive(Debug, Error)]
+pub enum SocketInitError {
+    #[error("there is already a vellum-daemon instance running on this socket")]
+    AlreadyRunning,
+    #[error("failed to probe existing daemon state")]
+    DaemonProbe(#[source] IpcError),
+    #[error("socket path has no runtime directory parent")]
+    InvalidRuntimeDirectory,
+    #[error("failed to delete stale socket file")]
+    RemoveStaleSocket(#[source] rustix::io::Errno),
+    #[error("failed to create runtime directory")]
+    CreateRuntimeDirectory(#[source] rustix::io::Errno),
+    #[error("failed to bind daemon ipc socket")]
+    BindSocket(#[source] IpcError),
 }
 
 /// Backward-compatible aliases retained during migration.
@@ -166,17 +184,27 @@ impl Daemon {
         objman: objman::ObjectManager<WaylandObject>,
         config: VellumServerConfig,
         mut pending_outputs: Vec<OutputInfo>,
-    ) -> Self {
-        let registry = objman.get_first(WaylandObject::Registry).unwrap();
-        let compositor = objman.get_first(WaylandObject::Compositor).unwrap();
-        let shm = objman.get_first(WaylandObject::Shm).unwrap();
-        let layer_shell = objman.get_first(WaylandObject::LayerShell).unwrap();
-        let viewporter = objman.get_first(WaylandObject::Viewporter).unwrap();
+    ) -> Result<Self, VellumServerError> {
+        let registry = objman
+            .get_first(WaylandObject::Registry)
+            .ok_or_else(|| VellumServerError::WaylandInit("missing wl_registry global".into()))?;
+        let compositor = objman
+            .get_first(WaylandObject::Compositor)
+            .ok_or_else(|| VellumServerError::WaylandInit("missing wl_compositor global".into()))?;
+        let shm = objman
+            .get_first(WaylandObject::Shm)
+            .ok_or_else(|| VellumServerError::WaylandInit("missing wl_shm global".into()))?;
+        let layer_shell = objman.get_first(WaylandObject::LayerShell).ok_or_else(|| {
+            VellumServerError::WaylandInit("missing zwlr_layer_shell_v1 global".into())
+        })?;
+        let viewporter = objman
+            .get_first(WaylandObject::Viewporter)
+            .ok_or_else(|| VellumServerError::WaylandInit("missing wp_viewporter global".into()))?;
         let fractional_scale_manager = objman.get_first(WaylandObject::FractionalScaler);
 
         pending_outputs.shrink_to_fit();
 
-        Self {
+        Ok(Self {
             backend,
             objman,
             registry,
@@ -194,7 +222,7 @@ impl Daemon {
             fractional_scale_manager,
             pending_outputs,
             poll_time: None,
-        }
+        })
     }
 
     /// always sets the poll time to the smalest value
@@ -263,8 +291,12 @@ impl Daemon {
                 mut animations,
             }) => {
                 while !imgs.is_empty() && !outputs.is_empty() {
-                    let names = outputs.pop().unwrap();
-                    let img = imgs.pop().unwrap();
+                    let Some(names) = outputs.pop() else {
+                        break;
+                    };
+                    let Some(img) = imgs.pop() else {
+                        break;
+                    };
                     let animation = if let Some(ref mut animations) = animations {
                         animations.pop()
                     } else {
@@ -422,7 +454,9 @@ impl wayland::wl_registry::EvHandler for Daemon {
             .position(|w| w.output_name == name)
         {
             let o = self.pending_outputs.swap_remove(i);
-            wayland::wl_output::req::release(&mut self.backend, o.output).unwrap();
+            if let Err(e) = wayland::wl_output::req::release(&mut self.backend, o.output) {
+                warn!("failed to release wl_output object: {e}");
+            }
         }
     }
 }
@@ -697,8 +731,7 @@ fn run_server(config: VellumServerConfig) -> Result<(), VellumServerError> {
     });
 
     // next, initialize all wayland stuff
-    let (mut backend, mut objman, mut receiver) =
-        wayland::connect().map_err(VellumServerError::WaylandInit)?;
+    let (mut backend, mut objman, mut receiver) = wayland::connect();
     let registry = objman.create(WaylandObject::Registry);
     let callback = objman.create(WaylandObject::Callback);
     let mut pending_outputs = Vec::new();
@@ -729,17 +762,17 @@ fn run_server(config: VellumServerConfig) -> Result<(), VellumServerError> {
             );
         },
     ) {
-        return Err(VellumServerError::Runtime(e.to_string()));
+        return Err(VellumServerError::WaylandInit(e.to_string()));
     }
 
     // create the socket listener and setup the signal handlers
     // this will also return an error if there is a `vellum-daemon` instance already
     // running
-    let listener = SocketWrapper::new(&config.namespace).map_err(VellumServerError::SocketInit)?;
+    let listener = SocketWrapper::new(&config.namespace)?;
     setup_signals();
 
     // use the initializer to create the Daemon, then drop it to free up the memory
-    let mut daemon = Daemon::new(backend, objman, config, pending_outputs);
+    let mut daemon = Daemon::new(backend, objman, config, pending_outputs)?;
 
     if let Err(e) = systemd::notify() {
         error!("Error sending status update to systemd: {e}");
@@ -751,10 +784,7 @@ fn run_server(config: VellumServerConfig) -> Result<(), VellumServerError> {
         use rustix::event::{PollFd, PollFlags};
         use wayland::*;
 
-        daemon
-            .backend
-            .flush()
-            .map_err(|e| VellumServerError::Runtime(e.to_string()))?;
+        daemon.backend.flush().map_err(VellumServerError::Runtime)?;
 
         let mut fds = [
             PollFd::new(&daemon.backend.wayland_fd, PollFlags::IN),
@@ -766,7 +796,7 @@ fn run_server(config: VellumServerConfig) -> Result<(), VellumServerError> {
         match rustix::event::poll(&mut fds, daemon.poll_time.as_ref()) {
             Ok(_) => (),
             Err(rustix::io::Errno::INTR | rustix::io::Errno::WOULDBLOCK) => continue,
-            Err(e) => return Err(VellumServerError::Runtime(e.to_string())),
+            Err(e) => return Err(VellumServerError::Runtime(e)),
         }
 
         clock::reset();
@@ -777,7 +807,7 @@ fn run_server(config: VellumServerConfig) -> Result<(), VellumServerError> {
         if wayland_event {
             let mut msgs = receiver
                 .recv(&daemon.backend.wayland_fd)
-                .map_err(|e| VellumServerError::Runtime(e.to_string()))?;
+                .map_err(|e| VellumServerError::RuntimeMessage(e.to_string()))?;
             while let Some(sender_id) = msgs.next() {
                 let sender_id = match sender_id {
                     Ok(sender_id) => sender_id,
@@ -829,7 +859,7 @@ fn run_server(config: VellumServerConfig) -> Result<(), VellumServerError> {
             match rustix::net::accept(&listener.fd) {
                 Ok(stream) => daemon.recv_socket_msg(IpcSocket::new(stream)),
                 Err(rustix::io::Errno::INTR | rustix::io::Errno::WOULDBLOCK) => continue,
-                Err(e) => return Err(VellumServerError::Runtime(e.to_string())),
+                Err(e) => return Err(VellumServerError::Runtime(e)),
             }
         }
 
@@ -888,32 +918,13 @@ struct SocketWrapper {
     fd: OwnedFd,
     namespace: String,
 }
-
-#[derive(Debug, Error)]
-pub enum SocketInitError {
-    #[error("failed to check existing daemon state: {0}")]
-    Probe(String),
-    #[error("there is a vellum-daemon instance already running on this socket")]
-    AlreadyRunning,
-    #[error("failed to delete stale socket at {path}: {error}")]
-    DeleteStaleSocket { path: String, error: String },
-    #[error("could not find a valid runtime directory")]
-    MissingRuntimeDirectory,
-    #[error("failed to create runtime dir at {path}: {error}")]
-    CreateRuntimeDir { path: String, error: String },
-    #[error("failed to create IPC socket: {0}")]
-    CreateSocket(String),
-}
-
 impl SocketWrapper {
     fn new(namespace: &str) -> Result<Self, SocketInitError> {
         use rustix::fs;
         let addr = IpcSocket::path(namespace);
 
         if fs::access(&addr, fs::Access::EXISTS).is_ok() {
-            if is_daemon_running(namespace)
-                .map_err(|err| SocketInitError::Probe(err.to_string()))?
-            {
+            if is_daemon_running(namespace).map_err(SocketInitError::DaemonProbe)? {
                 return Err(SocketInitError::AlreadyRunning);
             }
             warn!(
@@ -921,32 +932,21 @@ impl SocketWrapper {
                 addr.display()
             );
             if let Err(e) = fs::unlink(&addr) {
-                return Err(SocketInitError::DeleteStaleSocket {
-                    path: addr.display().to_string(),
-                    error: e.to_string(),
-                });
+                return Err(SocketInitError::RemoveStaleSocket(e));
             }
         }
 
         let runtime_dir = match addr.parent() {
             Some(path) => path,
-            None => return Err(SocketInitError::MissingRuntimeDirectory),
+            None => return Err(SocketInitError::InvalidRuntimeDirectory),
         };
 
         if fs::access(&runtime_dir, fs::Access::EXISTS).is_err() {
-            match fs::mkdir(&runtime_dir, fs::Mode::RUSR.union(fs::Mode::WUSR)) {
-                Ok(()) => (),
-                Err(e) => {
-                    return Err(SocketInitError::CreateRuntimeDir {
-                        path: runtime_dir.display().to_string(),
-                        error: e.to_string(),
-                    });
-                }
-            }
+            fs::mkdir(runtime_dir, fs::Mode::RUSR.union(fs::Mode::WUSR))
+                .map_err(SocketInitError::CreateRuntimeDirectory)?;
         }
 
-        let socket = IpcSocket::server(namespace)
-            .map_err(|err| SocketInitError::CreateSocket(err.to_string()))?;
+        let socket = IpcSocket::server(namespace).map_err(SocketInitError::BindSocket)?;
 
         debug!("Created socket at {}", addr.display());
         Ok(Self {
