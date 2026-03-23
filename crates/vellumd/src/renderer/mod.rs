@@ -67,6 +67,16 @@ impl RendererState {
             self.backend.apply_command(command);
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn backend_assignment_count(&self) -> usize {
+        self.backend.assignment_count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn backend_mode_for(&self, monitor: Option<&str>) -> Option<ScaleMode> {
+        self.backend.assignment_mode_for(monitor)
+    }
 }
 
 #[cfg(test)]

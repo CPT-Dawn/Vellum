@@ -148,3 +148,87 @@ fn apply_wallpaper_native(
 
     Ok(canonical)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn new_temp_dir(prefix: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("{prefix}-{nonce}"));
+        std::fs::create_dir_all(&path).expect("test dir should be created");
+        path
+    }
+
+    fn write_test_png(path: &PathBuf) {
+        let image = image::RgbImage::from_pixel(1, 1, image::Rgb([11, 22, 33]));
+        image
+            .save(path)
+            .expect("png fixture should be generated and written");
+    }
+
+    #[tokio::test]
+    async fn set_then_clear_updates_daemon_and_renderer_state() {
+        let temp_dir = new_temp_dir("vellum-handlers-test");
+        let state_file = temp_dir.join("state.json");
+        let image_path = temp_dir.join("sample.png");
+        write_test_png(&image_path);
+
+        let daemon_state = Arc::new(Mutex::new(DaemonState::default()));
+        let renderer_state = Arc::new(Mutex::new(RendererState::default()));
+
+        let outcome = handle_request(
+            Request::SetWallpaper {
+                path: image_path.display().to_string(),
+                monitor: None,
+                mode: ScaleMode::Crop,
+            },
+            &daemon_state,
+            &renderer_state,
+            &state_file,
+        )
+        .await
+        .expect("set wallpaper handler should succeed");
+
+        assert!(matches!(outcome.response, Response::Ok));
+        assert!(!outcome.shutdown);
+
+        {
+            let state = daemon_state.lock().await;
+            assert_eq!(state.assignments.len(), 1);
+        }
+
+        {
+            let renderer = renderer_state.lock().await;
+            assert_eq!(renderer.backend_assignment_count(), 1);
+            assert_eq!(renderer.backend_mode_for(None), Some(ScaleMode::Crop));
+        }
+
+        let outcome = handle_request(
+            Request::ClearAssignments,
+            &daemon_state,
+            &renderer_state,
+            &state_file,
+        )
+        .await
+        .expect("clear assignments handler should succeed");
+
+        assert!(matches!(outcome.response, Response::Ok));
+
+        {
+            let state = daemon_state.lock().await;
+            assert!(state.assignments.is_empty());
+        }
+
+        {
+            let renderer = renderer_state.lock().await;
+            assert_eq!(renderer.backend_assignment_count(), 0);
+        }
+
+        std::fs::remove_dir_all(temp_dir).expect("test dir should be removed");
+    }
+}

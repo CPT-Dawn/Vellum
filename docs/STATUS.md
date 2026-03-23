@@ -17,6 +17,7 @@
 - Renderer command queue now updates an internal backend assignment state.
 - Tagged release workflow now publishes GitHub Release assets with SHA256 checksums.
 - TUI extracted display and image utility modules.
+- Renderer-facing handler tests validate set/clear command effects.
 
 ## In Progress
 
@@ -33,5 +34,5 @@
 
 1. Move remaining TUI app state/actions/layout into dedicated modules.
 2. Implement real Wayland output surface backend under renderer module.
-3. Add renderer-facing integration tests (command queue to backend behavior).
+3. Add release checksums verification step in docs and Makefile helpers.
 4. Expand tagged release workflow with release publication and checksums.
