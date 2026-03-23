@@ -44,6 +44,7 @@
 - Monitor refresh loop now logs detector failures and recoveries on state transitions, avoiding repeated warning spam while preserving visibility.
 - Daemon monitor discovery now includes a Wayland registry wl_output path before CLI fallbacks, moving monitor detection closer to native protocol flow.
 - Renderer apply loop now requeues failed and unprocessed render commands, preventing command loss on transient apply errors.
+- Renderer output registry now computes explicit add/remove deltas, and refresh logs lifecycle edges for monitor hotplug reconciliation.
 
 ## In Progress
 

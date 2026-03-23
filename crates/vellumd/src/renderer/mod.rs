@@ -36,9 +36,18 @@ pub(crate) struct RendererState {
 
 impl RendererState {
     pub(crate) fn refresh_outputs(&mut self, output_names: Vec<String>) {
-        self.outputs.update(output_names.clone());
+        let delta = self.outputs.reconcile(output_names.clone());
         if let Err(err) = self.session.sync_outputs(output_names) {
             warn!(error = %err, "renderer session failed to refresh outputs");
+            return;
+        }
+
+        if delta.changed() {
+            info!(
+                added = ?delta.added,
+                removed = ?delta.removed,
+                "renderer output lifecycle changed"
+            );
         }
     }
 
