@@ -8,6 +8,7 @@ mod output_registry;
 mod perf_checks;
 mod shm_pool;
 mod swaybg;
+mod wl_shm_bridge;
 
 use anyhow::{Context, Result};
 use std::path::PathBuf;
@@ -20,6 +21,7 @@ use command_queue::RenderCommandQueue;
 use image_pipeline::ImagePipeline;
 use layer_shell::LayerShellSession;
 pub(crate) use output_registry::OutputRegistry;
+use wl_shm_bridge::WlShmBridge;
 
 #[derive(Default)]
 pub(crate) struct RendererState {
@@ -28,6 +30,7 @@ pub(crate) struct RendererState {
     backend: BackendState,
     image_pipeline: ImagePipeline,
     session: LayerShellSession,
+    shm_bridge: WlShmBridge,
 }
 
 impl RendererState {
@@ -105,9 +108,9 @@ impl RendererState {
             self.backend.apply_command(command);
         }
 
-        // Bridge stage: drain native commit descriptors so a future wl_shm/layer-
-        // shell loop can consume the exact buffer metadata and submit commits.
-        for commit in self.session.drain_native_commit_plans() {
+        // Bridge stage: forward native commit descriptors into wl_shm bridge.
+        let commits = self.session.drain_native_commit_plans();
+        for commit in &commits {
             info!(
                 output = %commit.output,
                 width = commit.width,
@@ -119,6 +122,8 @@ impl RendererState {
                 "native commit plan prepared"
             );
         }
+        self.shm_bridge.submit(commits);
+        self.shm_bridge.flush();
 
         Ok(())
     }
@@ -142,6 +147,11 @@ impl RendererState {
     pub(crate) fn session_buffer_count(&self) -> usize {
         self.session.pool_entry_count()
     }
+
+    #[cfg(test)]
+    pub(crate) fn committed_output_count(&self) -> usize {
+        self.shm_bridge.committed_output_count()
+    }
 }
 
 #[cfg(test)]
@@ -151,6 +161,7 @@ mod tests {
     #[test]
     fn apply_then_clear_updates_backend_state() {
         let mut renderer = RendererState::default();
+        renderer.refresh_outputs(vec!["DP-1".to_string()]);
 
         renderer.enqueue_apply(
             Some("DP-1".to_string()),
@@ -160,6 +171,7 @@ mod tests {
         renderer
             .apply_pending()
             .expect("renderer apply should succeed in test mode");
+        assert_eq!(renderer.committed_output_count(), 1);
 
         assert_eq!(renderer.backend.assignment_count(), 1);
         assert_eq!(
@@ -177,5 +189,6 @@ mod tests {
             .expect("renderer clear should succeed in test mode");
 
         assert_eq!(renderer.backend.assignment_count(), 0);
+        assert_eq!(renderer.committed_output_count(), 1);
     }
 }

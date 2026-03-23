@@ -37,6 +37,7 @@ This repository now follows a more modular Rust layout and is prepared for upcom
       - output_registry.rs
       - shm_pool.rs
       - perf_checks.rs
+      - wl_shm_bridge.rs
   - vellum-tui/
     - src/main.rs
     - src/cli.rs

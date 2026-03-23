@@ -32,6 +32,7 @@
 - Renderer now composes native per-output RGBA frame buffers with fit/fill/crop logic before presentation.
 - Renderer now uploads composed native frame bytes into shared-memory pool entries per output.
 - Renderer now emits native commit descriptors (output, stride, buffer id, source) from layer-shell session flow.
+- Renderer now forwards native commit descriptors into a wl_shm bridge stage that tracks latest per-output commits.
 
 ## In Progress
 
