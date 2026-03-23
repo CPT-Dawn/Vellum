@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs, io,
     num::NonZeroU8,
     path::{Path, PathBuf},
@@ -10,7 +11,7 @@ use common::ipc::{
     Transition, TransitionType,
 };
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -25,7 +26,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -38,6 +39,10 @@ const TICK_RATE_MS: u64 = 33;
 const BROWSER_FILTER_DEBOUNCE_MS: u64 = 60;
 /// Minimum interval between automatic monitor re-probes.
 const MONITOR_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
+/// Retry interval used while waiting for native backend socket readiness.
+const BACKEND_CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+/// Maximum number of native backend socket readiness checks.
+const BACKEND_CONNECT_RETRIES: usize = 25;
 
 /// Available transition easings shown in the transition pane.
 const EASING_PRESETS: [&str; 4] = ["linear", "ease-in", "ease-out", "ease-in-out"];
@@ -46,6 +51,9 @@ const TRANSITION_EFFECTS: [&str; 4] = ["simple", "fade", "wipe", "grow"];
 
 /// Profile filename used by the default save/load commands.
 const DEFAULT_PROFILE_NAME: &str = "default";
+
+/// Number of visible rows moved by page-style navigation.
+const NAV_PAGE_STEP: usize = 8;
 
 /// Aspect-ratio simulation strategy for monitor preview.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -87,6 +95,25 @@ enum PaneFocus {
     Monitor,
     /// Transition settings pane.
     Transition,
+}
+
+/// Active keyboard interaction mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputMode {
+    /// Standard command/navigation mode.
+    Normal,
+    /// Browser filter query editing mode.
+    Search,
+}
+
+impl InputMode {
+    /// Returns a short printable mode label.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "NORMAL",
+            Self::Search => "SEARCH",
+        }
+    }
 }
 
 impl PaneFocus {
@@ -314,6 +341,10 @@ struct AppState {
     needs_monitor_refresh: bool,
     /// Active pane focus.
     focus: PaneFocus,
+    /// Active keyboard mode.
+    input_mode: InputMode,
+    /// Whether a help overlay is currently visible.
+    show_help: bool,
     /// Browser rows for phase scaffold.
     browser_entries: Vec<BrowserEntry>,
     /// Full unfiltered browser rows for current directory.
@@ -336,6 +367,8 @@ struct AppState {
     aspect_mode: AspectMode,
     /// Selected image preview metadata for simulator.
     selected_preview: Option<ImagePreview>,
+    /// Cache for image dimension lookups used by preview rendering.
+    image_dim_cache: HashMap<PathBuf, Option<(u32, u32)>>,
     /// Playlist of images for auto-cycling.
     playlist: Vec<PathBuf>,
     /// Current index in the playlist.
@@ -361,6 +394,8 @@ impl Default for AppState {
             last_monitor_refresh: None,
             needs_monitor_refresh: true,
             focus: PaneFocus::Browser,
+            input_mode: InputMode::Normal,
+            show_help: false,
             browser_entries: Vec::new(),
             browser_all_entries: Vec::new(),
             browser_dir: preferred_initial_browser_dir(),
@@ -372,6 +407,7 @@ impl Default for AppState {
             transition: TransitionState::default(),
             aspect_mode: AspectMode::Fit,
             selected_preview: None,
+            image_dim_cache: HashMap::new(),
             playlist: Vec::new(),
             playlist_index: 0,
             playlist_running: false,
@@ -439,10 +475,66 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
         if let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {
+            if state.show_help {
+                match key.code {
+                    KeyCode::Char('?') | KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                        state.show_help = false;
+                        state.status = String::from("Help overlay closed");
+                    }
+                    _ => {
+                        state.show_help = false;
+                        state.status = String::from("Help overlay closed");
+                    }
+                }
+                continue;
+            }
+
+            if state.input_mode == InputMode::Search {
+                match key.code {
+                    KeyCode::Esc => {
+                        state.input_mode = InputMode::Normal;
+                        state.status = String::from("Search canceled");
+                    }
+                    KeyCode::Enter => {
+                        flush_browser_filter_if_due(state);
+                        state.input_mode = InputMode::Normal;
+                        state.status = format!("Filter applied: {}", state.browser_query);
+                    }
+                    KeyCode::Backspace => {
+                        if !state.browser_query.is_empty() {
+                            state.browser_query.pop();
+                            schedule_browser_filter(state);
+                        }
+                    }
+                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        state.browser_query.clear();
+                        schedule_browser_filter(state);
+                    }
+                    KeyCode::Char(c) => {
+                        if !c.is_control() {
+                            state.browser_query.push(c);
+                            schedule_browser_filter(state);
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => {
                     state.status = String::from("Exiting Vellum");
                     state.should_quit = true;
+                }
+                KeyCode::Char('?') => {
+                    state.show_help = true;
+                    state.status = String::from("Help overlay opened");
+                }
+                KeyCode::Char('/') => {
+                    if state.focus == PaneFocus::Browser {
+                        state.input_mode = InputMode::Search;
+                        state.status = String::from("Search mode: type to filter, Enter to apply");
+                    }
                 }
                 KeyCode::Char('r') => {
                     state.status = String::from("Manual monitor refresh requested");
@@ -451,14 +543,38 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
                 KeyCode::Char('b') => {
                     start_native_backend(state);
                 }
-                KeyCode::Char('h') => {
-                    state.status = String::from(
-                        "Help: Tab pane switch, arrows navigate, Enter apply/open, / filter",
-                    );
-                }
                 KeyCode::Char('x') => {
                     state.aspect_mode = state.aspect_mode.next();
                     state.status = format!("Aspect simulator mode: {}", state.aspect_mode.as_str());
+                }
+                KeyCode::Char(' ') => {
+                    state.playlist_running = !state.playlist_running;
+                    state.last_playlist_tick = Instant::now();
+                    state.status = if state.playlist_running {
+                        String::from("Playlist auto-cycle enabled")
+                    } else {
+                        String::from("Playlist auto-cycle paused")
+                    };
+                }
+                KeyCode::Char('p') => {
+                    add_selected_image_to_playlist(state);
+                }
+                KeyCode::Char('c') => {
+                    state.playlist.clear();
+                    state.playlist_index = 0;
+                    state.status = String::from("Playlist cleared");
+                }
+                KeyCode::Char('+') | KeyCode::Char('=') => {
+                    let current = state.playlist_interval.as_secs();
+                    state.playlist_interval = Duration::from_secs((current + 5).min(600));
+                    state.status =
+                        format!("Playlist interval: {}s", state.playlist_interval.as_secs());
+                }
+                KeyCode::Char('-') => {
+                    let current = state.playlist_interval.as_secs();
+                    state.playlist_interval = Duration::from_secs(current.saturating_sub(5).max(5));
+                    state.status =
+                        format!("Playlist interval: {}s", state.playlist_interval.as_secs());
                 }
                 KeyCode::Char('u') => {
                     if state.focus == PaneFocus::Browser
@@ -474,17 +590,40 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
                     state.focus = state.focus.next();
                     state.status = format!("Focus moved to {} pane", state.focus.as_str());
                 }
+                KeyCode::Char('l') => {
+                    state.focus = state.focus.next();
+                    state.status = format!("Focus moved to {} pane", state.focus.as_str());
+                }
                 KeyCode::BackTab => {
                     state.focus = state.focus.prev();
                     state.status = format!("Focus moved to {} pane", state.focus.as_str());
                 }
+                KeyCode::Char('h') => match state.focus {
+                    PaneFocus::Transition => state.transition.decrease_selected(),
+                    _ => {
+                        state.focus = state.focus.prev();
+                        state.status = format!("Focus moved to {} pane", state.focus.as_str());
+                    }
+                },
                 KeyCode::Up => match state.focus {
                     PaneFocus::Browser => {
-                        state.browser_selected = state.browser_selected.saturating_sub(1);
+                        move_browser_selection(state, -1);
                         refresh_selected_preview(state);
                     }
                     PaneFocus::Monitor => {
-                        state.monitor_selected = state.monitor_selected.saturating_sub(1);
+                        move_monitor_selection(state, -1);
+                    }
+                    PaneFocus::Transition => {
+                        state.transition.select_prev_field();
+                    }
+                },
+                KeyCode::Char('k') => match state.focus {
+                    PaneFocus::Browser => {
+                        move_browser_selection(state, -1);
+                        refresh_selected_preview(state);
+                    }
+                    PaneFocus::Monitor => {
+                        move_monitor_selection(state, -1);
                     }
                     PaneFocus::Transition => {
                         state.transition.select_prev_field();
@@ -492,13 +631,23 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
                 },
                 KeyCode::Down => match state.focus {
                     PaneFocus::Browser => {
-                        let max_idx = state.browser_entries.len().saturating_sub(1);
-                        state.browser_selected = (state.browser_selected + 1).min(max_idx);
+                        move_browser_selection(state, 1);
                         refresh_selected_preview(state);
                     }
                     PaneFocus::Monitor => {
-                        let max_idx = state.monitors.len().saturating_sub(1);
-                        state.monitor_selected = (state.monitor_selected + 1).min(max_idx);
+                        move_monitor_selection(state, 1);
+                    }
+                    PaneFocus::Transition => {
+                        state.transition.select_next_field();
+                    }
+                },
+                KeyCode::Char('j') => match state.focus {
+                    PaneFocus::Browser => {
+                        move_browser_selection(state, 1);
+                        refresh_selected_preview(state);
+                    }
+                    PaneFocus::Monitor => {
+                        move_monitor_selection(state, 1);
                     }
                     PaneFocus::Transition => {
                         state.transition.select_next_field();
@@ -515,9 +664,10 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
                     }
                 }
                 KeyCode::Backspace => {
-                    if state.focus == PaneFocus::Browser && !state.browser_query.is_empty() {
-                        state.browser_query.pop();
+                    if state.focus == PaneFocus::Browser {
+                        state.browser_query.clear();
                         schedule_browser_filter(state);
+                        state.status = String::from("Browser filter cleared");
                     }
                 }
                 KeyCode::Enter => {
@@ -525,6 +675,58 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
                         activate_browser_selection(state).await;
                     }
                 }
+                KeyCode::PageUp => match state.focus {
+                    PaneFocus::Browser => {
+                        move_browser_selection(state, -(NAV_PAGE_STEP as isize));
+                        refresh_selected_preview(state);
+                    }
+                    PaneFocus::Monitor => {
+                        move_monitor_selection(state, -(NAV_PAGE_STEP as isize));
+                    }
+                    PaneFocus::Transition => {
+                        for _ in 0..NAV_PAGE_STEP {
+                            state.transition.select_prev_field();
+                        }
+                    }
+                },
+                KeyCode::PageDown => match state.focus {
+                    PaneFocus::Browser => {
+                        move_browser_selection(state, NAV_PAGE_STEP as isize);
+                        refresh_selected_preview(state);
+                    }
+                    PaneFocus::Monitor => {
+                        move_monitor_selection(state, NAV_PAGE_STEP as isize);
+                    }
+                    PaneFocus::Transition => {
+                        for _ in 0..NAV_PAGE_STEP {
+                            state.transition.select_next_field();
+                        }
+                    }
+                },
+                KeyCode::Home | KeyCode::Char('g') => match state.focus {
+                    PaneFocus::Browser => {
+                        state.browser_selected = 0;
+                        refresh_selected_preview(state);
+                    }
+                    PaneFocus::Monitor => {
+                        state.monitor_selected = 0;
+                    }
+                    PaneFocus::Transition => {
+                        state.transition.selected_field = 0;
+                    }
+                },
+                KeyCode::End | KeyCode::Char('G') => match state.focus {
+                    PaneFocus::Browser => {
+                        state.browser_selected = state.browser_entries.len().saturating_sub(1);
+                        refresh_selected_preview(state);
+                    }
+                    PaneFocus::Monitor => {
+                        state.monitor_selected = state.monitors.len().saturating_sub(1);
+                    }
+                    PaneFocus::Transition => {
+                        state.transition.selected_field = 3;
+                    }
+                },
                 KeyCode::F(5) => {
                     state.playlist_running = !state.playlist_running;
                     state.last_playlist_tick = Instant::now();
@@ -550,18 +752,36 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
                     Ok(()) => state.status = String::from("Loaded profile: default"),
                     Err(err) => state.status = format!("Load profile failed: {err}"),
                 },
-                KeyCode::Char(c) => {
-                    if state.focus == PaneFocus::Browser && !c.is_control() {
-                        state.browser_query.push(c);
-                        schedule_browser_filter(state);
-                    }
-                }
                 _ => {}
             }
         }
     }
 
     Ok(())
+}
+
+/// Moves browser selection by signed offset while clamping bounds.
+fn move_browser_selection(state: &mut AppState, delta: isize) {
+    if state.browser_entries.is_empty() {
+        state.browser_selected = 0;
+        return;
+    }
+
+    let max_idx = state.browser_entries.len().saturating_sub(1) as isize;
+    let next = (state.browser_selected as isize + delta).clamp(0, max_idx) as usize;
+    state.browser_selected = next;
+}
+
+/// Moves monitor selection by signed offset while clamping bounds.
+fn move_monitor_selection(state: &mut AppState, delta: isize) {
+    if state.monitors.is_empty() {
+        state.monitor_selected = 0;
+        return;
+    }
+
+    let max_idx = state.monitors.len().saturating_sub(1) as isize;
+    let next = (state.monitor_selected as isize + delta).clamp(0, max_idx) as usize;
+    state.monitor_selected = next;
 }
 
 /// Marks browser filtering as dirty and schedules a debounced recompute.
@@ -591,6 +811,11 @@ fn flush_browser_filter_if_due(state: &mut AppState) {
 
 /// Starts the native Vellum backend daemon in a dedicated blocking task.
 fn start_native_backend(state: &mut AppState) {
+    if IpcSocket::client(&state.backend.namespace).is_ok() {
+        state.status = String::from("Native backend already reachable");
+        return;
+    }
+
     if state
         .backend
         .task
@@ -607,11 +832,33 @@ fn start_native_backend(state: &mut AppState) {
     state.backend.task = Some(tokio::task::spawn_blocking(move || {
         let config = VellumServerConfig {
             namespace,
+            quiet: true,
             ..VellumServerConfig::default()
         };
         let server = VellumServer::new(config);
         server.run().map_err(|err| err.to_string())
     }));
+}
+
+/// Ensures the embedded native backend socket is reachable before IPC calls.
+async fn ensure_native_backend_ready(state: &mut AppState) -> Result<(), String> {
+    if IpcSocket::client(&state.backend.namespace).is_ok() {
+        return Ok(());
+    }
+
+    start_native_backend(state);
+
+    for _ in 0..BACKEND_CONNECT_RETRIES {
+        if IpcSocket::client(&state.backend.namespace).is_ok() {
+            return Ok(());
+        }
+        tokio::time::sleep(BACKEND_CONNECT_RETRY_INTERVAL).await;
+    }
+
+    Err(format!(
+        "native backend is not reachable in namespace '{}'",
+        state.backend.namespace
+    ))
 }
 
 /// Polls backend task completion and updates runtime status text.
@@ -872,8 +1119,8 @@ fn reload_browser_directory(state: &mut AppState) -> io::Result<()> {
         }
     }
 
-    dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    dirs.sort_by_cached_key(|entry| entry.name.to_ascii_lowercase());
+    files.sort_by_cached_key(|entry| entry.name.to_ascii_lowercase());
 
     entries.extend(dirs);
     entries.extend(files);
@@ -932,18 +1179,19 @@ fn refresh_selected_preview(state: &mut AppState) {
         return;
     }
 
-    match image::image_dimensions(&entry.path) {
-        Ok((width, height)) => {
-            state.selected_preview = Some(ImagePreview {
-                path: entry.path.clone(),
-                width,
-                height,
-            });
-        }
-        Err(_) => {
-            state.selected_preview = None;
-        }
-    }
+    let dims = if let Some(cached) = state.image_dim_cache.get(&entry.path) {
+        *cached
+    } else {
+        let probed = image::image_dimensions(&entry.path).ok();
+        state.image_dim_cache.insert(entry.path.clone(), probed);
+        probed
+    };
+
+    state.selected_preview = dims.map(|(width, height)| ImagePreview {
+        path: entry.path.clone(),
+        width,
+        height,
+    });
 }
 
 /// Adds the currently selected browser image to the playlist.
@@ -987,6 +1235,12 @@ async fn run_playlist_tick(state: &mut AppState) {
         .monitors
         .get(state.monitor_selected)
         .map(|m| m.name.clone());
+
+    if let Err(err) = ensure_native_backend_ready(state).await {
+        state.playlist_running = false;
+        state.status = format!("Playlist paused: {err}");
+        return;
+    }
 
     let target = match query_apply_target(&namespace, selected_output) {
         Ok(target) => target,
@@ -1128,6 +1382,11 @@ async fn activate_browser_selection(state: &mut AppState) {
         .get(state.monitor_selected)
         .map(|m| m.name.clone());
 
+    if let Err(err) = ensure_native_backend_ready(state).await {
+        state.status = format!("Native backend unavailable: {err}");
+        return;
+    }
+
     let target = match query_apply_target(&namespace, selected_output) {
         Ok(target) => target,
         Err(err) => {
@@ -1149,7 +1408,7 @@ fn query_apply_target(
     namespace: &str,
     preferred_output: Option<String>,
 ) -> Result<ApplyTarget, String> {
-    let (resolved_namespace, socket) = connect_daemon_socket(namespace)?;
+    let socket = connect_daemon_socket(namespace)?;
     RequestSend::Query
         .send(&socket)
         .map_err(|err| err.to_string())?;
@@ -1167,46 +1426,17 @@ fn query_apply_target(
     .ok_or_else(|| String::from("no output information available from daemon"))?;
 
     Ok(ApplyTarget {
-        namespace: resolved_namespace,
+        namespace: namespace.to_string(),
         outputs: vec![selected.name.to_string()],
         dim: selected.real_dim(),
         format: selected.pixel_format,
     })
 }
 
-/// Connects to daemon socket with retry and namespace fallback.
-fn connect_daemon_socket(preferred_namespace: &str) -> Result<(String, IpcSocket), String> {
-    const RETRIES: usize = 12;
-    const RETRY_INTERVAL_MS: u64 = 100;
-
-    for _ in 0..RETRIES {
-        if let Ok(socket) = IpcSocket::client(preferred_namespace) {
-            return Ok((preferred_namespace.to_string(), socket));
-        }
-        std::thread::sleep(Duration::from_millis(RETRY_INTERVAL_MS));
-    }
-
-    if preferred_namespace.is_empty() {
-        return Err(String::from(
-            "daemon socket not available in default namespace",
-        ));
-    }
-
-    if let Ok(socket) = IpcSocket::client("") {
-        return Ok((String::new(), socket));
-    }
-
-    if let Ok(namespaces) = IpcSocket::all_namespaces() {
-        for namespace in namespaces {
-            if let Ok(socket) = IpcSocket::client(&namespace) {
-                return Ok((namespace, socket));
-            }
-        }
-    }
-
-    Err(format!(
-        "daemon socket not found for namespace '{preferred_namespace}' and no fallback namespace was reachable"
-    ))
+/// Connects only to the native backend socket namespace owned by this TUI.
+fn connect_daemon_socket(namespace: &str) -> Result<IpcSocket, String> {
+    IpcSocket::client(namespace)
+        .map_err(|err| format!("native backend socket '{}' unavailable: {err}", namespace))
 }
 
 /// Sends a native wallpaper image request through the daemon IPC channel.
@@ -1347,6 +1577,10 @@ fn draw_ui(frame: &mut Frame<'_>, state: &AppState) {
     draw_header(frame, root[0], state);
     draw_body(frame, root[1], state);
     draw_footer(frame, root[2], state);
+
+    if state.show_help {
+        draw_help_overlay(frame, state);
+    }
 }
 
 /// Draws the top status header.
@@ -1361,10 +1595,10 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         Span::styled(
             "VELLUM",
             Style::default()
-                .fg(Color::LightCyan)
+                .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  native wallpaper control surface  "),
+        Span::raw("  wallpaper control surface  "),
         Span::styled(
             if backend_running {
                 "[backend: running]"
@@ -1383,6 +1617,17 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         Span::styled(
             format!("[outputs: {}]", state.monitors.len()),
             Style::default().fg(Color::Gray),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            format!("[mode: {}]", state.input_mode.as_str()),
+            Style::default()
+                .fg(if state.input_mode == InputMode::Search {
+                    Color::Yellow
+                } else {
+                    Color::Green
+                })
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  active pane: "),
         Span::styled(
@@ -1416,7 +1661,7 @@ fn draw_body(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let file_browser = Paragraph::new(render_browser_lines(state)).block(
         Block::default()
             .title(Line::from(vec![
-                Span::raw(" Browser "),
+                Span::styled(" Browser ", Style::default().add_modifier(Modifier::BOLD)),
                 Span::styled(
                     format!("({})", state.browser_entries.len()),
                     Style::default().fg(Color::Gray),
@@ -1456,7 +1701,7 @@ fn draw_body(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 fn border_style_for_focus(active: PaneFocus, pane: PaneFocus) -> Style {
     if active == pane {
         Style::default()
-            .fg(Color::LightCyan)
+            .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::Gray)
@@ -1482,7 +1727,7 @@ fn render_browser_lines(state: &AppState) -> String {
 
     if state.browser_entries.is_empty() {
         lines.push_str("No matching entries\n");
-        lines.push_str("Type to fuzzy filter or Backspace to clear");
+        lines.push_str("Press / to search or Backspace to clear");
         return lines;
     }
 
@@ -1502,14 +1747,14 @@ fn render_browser_lines(state: &AppState) -> String {
         let row = format!("{} {} {}\n", marker, kind, entry.name);
         lines.push_str(&row);
     }
-    lines.push_str("\nEnter: open/apply | u: parent | Type: fuzzy filter | Backspace: edit query");
+    lines.push_str("\nEnter open/apply | / search | j/k move | g/G top-bottom | u parent");
     lines
 }
 
 /// Builds monitor pane content with selected monitor detail.
 fn render_monitor_lines(state: &AppState) -> String {
     if state.monitors.is_empty() {
-        return String::from("Outputs\n- no monitor data yet\n\nr: refresh monitors");
+        return String::from("Outputs\n- no monitor data yet\n\nr refresh monitors");
     }
 
     let mut lines = String::from("Outputs\n");
@@ -1648,7 +1893,7 @@ fn render_transition_lines(state: &AppState) -> String {
         "stopped"
     };
     let backend_line = format!(
-        "\nBackend\n- status: {}\n- namespace: {}\n\nPlaylist\n- running: {}\n- size: {}\n- interval: {}s\n\nF5 toggle | F6 add selected | F7 clear | F8 save profile | F9 load profile",
+        "\nBackend\n- status: {}\n- namespace: {}\n\nPlaylist\n- running: {}\n- size: {}\n- interval: {}s\n\nSpace toggle | p add | c clear | +/- interval | F8 save | F9 load",
         backend_state,
         state.backend.namespace,
         state.playlist_running,
@@ -1663,7 +1908,7 @@ fn render_transition_lines(state: &AppState) -> String {
 fn draw_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let frame_age_ms = state.last_frame.elapsed().as_millis();
     let diagnostics = format!(
-        "{} | frames={} | frame_age={}ms | q/Esc quit | Tab/Shift+Tab pane | arrows nav | Enter open/apply | r refresh | x aspect | F5/F6/F7 playlist | F8/F9 profile",
+        "{} | frames={} | frame_age={}ms | ? help | q quit | Tab/h/l panes | arrows or j/k nav | / search | Enter apply/open",
         state.status, state.frame_count, frame_age_ms
     );
     let footer = Paragraph::new(diagnostics).block(
@@ -1673,4 +1918,48 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             .border_type(BorderType::Double),
     );
     frame.render_widget(footer, area);
+}
+
+/// Draws a centered quick-reference panel for keyboard controls.
+fn draw_help_overlay(frame: &mut Frame<'_>, state: &AppState) {
+    let popup = centered_rect(78, 72, frame.area());
+    let help = format!(
+        "VELLUM HELP\n\nMode: {}\nPane: {}\n\nGlobal\n- ? toggle help\n- q or Esc quit\n- Tab / Shift+Tab cycle pane\n- h/l previous/next pane\n\nNavigation\n- arrows or j/k move selection\n- g / G jump top/bottom\n- PageUp/PageDown jump by {}\n\nBrowser\n- Enter open directory / apply image\n- / enter search mode\n- Search mode: Enter apply, Esc cancel, Ctrl+u clear\n- u go to parent directory\n\nMonitor\n- r refresh monitor list\n- x cycle aspect simulation\n\nPlaylist/Profile\n- Space toggle playlist\n- p add selected image\n- c clear playlist\n- +/- adjust interval\n- F8 save profile, F9 load profile\n\nPress ?, Enter, Esc, or q to close.",
+        state.input_mode.as_str(),
+        state.focus.as_str(),
+        NAV_PAGE_STEP
+    );
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(help).block(
+            Block::default()
+                .title(" Quick Help ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Double)
+                .border_style(Style::default().fg(Color::Yellow)),
+        ),
+        popup,
+    );
+}
+
+/// Returns a rectangle centered within the provided area using percentages.
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1])[1]
 }
