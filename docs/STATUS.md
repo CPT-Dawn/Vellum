@@ -21,6 +21,7 @@
 - Makefile now includes release checksum generation and verification helpers.
 - TUI app state moved into dedicated app state module.
 - TUI key input handling and frame rendering split into dedicated modules.
+- TUI non-UI command dispatch extracted into a dedicated module.
 
 ## In Progress
 

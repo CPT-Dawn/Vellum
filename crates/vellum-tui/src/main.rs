@@ -1,5 +1,6 @@
 mod app;
 mod cli;
+mod commands;
 mod daemon_client;
 mod display;
 mod images;
@@ -13,14 +14,13 @@ use crossterm::terminal::{
 };
 use std::path::PathBuf;
 use std::time::Duration as StdDuration;
-use tracing::info;
-use vellum_ipc::{Request, Response};
 
 use crate::app::input::handle_key_event;
-use crate::app::state::{print_assignment_entries, App};
+use crate::app::state::App;
 use crate::app::ui::draw_frame;
 use crate::cli::{Args, Command};
-use crate::daemon_client::{resolve_socket_path, resolve_socket_path_optional, send_request};
+use crate::commands::execute_command;
+use crate::daemon_client::resolve_socket_path_optional;
 use crate::display::MonitorProfile;
 use crate::images::default_image_root;
 
@@ -38,107 +38,15 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let command = args.command.unwrap_or(Command::Ui);
 
-    match command {
-        Command::Ui => run_ui(
+    if matches!(command, Command::Ui) {
+        run_ui(
             args.socket,
             args.images_dir,
             args.monitor_width,
             args.monitor_height,
-        ),
-        Command::Ping => {
-            let socket_path = resolve_socket_path(args.socket)?;
-            let response = send_request(&socket_path, Request::Ping).await?;
-            info!(?response, "daemon responded to ping");
-            match response {
-                Response::Pong => {
-                    println!("daemon handshake successful");
-                    Ok(())
-                }
-                other => anyhow::bail!("unexpected ping response from daemon: {other:?}"),
-            }
-        }
-        Command::Set {
-            path,
-            monitor,
-            mode,
-        } => {
-            let socket_path = resolve_socket_path(args.socket)?;
-            let response = send_request(
-                &socket_path,
-                Request::SetWallpaper {
-                    path: path.display().to_string(),
-                    monitor,
-                    mode: mode.into(),
-                },
-            )
-            .await?;
-
-            match response {
-                Response::Ok => {
-                    println!("wallpaper applied: {}", path.display());
-                    Ok(())
-                }
-                Response::Error { message } => anyhow::bail!("daemon error: {message}"),
-                other => anyhow::bail!("unexpected set response from daemon: {other:?}"),
-            }
-        }
-        Command::Monitors => {
-            let socket_path = resolve_socket_path(args.socket)?;
-            let response = send_request(&socket_path, Request::GetMonitors).await?;
-
-            match response {
-                Response::Monitors { names } => {
-                    if names.is_empty() {
-                        println!("no monitors detected");
-                    } else {
-                        for name in names {
-                            println!("{name}");
-                        }
-                    }
-                    Ok(())
-                }
-                Response::Error { message } => anyhow::bail!("daemon error: {message}"),
-                other => anyhow::bail!("unexpected monitors response from daemon: {other:?}"),
-            }
-        }
-        Command::Assignments => {
-            let socket_path = resolve_socket_path(args.socket)?;
-            let response = send_request(&socket_path, Request::GetAssignments).await?;
-
-            match response {
-                Response::Assignments { entries } => {
-                    print_assignment_entries(&entries);
-                    Ok(())
-                }
-                Response::Error { message } => anyhow::bail!("daemon error: {message}"),
-                other => anyhow::bail!("unexpected assignments response from daemon: {other:?}"),
-            }
-        }
-        Command::Clear => {
-            let socket_path = resolve_socket_path(args.socket)?;
-            let response = send_request(&socket_path, Request::ClearAssignments).await?;
-
-            match response {
-                Response::Ok => {
-                    println!("daemon assignments cleared");
-                    Ok(())
-                }
-                Response::Error { message } => anyhow::bail!("daemon error: {message}"),
-                other => anyhow::bail!("unexpected clear response from daemon: {other:?}"),
-            }
-        }
-        Command::Kill => {
-            let socket_path = resolve_socket_path(args.socket)?;
-            let response = send_request(&socket_path, Request::KillDaemon).await?;
-            info!(?response, "daemon responded to kill request");
-            match response {
-                Response::Ok => {
-                    println!("daemon shutdown requested");
-                    Ok(())
-                }
-                other => anyhow::bail!("unexpected kill response from daemon: {other:?}"),
-            }
-        }
+        )
+    } else {
+        execute_command(command, args.socket).await
     }
 }
 

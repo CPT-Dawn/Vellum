@@ -34,6 +34,7 @@ This repository now follows a more modular Rust layout and is prepared for upcom
   - vellum-tui/
     - src/main.rs
     - src/cli.rs
+    - src/commands.rs
     - src/daemon_client.rs
     - src/app/
       - mod.rs
