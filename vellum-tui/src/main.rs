@@ -288,7 +288,15 @@ impl StatusLevel {
 
 enum AppEvent {
     ApplyBrowserFilter,
-    ApplyFinished(Result<String, String>),
+    ApplyFinished(std::result::Result<String, ApplyError>),
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ApplyError {
+    #[error("IPC request timed out after {0}ms")]
+    Timeout(u128),
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
 }
 
 struct AppState {
@@ -485,7 +493,7 @@ async fn handle_app_event(state: &mut AppState, event: AppEvent) {
                 Ok(message) => state.set_status(StatusLevel::Ok, message),
                 Err(err) => state.set_status(
                     StatusLevel::Error,
-                    format!("IPC request failed: {err}. Press 'b' to restart backend."),
+                    format!("IPC request failed: {err:#}. Press 'b' to restart backend."),
                 ),
             }
         }
@@ -885,7 +893,9 @@ async fn poll_backend_status(state: &mut AppState) {
         return;
     }
 
-    let task = state.backend.task.take().expect("backend task exists");
+    let Some(task) = state.backend.task.take() else {
+        return;
+    };
     match task.await {
         Ok(Ok(())) => state.set_status(StatusLevel::Warn, "Backend exited"),
         Ok(Err(err)) => {
@@ -1293,9 +1303,8 @@ fn request_apply_for_path(state: &mut AppState, file_path: PathBuf) {
 
     // IPC is isolated from the draw/input loop and returns via channel event.
     tokio::spawn(async move {
-        let result = perform_apply_request(file_path, transition, namespace, preferred_output)
-            .await
-            .map_err(|err| err.to_string());
+        let result =
+            perform_apply_request(file_path, transition, namespace, preferred_output).await;
         let _ = tx.send(AppEvent::ApplyFinished(result));
     });
 }
@@ -1305,7 +1314,7 @@ async fn perform_apply_request(
     transition: Transition,
     namespace: String,
     preferred_output: Option<String>,
-) -> Result<String> {
+) -> std::result::Result<String, ApplyError> {
     let target = query_apply_target(&namespace, preferred_output).await?;
     apply_wallpaper_request(file_path.clone(), transition, target).await?;
     Ok(format!("Applied wallpaper: {}", file_path.display()))
@@ -1314,7 +1323,7 @@ async fn perform_apply_request(
 async fn query_apply_target(
     namespace: &str,
     preferred_output: Option<String>,
-) -> Result<ApplyTarget> {
+) -> std::result::Result<ApplyTarget, ApplyError> {
     let namespace = namespace.to_owned();
 
     run_blocking_with_timeout(IPC_QUERY_TIMEOUT, move || {
@@ -1382,7 +1391,7 @@ async fn apply_wallpaper_request(
     file_path: PathBuf,
     transition: Transition,
     target: ApplyTarget,
-) -> Result<()> {
+) -> std::result::Result<(), ApplyError> {
     run_blocking_with_timeout(IPC_APPLY_TIMEOUT, move || {
         let display_path = Arc::new(file_path.to_string_lossy().to_string());
 
@@ -1438,15 +1447,23 @@ async fn apply_wallpaper_request(
     .await
 }
 
-async fn run_blocking_with_timeout<T, F>(timeout: Duration, f: F) -> Result<T>
+async fn run_blocking_with_timeout<T, F>(
+    timeout: Duration,
+    f: F,
+) -> std::result::Result<T, ApplyError>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T> + Send + 'static,
 {
     let handle = tokio::task::spawn_blocking(f);
     match time::timeout(timeout, handle).await {
-        Ok(joined) => joined.map_err(anyhow::Error::new)?,
-        Err(_) => bail!("operation timed out after {}ms", timeout.as_millis()),
+        Ok(joined) => {
+            let inner = joined
+                .map_err(anyhow::Error::new)
+                .map_err(ApplyError::from)?;
+            inner.map_err(ApplyError::from)
+        }
+        Err(_) => Err(ApplyError::Timeout(timeout.as_millis())),
     }
 }
 
@@ -1498,7 +1515,7 @@ fn build_transition_from_state(state: &TransitionState) -> Transition {
     Transition {
         transition_type,
         duration: state.duration_ms as f32 / 1000.0,
-        step: NonZeroU8::new(2).expect("non-zero step"),
+        step: NonZeroU8::new(2).unwrap_or(NonZeroU8::MIN),
         fps: state.fps,
         angle: 0.0,
         pos: Position::new(Coord::Percent(0.5), Coord::Percent(0.5)),

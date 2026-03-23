@@ -25,6 +25,7 @@ rustix = { version = "1.1", default-features = false, features = [
     "termios",
 ] }
 smallvec = { version = "1.15", default-features = false, features = ["union"] }
+thiserror = "2.0"
 
 [build-dependencies]
 waybackend-scanner = { version = "0.10", features = ["build-script"] }

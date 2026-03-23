@@ -12,6 +12,7 @@ mod wallpaper;
 mod wayland;
 use common::log::{Filter, debug, error, info, trace, warn};
 use rustix::{fd::OwnedFd, fs::Timespec};
+use thiserror::Error;
 
 use smallvec::SmallVec;
 use wallpaper::WallpaperCell;
@@ -100,24 +101,15 @@ impl VellumServer {
 }
 
 /// Error type returned by native daemon startup and runtime operations.
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum VellumServerError {
-    WaylandInit(String),
-    SocketInit(String),
+    #[error("wayland initialization failed: {0}")]
+    WaylandInit(#[source] wayland::WaylandConnectError),
+    #[error("socket initialization failed: {0}")]
+    SocketInit(#[source] SocketInitError),
+    #[error("daemon runtime failure: {0}")]
     Runtime(String),
 }
-
-impl core::fmt::Display for VellumServerError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::WaylandInit(msg) => write!(f, "wayland initialization failed: {msg}"),
-            Self::SocketInit(msg) => write!(f, "socket initialization failed: {msg}"),
-            Self::Runtime(msg) => write!(f, "daemon runtime failure: {msg}"),
-        }
-    }
-}
-
-impl core::error::Error for VellumServerError {}
 
 /// Backward-compatible aliases retained during migration.
 pub type AwwwServerConfig = VellumServerConfig;
@@ -705,7 +697,8 @@ fn run_server(config: VellumServerConfig) -> Result<(), VellumServerError> {
     });
 
     // next, initialize all wayland stuff
-    let (mut backend, mut objman, mut receiver) = wayland::connect();
+    let (mut backend, mut objman, mut receiver) =
+        wayland::connect().map_err(VellumServerError::WaylandInit)?;
     let registry = objman.create(WaylandObject::Registry);
     let callback = objman.create(WaylandObject::Callback);
     let mut pending_outputs = Vec::new();
@@ -736,7 +729,7 @@ fn run_server(config: VellumServerConfig) -> Result<(), VellumServerError> {
             );
         },
     ) {
-        return Err(VellumServerError::WaylandInit(e.to_string()));
+        return Err(VellumServerError::Runtime(e.to_string()));
     }
 
     // create the socket listener and setup the signal handlers
@@ -895,39 +888,65 @@ struct SocketWrapper {
     fd: OwnedFd,
     namespace: String,
 }
+
+#[derive(Debug, Error)]
+pub enum SocketInitError {
+    #[error("failed to check existing daemon state: {0}")]
+    Probe(String),
+    #[error("there is a vellum-daemon instance already running on this socket")]
+    AlreadyRunning,
+    #[error("failed to delete stale socket at {path}: {error}")]
+    DeleteStaleSocket { path: String, error: String },
+    #[error("could not find a valid runtime directory")]
+    MissingRuntimeDirectory,
+    #[error("failed to create runtime dir at {path}: {error}")]
+    CreateRuntimeDir { path: String, error: String },
+    #[error("failed to create IPC socket: {0}")]
+    CreateSocket(String),
+}
+
 impl SocketWrapper {
-    fn new(namespace: &str) -> Result<Self, String> {
+    fn new(namespace: &str) -> Result<Self, SocketInitError> {
         use rustix::fs;
         let addr = IpcSocket::path(namespace);
 
         if fs::access(&addr, fs::Access::EXISTS).is_ok() {
-            if is_daemon_running(namespace).map_err(|s| s.to_string())? {
-                return Err(
-                    "There is a vellum-daemon instance already running on this socket!".to_string(),
-                );
+            if is_daemon_running(namespace)
+                .map_err(|err| SocketInitError::Probe(err.to_string()))?
+            {
+                return Err(SocketInitError::AlreadyRunning);
             }
             warn!(
                 "socket file {} was not deleted when the previous daemon exited",
                 addr.display()
             );
             if let Err(e) = fs::unlink(&addr) {
-                return Err(format!("failed to delete previous socket: {e}"));
+                return Err(SocketInitError::DeleteStaleSocket {
+                    path: addr.display().to_string(),
+                    error: e.to_string(),
+                });
             }
         }
 
         let runtime_dir = match addr.parent() {
             Some(path) => path,
-            None => return Err("couldn't find a valid runtime directory".to_owned()),
+            None => return Err(SocketInitError::MissingRuntimeDirectory),
         };
 
         if fs::access(&runtime_dir, fs::Access::EXISTS).is_err() {
-            match fs::mkdir(runtime_dir, fs::Mode::RUSR.union(fs::Mode::WUSR)) {
+            match fs::mkdir(&runtime_dir, fs::Mode::RUSR.union(fs::Mode::WUSR)) {
                 Ok(()) => (),
-                Err(e) => return Err(format!("failed to create runtime dir: {e}")),
+                Err(e) => {
+                    return Err(SocketInitError::CreateRuntimeDir {
+                        path: runtime_dir.display().to_string(),
+                        error: e.to_string(),
+                    });
+                }
             }
         }
 
-        let socket = IpcSocket::server(namespace).map_err(|err| err.to_string())?;
+        let socket = IpcSocket::server(namespace)
+            .map_err(|err| SocketInitError::CreateSocket(err.to_string()))?;
 
         debug!("Created socket at {}", addr.display());
         Ok(Self {

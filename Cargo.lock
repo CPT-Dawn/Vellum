@@ -965,6 +965,7 @@ dependencies = [
  "libc",
  "rustix 1.1.4",
  "smallvec",
+ "thiserror",
  "waybackend",
  "waybackend-scanner",
 ]
@@ -982,6 +983,7 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
+ "thiserror",
  "tokio",
  "tokio-util",
  "vellum-core",
