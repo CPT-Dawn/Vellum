@@ -1,5 +1,8 @@
+mod cli;
+mod daemon_client;
+
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::Parser;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -10,18 +13,16 @@ use ratatui::layout::Rect;
 use ratatui_image::{picker::Picker, protocol::StatefulProtocol, StatefulImage};
 use serde_json::Value;
 use std::ffi::OsStr;
-use std::io::{BufRead, BufReader as StdBufReader, Write};
-use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 use std::time::Duration as StdDuration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
-use tokio::time::{timeout, Duration};
 use tracing::info;
-use vellum_ipc::{
-    AssignmentEntry, Request, RequestEnvelope, Response, ResponseEnvelope, ScaleMode,
+use vellum_ipc::{AssignmentEntry, Request, Response, ScaleMode};
+
+use crate::cli::{Args, Command};
+use crate::daemon_client::{
+    resolve_socket_path, resolve_socket_path_optional, send_request, send_request_blocking,
 };
 
 use ratatui::backend::CrosstermBackend;
@@ -30,62 +31,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Terminal;
-
-#[derive(Debug, Parser)]
-#[command(name = "vellum-tui", about = "Vellum terminal client")]
-struct Args {
-    #[arg(long, value_name = "PATH")]
-    socket: Option<PathBuf>,
-
-    #[arg(long, value_name = "PATH")]
-    images_dir: Option<PathBuf>,
-
-    #[arg(long, value_name = "WIDTH")]
-    monitor_width: Option<u32>,
-
-    #[arg(long, value_name = "HEIGHT")]
-    monitor_height: Option<u32>,
-
-    #[command(subcommand)]
-    command: Option<Command>,
-}
-
-#[derive(Debug, Subcommand)]
-enum Command {
-    Ui,
-    Ping,
-    Set {
-        #[arg(value_name = "PATH")]
-        path: PathBuf,
-
-        #[arg(long, value_name = "NAME")]
-        monitor: Option<String>,
-
-        #[arg(long, value_enum, default_value_t = CliScaleMode::Fit)]
-        mode: CliScaleMode,
-    },
-    Monitors,
-    Assignments,
-    Clear,
-    Kill,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum CliScaleMode {
-    Fit,
-    Fill,
-    Crop,
-}
-
-impl From<CliScaleMode> for ScaleMode {
-    fn from(value: CliScaleMode) -> Self {
-        match value {
-            CliScaleMode::Fit => ScaleMode::Fit,
-            CliScaleMode::Fill => ScaleMode::Fill,
-            CliScaleMode::Crop => ScaleMode::Crop,
-        }
-    }
-}
 
 struct App {
     files: Vec<PathBuf>,
@@ -1028,88 +973,6 @@ fn is_supported_image_path(path: &Path) -> bool {
         ),
         None => false,
     }
-}
-
-fn resolve_socket_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
-    if let Some(path) = explicit {
-        return Ok(path);
-    }
-
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-        .context("XDG_RUNTIME_DIR is not set; pass --socket explicitly")?;
-    Ok(PathBuf::from(runtime_dir).join("vellum.sock"))
-}
-
-fn resolve_socket_path_optional(explicit: Option<PathBuf>) -> Option<PathBuf> {
-    if let Some(path) = explicit {
-        return Some(path);
-    }
-
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").ok()?;
-    Some(PathBuf::from(runtime_dir).join("vellum.sock"))
-}
-
-fn send_request_blocking(socket_path: &PathBuf, request: Request) -> Result<Response> {
-    let mut stream = StdUnixStream::connect(socket_path)
-        .with_context(|| format!("failed to connect to daemon at {}", socket_path.display()))?;
-
-    let payload = serde_json::to_string(&RequestEnvelope::new(request))
-        .context("failed to encode request")?;
-    stream
-        .write_all(payload.as_bytes())
-        .context("failed to write request")?;
-    stream
-        .write_all(b"\n")
-        .context("failed to terminate request")?;
-    stream.flush().context("failed to flush request")?;
-
-    let mut reader = StdBufReader::new(stream);
-    let mut line = String::new();
-    reader
-        .read_line(&mut line)
-        .context("failed to read daemon response")?;
-
-    let envelope = serde_json::from_str::<ResponseEnvelope>(line.trim())
-        .context("daemon returned invalid response JSON")?;
-    envelope
-        .validate_version()
-        .context("daemon returned unsupported protocol version")?;
-    Ok(envelope.response)
-}
-
-async fn send_request(socket_path: &PathBuf, request: Request) -> Result<Response> {
-    let stream = timeout(Duration::from_secs(2), UnixStream::connect(socket_path))
-        .await
-        .context("timed out while connecting to daemon socket")?
-        .with_context(|| format!("failed to connect to daemon at {}", socket_path.display()))?;
-
-    let (reader, mut writer) = stream.into_split();
-    let mut reader = BufReader::new(reader);
-
-    let payload = serde_json::to_string(&RequestEnvelope::new(request))
-        .context("failed to encode request")?;
-    writer
-        .write_all(payload.as_bytes())
-        .await
-        .context("failed to write request")?;
-    writer
-        .write_all(b"\n")
-        .await
-        .context("failed to terminate request")?;
-    writer.flush().await.context("failed to flush request")?;
-
-    let mut line = String::new();
-    timeout(Duration::from_secs(2), reader.read_line(&mut line))
-        .await
-        .context("timed out waiting for daemon response")?
-        .context("failed to read daemon response")?;
-
-    let envelope = serde_json::from_str::<ResponseEnvelope>(line.trim())
-        .context("daemon returned invalid response JSON")?;
-    envelope
-        .validate_version()
-        .context("daemon returned unsupported protocol version")?;
-    Ok(envelope.response)
 }
 
 fn print_assignment_entries(entries: &[AssignmentEntry]) {

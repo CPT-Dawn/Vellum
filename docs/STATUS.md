@@ -8,10 +8,12 @@
 - Daemon assignment tracking with persisted state file.
 - Assignment introspection and clear controls from CLI and TUI.
 - Baseline protocol and persistence unit tests.
+- Daemon renderer scaffold with command queue and output registry.
+- TUI extracted CLI and daemon transport modules.
 
 ## In Progress
 
-- Native renderer integration in daemon (SCTK + wlr-layer-shell + wl_shm).
+- Native renderer backend implementation in daemon (SCTK + wlr-layer-shell + wl_shm).
 
 ## Remaining Before Project Completion
 
@@ -24,7 +26,7 @@
 
 ## Recommended Next Slices
 
-1. Introduce renderer module scaffold with explicit state machine.
-2. Add output registry and hotplug event handling API.
-3. Add render command queue and per-output assignment application.
-4. Add integration test harness that boots daemon and exercises IPC flows.
+1. Add daemon IPC handler module split (`ipc/server.rs`, `ipc/handlers.rs`).
+2. Move TUI app state/actions/layout into dedicated modules.
+3. Add integration test harness that boots daemon and exercises IPC flows.
+4. Implement first renderer backend milestone for one output.

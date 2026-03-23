@@ -1,6 +1,7 @@
 mod cli;
 mod monitor;
 mod paths;
+mod renderer;
 mod state;
 
 use anyhow::{Context, Result};
@@ -18,6 +19,7 @@ use vellum_ipc::{Request, RequestEnvelope, Response, ResponseEnvelope, ScaleMode
 use crate::cli::Args;
 use crate::monitor::detect_monitor_names;
 use crate::paths::{resolve_socket_path, resolve_state_path};
+use crate::renderer::RendererState;
 use crate::state::{assignment_entries, load_state, save_state, DaemonState, WallpaperAssignment};
 
 #[tokio::main]
@@ -32,6 +34,12 @@ async fn main() -> Result<()> {
     let socket_path = resolve_socket_path(args.socket)?;
     let state_path = resolve_state_path(args.state_file)?;
     let state = Arc::new(Mutex::new(load_state(&state_path)?));
+    let renderer_state = Arc::new(Mutex::new(RendererState::default()));
+
+    if let Ok(monitors) = detect_monitor_names() {
+        let mut renderer = renderer_state.lock().await;
+        renderer.refresh_outputs(monitors);
+    }
 
     if socket_path.exists() {
         std::fs::remove_file(&socket_path).with_context(|| {
@@ -51,9 +59,12 @@ async fn main() -> Result<()> {
                 let (stream, _) = accept_result.context("socket accept failed")?;
                 let shutdown_tx = shutdown_tx.clone();
                 let state = Arc::clone(&state);
+                let renderer_state = Arc::clone(&renderer_state);
                 let state_path = state_path.clone();
                 tokio::spawn(async move {
-                    if let Err(err) = handle_client(stream, shutdown_tx, state, state_path).await {
+                    if let Err(err) =
+                        handle_client(stream, shutdown_tx, state, renderer_state, state_path).await
+                    {
                         warn!(error = %err, "client session ended with error");
                     }
                 });
@@ -92,6 +103,7 @@ async fn handle_client(
     stream: UnixStream,
     shutdown_tx: watch::Sender<bool>,
     daemon_state: Arc<Mutex<DaemonState>>,
+    renderer_state: Arc<Mutex<RendererState>>,
     state_path: PathBuf,
 ) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
@@ -142,10 +154,16 @@ async fn handle_client(
             } => {
                 let mut state = daemon_state.lock().await;
                 match apply_wallpaper_native(&path, monitor.as_deref(), mode, &mut state) {
-                    Ok(()) => {
+                    Ok(canonical) => {
                         if let Err(err) = save_state(&state_path, &state) {
                             warn!(error = %err, "failed to persist daemon state");
                         }
+
+                        drop(state);
+
+                        let mut renderer = renderer_state.lock().await;
+                        renderer.enqueue_apply(monitor, canonical, mode);
+                        renderer.apply_pending();
                         Response::Ok
                     }
                     Err(err) => Response::Error {
@@ -154,7 +172,12 @@ async fn handle_client(
                 }
             }
             Request::GetMonitors => match detect_monitor_names() {
-                Ok(monitors) => Response::Monitors { names: monitors },
+                Ok(monitors) => {
+                    let mut renderer = renderer_state.lock().await;
+                    renderer.refresh_outputs(monitors.clone());
+                    let _ = renderer.output_names();
+                    Response::Monitors { names: monitors }
+                }
                 Err(err) => Response::Error {
                     message: format!("failed to query monitors: {err:#}"),
                 },
@@ -171,6 +194,12 @@ async fn handle_client(
                 if let Err(err) = save_state(&state_path, &state) {
                     warn!(error = %err, "failed to persist daemon state after clear");
                 }
+
+                drop(state);
+
+                let mut renderer = renderer_state.lock().await;
+                renderer.enqueue_clear();
+                renderer.apply_pending();
                 Response::Ok
             }
             Request::KillDaemon => {
@@ -193,7 +222,7 @@ fn apply_wallpaper_native(
     monitor: Option<&str>,
     mode: ScaleMode,
     daemon_state: &mut DaemonState,
-) -> Result<()> {
+) -> Result<PathBuf> {
     let input = PathBuf::from(path);
     let canonical = input
         .canonicalize()
@@ -229,7 +258,7 @@ fn apply_wallpaper_native(
     info!(path = %canonical.display(), target = ?monitor, ?mode, "accepted native wallpaper assignment");
 
     // Rendering pipeline wiring (SCTK + layer-shell + wl_shm) is introduced incrementally.
-    Ok(())
+    Ok(canonical)
 }
 
 async fn send_response(

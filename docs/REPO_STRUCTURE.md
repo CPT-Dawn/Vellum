@@ -20,8 +20,14 @@ This repository now follows a more modular Rust layout and is prepared for upcom
     - src/paths.rs
     - src/monitor.rs
     - src/state.rs
+    - src/renderer/
+      - mod.rs
+      - command_queue.rs
+      - output_registry.rs
   - vellum-tui/
     - src/main.rs
+    - src/cli.rs
+    - src/daemon_client.rs
 
 ## Target Professional Structure (Near-Term)
 
@@ -39,6 +45,7 @@ This repository now follows a more modular Rust layout and is prepared for upcom
     - src/renderer/
       - mod.rs
       - output_registry.rs
+      - command_queue.rs
       - layer_shell.rs
       - shm_pool.rs
       - image_pipeline.rs
@@ -49,6 +56,7 @@ This repository now follows a more modular Rust layout and is prepared for upcom
   - vellum-tui/
     - src/main.rs
     - src/cli.rs
+    - src/daemon_client.rs
     - src/app/
       - mod.rs
       - state.rs
