@@ -17,22 +17,39 @@ pub(crate) struct MonitorLayout {
 }
 
 #[derive(Clone, Default)]
+struct MonitorSnapshotState {
+    names: Vec<String>,
+    layouts: Vec<MonitorLayout>,
+}
+
+#[derive(Clone, Default)]
 pub(crate) struct MonitorSnapshot {
-    names: Arc<RwLock<Vec<String>>>,
+    state: Arc<RwLock<MonitorSnapshotState>>,
 }
 
 impl MonitorSnapshot {
     pub(crate) async fn get(&self) -> Vec<String> {
-        self.names.read().await.clone()
+        self.state.read().await.names.clone()
     }
 
-    pub(crate) async fn replace_if_changed(&self, next: Vec<String>) -> bool {
-        let mut guard = self.names.write().await;
-        if *guard == next {
+    pub(crate) async fn get_layouts(&self) -> Vec<MonitorLayout> {
+        self.state.read().await.layouts.clone()
+    }
+
+    pub(crate) async fn replace_layouts(&self, mut next: Vec<MonitorLayout>) -> bool {
+        next.sort_by(|a, b| a.name.cmp(&b.name));
+        let next_names =
+            normalize_monitor_snapshot(next.iter().map(|layout| layout.name.clone()).collect());
+
+        let mut guard = self.state.write().await;
+        let names_changed = guard.names != next_names;
+        let layouts_changed = guard.layouts != next;
+        if !names_changed && !layouts_changed {
             return false;
         }
 
-        *guard = next;
+        guard.names = next_names;
+        guard.layouts = next;
         true
     }
 }
@@ -300,11 +317,67 @@ mod tests {
     #[tokio::test]
     async fn snapshot_replace_if_changed_tracks_deltas() {
         let snapshot = MonitorSnapshot::default();
-        assert!(snapshot.replace_if_changed(vec!["DP-1".to_string()]).await);
-        assert!(!snapshot.replace_if_changed(vec!["DP-1".to_string()]).await);
+        assert!(snapshot
+            .replace_layouts(vec![MonitorLayout {
+                name: "DP-1".to_string(),
+                width: 1920,
+                height: 1080,
+                scale_factor: 1,
+            }])
+            .await);
+        assert!(!snapshot
+            .replace_layouts(vec![MonitorLayout {
+                name: "DP-1".to_string(),
+                width: 1920,
+                height: 1080,
+                scale_factor: 1,
+            }])
+            .await);
         assert!(
             snapshot
-                .replace_if_changed(vec!["DP-1".to_string(), "HDMI-A-1".to_string()])
+                .replace_layouts(vec![
+                    MonitorLayout {
+                        name: "DP-1".to_string(),
+                        width: 1920,
+                        height: 1080,
+                        scale_factor: 1,
+                    },
+                    MonitorLayout {
+                        name: "HDMI-A-1".to_string(),
+                        width: 2560,
+                        height: 1440,
+                        scale_factor: 1,
+                    },
+                ])
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_replace_layouts_updates_names_and_layouts() {
+        let snapshot = MonitorSnapshot::default();
+        assert!(
+            snapshot
+                .replace_layouts(vec![MonitorLayout {
+                    name: "DP-1".to_string(),
+                    width: 1920,
+                    height: 1080,
+                    scale_factor: 1,
+                }])
+                .await
+        );
+
+        assert_eq!(snapshot.get().await, vec!["DP-1".to_string()]);
+        assert_eq!(snapshot.get_layouts().await.len(), 1);
+
+        assert!(
+            !snapshot
+                .replace_layouts(vec![MonitorLayout {
+                    name: "DP-1".to_string(),
+                    width: 1920,
+                    height: 1080,
+                    scale_factor: 1,
+                }])
                 .await
         );
     }

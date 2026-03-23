@@ -207,12 +207,23 @@ async fn get_or_refresh_monitors(
         return Ok(cached);
     }
 
+    let cached_layouts = monitor_snapshot.get_layouts().await;
+    if !cached_layouts.is_empty() {
+        let names = normalize_monitor_snapshot(
+            cached_layouts
+                .iter()
+                .map(|layout| layout.name.clone())
+                .collect(),
+        );
+        let mut renderer = renderer_state.lock().await;
+        renderer.refresh_outputs(names.clone());
+        renderer.refresh_output_layouts(to_output_layouts(&cached_layouts));
+        return Ok(names);
+    }
+
     let detected = detect_monitor_layouts().context("monitor detection failed")?;
-    let names: Vec<String> = detected.iter().map(|layout| layout.name.clone()).collect();
-    let normalized = normalize_monitor_snapshot(names);
-    let _ = monitor_snapshot
-        .replace_if_changed(normalized.clone())
-        .await;
+    let _ = monitor_snapshot.replace_layouts(detected.clone()).await;
+    let normalized = monitor_snapshot.get().await;
 
     let mut renderer = renderer_state.lock().await;
     renderer.refresh_outputs(normalized.clone());
@@ -266,7 +277,12 @@ mod tests {
         let renderer_state = Arc::new(Mutex::new(RendererState::default()));
         let monitor_snapshot = MonitorSnapshot::default();
         let _ = monitor_snapshot
-            .replace_if_changed(vec!["DP-1".to_string()])
+            .replace_layouts(vec![MonitorLayout {
+                name: "DP-1".to_string(),
+                width: 1920,
+                height: 1080,
+                scale_factor: 1,
+            }])
             .await;
 
         let outcome = handle_request(

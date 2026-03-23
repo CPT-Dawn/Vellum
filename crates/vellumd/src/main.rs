@@ -18,9 +18,7 @@ use vellum_ipc::ScaleMode;
 
 use crate::cli::Args;
 use crate::ipc::server::run_client_session;
-use crate::monitor::{
-    detect_monitor_layouts, normalize_monitor_snapshot, MonitorLayout, MonitorSnapshot,
-};
+use crate::monitor::{detect_monitor_layouts, MonitorLayout, MonitorSnapshot};
 use crate::paths::{resolve_socket_path, resolve_state_path};
 use crate::renderer::{OutputLayout, RendererState};
 use crate::state::{load_state, save_state, DaemonState};
@@ -155,12 +153,9 @@ async fn monitor_refresh_loop(
                 }
 
                 if let Ok(layouts) = detection {
-                    let names: Vec<String> = layouts.iter().map(|layout| layout.name.clone()).collect();
-                    let normalized = normalize_monitor_snapshot(names);
-                    if monitor_snapshot
-                        .replace_if_changed(normalized.clone())
-                        .await
-                    {
+                    let names_changed = monitor_snapshot.replace_layouts(layouts.clone()).await;
+                    if names_changed {
+                        let normalized = monitor_snapshot.get().await;
                         let mut renderer = renderer_state.lock().await;
                         renderer.refresh_outputs(normalized.clone());
                         renderer.refresh_output_layouts(to_output_layouts(&layouts));
@@ -209,11 +204,8 @@ async fn main() -> Result<()> {
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
 
     if let Ok(layouts) = detect_monitor_layouts() {
-        let names: Vec<String> = layouts.iter().map(|layout| layout.name.clone()).collect();
-        let normalized = normalize_monitor_snapshot(names);
-        let _ = monitor_snapshot
-            .replace_if_changed(normalized.clone())
-            .await;
+        let _ = monitor_snapshot.replace_layouts(layouts.clone()).await;
+        let normalized = monitor_snapshot.get().await;
         let mut renderer = renderer_state.lock().await;
         renderer.refresh_outputs(normalized.clone());
         renderer.refresh_output_layouts(to_output_layouts(&layouts));
