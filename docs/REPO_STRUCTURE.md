@@ -35,6 +35,11 @@ This repository now follows a more modular Rust layout and is prepared for upcom
     - src/main.rs
     - src/cli.rs
     - src/daemon_client.rs
+    - src/app/
+      - mod.rs
+      - state.rs
+      - input.rs
+      - ui.rs
     - src/display.rs
     - src/images.rs
 

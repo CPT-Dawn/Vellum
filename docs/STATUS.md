@@ -19,6 +19,8 @@
 - TUI extracted display and image utility modules.
 - Renderer-facing handler tests validate set/clear command effects.
 - Makefile now includes release checksum generation and verification helpers.
+- TUI app state moved into dedicated app state module.
+- TUI key input handling and frame rendering split into dedicated modules.
 
 ## In Progress
 
@@ -35,5 +37,3 @@
 
 1. Move remaining TUI app state/actions/layout into dedicated modules.
 2. Implement real Wayland output surface backend under renderer module.
-3. Move remaining TUI app state/actions/layout into dedicated modules.
-4. Implement real Wayland output surface backend under renderer module.
