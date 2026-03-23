@@ -111,6 +111,7 @@ fn spawn_daemon(socket_path: &Path, state_path: &Path) -> Child {
         .arg(socket_path)
         .arg("--state-file")
         .arg(state_path)
+        .env("VELLUM_DISABLE_SWAYBG", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

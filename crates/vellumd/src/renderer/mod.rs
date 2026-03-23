@@ -7,6 +7,7 @@ mod perf_checks;
 mod shm_pool;
 mod swaybg;
 
+use anyhow::{Context, Result};
 use std::path::PathBuf;
 use tracing::{info, warn};
 use vellum_ipc::ScaleMode;
@@ -52,7 +53,7 @@ impl RendererState {
         self.queue.push(RenderCommand::ClearAssignments);
     }
 
-    pub(crate) fn apply_pending(&mut self) {
+    pub(crate) fn apply_pending(&mut self) -> Result<()> {
         // This is a scaffold stage: commands are queued and logged while the
         // concrete SCTK/layer-shell renderer backend is being implemented.
         for command in self.queue.drain() {
@@ -81,19 +82,18 @@ impl RendererState {
                         }
                     }
 
-                    if let Err(err) =
-                        self.session
-                            .apply_assignment(monitor.as_deref(), path.as_path(), *mode)
-                    {
-                        warn!(error = %err, path = %path.display(), "renderer session apply failed");
-                    }
+                    self.session
+                        .apply_assignment(monitor.as_deref(), path.as_path(), *mode)
+                        .with_context(|| {
+                            format!("renderer session apply failed for {}", path.display())
+                        })?;
 
                     info!(target = ?monitor, path = %path.display(), ?mode, "renderer scaffold accepted apply command");
                 }
                 RenderCommand::ClearAssignments => {
-                    if let Err(err) = self.session.clear_assignments() {
-                        warn!(error = %err, "renderer session clear failed");
-                    }
+                    self.session
+                        .clear_assignments()
+                        .context("renderer session clear failed")?;
                     info!("renderer scaffold accepted clear command");
                 }
             }
@@ -102,6 +102,8 @@ impl RendererState {
             // synchronized with queued render commands.
             self.backend.apply_command(command);
         }
+
+        Ok(())
     }
 
     #[cfg(test)]
@@ -138,7 +140,9 @@ mod tests {
             PathBuf::from("/tmp/wall.png"),
             ScaleMode::Fill,
         );
-        renderer.apply_pending();
+        renderer
+            .apply_pending()
+            .expect("renderer apply should succeed in test mode");
 
         assert_eq!(renderer.backend.assignment_count(), 1);
         assert_eq!(
@@ -151,7 +155,9 @@ mod tests {
         );
 
         renderer.enqueue_clear();
-        renderer.apply_pending();
+        renderer
+            .apply_pending()
+            .expect("renderer clear should succeed in test mode");
 
         assert_eq!(renderer.backend.assignment_count(), 0);
     }

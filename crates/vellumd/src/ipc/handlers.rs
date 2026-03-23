@@ -34,18 +34,39 @@ pub(crate) async fn handle_request(
             let mut state = daemon_state.lock().await;
             match apply_wallpaper_native(&path, monitor.as_deref(), mode, &mut state) {
                 Ok(canonical) => {
-                    if let Err(err) = save_state(state_path, &state) {
-                        warn!(error = %err, "failed to persist daemon state");
-                    }
-
                     drop(state);
 
                     let mut renderer = renderer_state.lock().await;
-                    renderer.enqueue_apply(monitor, canonical, mode);
-                    renderer.apply_pending();
-                    HandlerOutcome {
-                        response: Response::Ok,
-                        shutdown: false,
+                    renderer.enqueue_apply(monitor.clone(), canonical, mode);
+                    match renderer.apply_pending() {
+                        Ok(()) => {
+                            drop(renderer);
+
+                            let state = daemon_state.lock().await;
+                            if let Err(err) = save_state(state_path, &state) {
+                                warn!(error = %err, "failed to persist daemon state");
+                            }
+
+                            HandlerOutcome {
+                                response: Response::Ok,
+                                shutdown: false,
+                            }
+                        }
+                        Err(err) => {
+                            drop(renderer);
+
+                            let mut state = daemon_state.lock().await;
+                            state.assignments.remove(&monitor);
+
+                            HandlerOutcome {
+                                response: Response::Error {
+                                    message: format!(
+                                        "failed to apply wallpaper to renderer: {err:#}"
+                                    ),
+                                },
+                                shutdown: false,
+                            }
+                        }
                     }
                 }
                 Err(err) => HandlerOutcome {
@@ -82,20 +103,29 @@ pub(crate) async fn handle_request(
             }
         }
         Request::ClearAssignments => {
-            let mut state = daemon_state.lock().await;
-            state.assignments.clear();
-            if let Err(err) = save_state(state_path, &state) {
-                warn!(error = %err, "failed to persist daemon state after clear");
-            }
-
-            drop(state);
-
             let mut renderer = renderer_state.lock().await;
             renderer.enqueue_clear();
-            renderer.apply_pending();
-            HandlerOutcome {
-                response: Response::Ok,
-                shutdown: false,
+            match renderer.apply_pending() {
+                Ok(()) => {
+                    drop(renderer);
+
+                    let mut state = daemon_state.lock().await;
+                    state.assignments.clear();
+                    if let Err(err) = save_state(state_path, &state) {
+                        warn!(error = %err, "failed to persist daemon state after clear");
+                    }
+
+                    HandlerOutcome {
+                        response: Response::Ok,
+                        shutdown: false,
+                    }
+                }
+                Err(err) => HandlerOutcome {
+                    response: Response::Error {
+                        message: format!("failed to clear renderer assignments: {err:#}"),
+                    },
+                    shutdown: false,
+                },
             }
         }
         Request::KillDaemon => HandlerOutcome {

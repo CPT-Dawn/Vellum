@@ -27,6 +27,8 @@
 - Renderer now tracks per-output surface state with dynamic output add/remove lifecycle handling.
 - Renderer now includes shared-memory buffer pool allocation/reuse/reclaim lifecycle management.
 - Renderer now includes stress and latency checks for apply/clear flow and buffer boundedness.
+- Renderer now drives visible output via per-monitor swaybg presenter management on Wayland sessions.
+- IPC set/clear now fail fast if renderer presentation fails, avoiding false success responses.
 
 ## In Progress
 

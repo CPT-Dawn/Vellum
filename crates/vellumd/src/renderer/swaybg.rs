@@ -7,16 +7,23 @@ use vellum_ipc::ScaleMode;
 pub(crate) struct SwaybgController {
     wayland_session: bool,
     swaybg_available: bool,
+    disabled: bool,
     children: BTreeMap<String, Child>,
 }
 
 impl Default for SwaybgController {
     fn default() -> Self {
+        let disabled = std::env::var("VELLUM_DISABLE_SWAYBG")
+            .ok()
+            .as_deref()
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
         let wayland_session = std::env::var_os("WAYLAND_DISPLAY").is_some();
         let swaybg_available = command_exists("swaybg");
         Self {
             wayland_session,
             swaybg_available,
+            disabled,
             children: BTreeMap::new(),
         }
     }
@@ -30,6 +37,10 @@ impl SwaybgController {
         mode: ScaleMode,
     ) -> Result<()> {
         if cfg!(test) {
+            return Ok(());
+        }
+
+        if self.disabled {
             return Ok(());
         }
 

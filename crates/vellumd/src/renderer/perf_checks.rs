@@ -27,7 +27,9 @@ mod tests {
                 renderer.enqueue_clear();
             }
         }
-        renderer.apply_pending();
+        renderer
+            .apply_pending()
+            .expect("stress apply_pending should succeed");
 
         assert!(renderer.session_surface_count() <= 2);
         assert!(renderer.session_buffer_count() <= 8);
@@ -47,7 +49,9 @@ mod tests {
         }
 
         let started = Instant::now();
-        renderer.apply_pending();
+        renderer
+            .apply_pending()
+            .expect("latency apply_pending should succeed");
         let elapsed = started.elapsed();
 
         assert!(elapsed < Duration::from_secs(5));
