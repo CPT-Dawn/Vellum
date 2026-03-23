@@ -23,6 +23,7 @@
 - TUI key input handling and frame rendering split into dedicated modules.
 - TUI non-UI command dispatch extracted into a dedicated module.
 - Renderer now performs image-path preflight diagnostics before applying queued assignments.
+- Renderer now routes output refresh/apply/clear through a dedicated layer-shell session scaffold boundary.
 
 ## In Progress
 

@@ -31,6 +31,7 @@ This repository now follows a more modular Rust layout and is prepared for upcom
       - backend.rs
       - command_queue.rs
       - image_pipeline.rs
+      - layer_shell.rs
       - output_registry.rs
   - vellum-tui/
     - src/main.rs

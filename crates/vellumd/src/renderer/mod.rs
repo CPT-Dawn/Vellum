@@ -1,6 +1,7 @@
 mod backend;
 mod command_queue;
 mod image_pipeline;
+mod layer_shell;
 mod output_registry;
 
 use std::path::PathBuf;
@@ -11,6 +12,7 @@ use backend::BackendState;
 pub(crate) use command_queue::RenderCommand;
 use command_queue::RenderCommandQueue;
 use image_pipeline::ImagePipeline;
+use layer_shell::LayerShellSession;
 pub(crate) use output_registry::OutputRegistry;
 
 #[derive(Default)]
@@ -19,11 +21,15 @@ pub(crate) struct RendererState {
     queue: RenderCommandQueue,
     backend: BackendState,
     image_pipeline: ImagePipeline,
+    session: LayerShellSession,
 }
 
 impl RendererState {
     pub(crate) fn refresh_outputs(&mut self, output_names: Vec<String>) {
-        self.outputs.update(output_names);
+        self.outputs.update(output_names.clone());
+        if let Err(err) = self.session.sync_outputs(output_names) {
+            warn!(error = %err, "renderer session failed to refresh outputs");
+        }
     }
 
     pub(crate) fn enqueue_apply(
@@ -71,9 +77,20 @@ impl RendererState {
                             info!(target = ?name, path = %path.display(), ?mode, "queued apply for currently unknown output");
                         }
                     }
+
+                    if let Err(err) =
+                        self.session
+                            .apply_assignment(monitor.as_deref(), path.as_path(), *mode)
+                    {
+                        warn!(error = %err, path = %path.display(), "renderer session apply failed");
+                    }
+
                     info!(target = ?monitor, path = %path.display(), ?mode, "renderer scaffold accepted apply command");
                 }
                 RenderCommand::ClearAssignments => {
+                    if let Err(err) = self.session.clear_assignments() {
+                        warn!(error = %err, "renderer session clear failed");
+                    }
                     info!("renderer scaffold accepted clear command");
                 }
             }
