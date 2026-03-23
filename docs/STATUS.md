@@ -42,6 +42,7 @@
 - Daemon monitor refresh loop and IPC handlers now share a synchronized monitor snapshot for monitor queries and target validation.
 - Startup replay now self-heals persisted state by pruning assignments that fail to reapply and saving the corrected state file.
 - Monitor refresh loop now logs detector failures and recoveries on state transitions, avoiding repeated warning spam while preserving visibility.
+- Daemon monitor discovery now includes a Wayland registry wl_output path before CLI fallbacks, moving monitor detection closer to native protocol flow.
 
 ## In Progress
 
