@@ -1,14 +1,16 @@
 mod backend;
 mod command_queue;
+mod image_pipeline;
 mod output_registry;
 
 use std::path::PathBuf;
-use tracing::info;
+use tracing::{info, warn};
 use vellum_ipc::ScaleMode;
 
 use backend::BackendState;
 pub(crate) use command_queue::RenderCommand;
 use command_queue::RenderCommandQueue;
+use image_pipeline::ImagePipeline;
 pub(crate) use output_registry::OutputRegistry;
 
 #[derive(Default)]
@@ -16,6 +18,7 @@ pub(crate) struct RendererState {
     outputs: OutputRegistry,
     queue: RenderCommandQueue,
     backend: BackendState,
+    image_pipeline: ImagePipeline,
 }
 
 impl RendererState {
@@ -50,6 +53,19 @@ impl RendererState {
                     path,
                     mode,
                 } => {
+                    let preflight = self.image_pipeline.inspect(path);
+                    if !preflight.exists {
+                        warn!(path = %path.display(), "renderer preflight: image path does not exist");
+                    } else if let Some((width, height)) = preflight.dimensions {
+                        info!(path = %path.display(), width, height, ?mode, "renderer preflight decoded image");
+                    } else {
+                        warn!(
+                            path = %path.display(),
+                            error = ?preflight.decode_error,
+                            "renderer preflight could not decode image"
+                        );
+                    }
+
                     if let Some(ref name) = monitor {
                         if !self.outputs.contains(name) {
                             info!(target = ?name, path = %path.display(), ?mode, "queued apply for currently unknown output");

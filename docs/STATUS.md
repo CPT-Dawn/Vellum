@@ -22,6 +22,7 @@
 - TUI app state moved into dedicated app state module.
 - TUI key input handling and frame rendering split into dedicated modules.
 - TUI non-UI command dispatch extracted into a dedicated module.
+- Renderer now performs image-path preflight diagnostics before applying queued assignments.
 
 ## In Progress
 
