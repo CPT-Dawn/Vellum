@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["daemon", "common"]
-default-members = ["daemon"]
+members = ["daemon", "common", "vellum-tui"]
+default-members = ["vellum-tui"]
 
 [workspace.package]
 version = "0.12.0"
