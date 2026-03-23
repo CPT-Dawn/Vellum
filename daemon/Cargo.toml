@@ -1,0 +1,30 @@
+[package]
+name = "awww-core"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[lib]
+name = "awww_core"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+common = { workspace = true }
+
+waybackend = { version = "0.10", default-features = false }
+libc = "0.2"
+rustix = { version = "1.1", default-features = false, features = [
+    "event",
+    "runtime",
+    "stdio",
+    "termios",
+] }
+smallvec = { version = "1.15", default-features = false, features = ["union"] }
+
+[build-dependencies]
+waybackend-scanner = { version = "0.10", features = ["build-script"] }

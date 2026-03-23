@@ -1,32 +1,46 @@
-[package]
-name = "awww-tui"
-version = "0.1.0"
-edition = "2021"
-description = "Feature-rich Wayland wallpaper TUI powered by awww"
-license = "MIT"
+[workspace]
+resolver = "3"
+members = ["daemon", "common"]
+default-members = ["daemon"]
 
-[dependencies]
-crossterm = { version = "0.28", default-features = false, features = [
-    "events",
-] }
-ratatui = { version = "0.29", default-features = false, features = [
-    "crossterm",
-] }
-tokio = { version = "1.44", features = [
-    "macros",
-    "rt-multi-thread",
-    "time",
-    "process",
-    "sync",
-] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-directories = "5.0"
-fuzzy-matcher = "0.3"
-image = { version = "0.25", default-features = false, features = [
-    "jpeg",
-    "png",
-    "webp",
-    "avif",
-    "bmp",
-] }
+[workspace.package]
+version = "0.12.0"
+authors = ["Leonardo Gibrowski Faé <leonardo.fae44@gmail.com>"]
+edition = "2024"
+license-file = "LICENSE"
+rust-version = "1.89.0"
+
+[workspace.dependencies]
+common = { path = "common" }
+
+[workspace.lints.clippy]
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+style = { level = "deny", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+#pedantic = { level = "warn", priority = -1 }
+
+module-name-repetitions = "allow"
+missing-errors-doc = "allow"
+missing-panics-doc = "allow"
+
+# Enable some optimizations in debug mode. Otherwise, it is a pain to test it
+[profile.dev]
+opt-level = 1
+
+# Enable high optimizations for dependencies, but not for our code:
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+debug = 0
+lto = true
+opt-level = 3
+codegen-units = 1
+strip = true
+
+[profile.bench]
+lto = "thin"
+debug = 1
+strip = false
