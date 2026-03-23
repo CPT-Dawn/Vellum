@@ -14,15 +14,14 @@ Wayland-native wallpaper manager with a daemon/client architecture.
 - Terminal image preview with monitor-ratio frame.
 - IPC commands for ping, monitor query, wallpaper set, and daemon shutdown.
 - Multi-monitor targeting support (`SetWallpaper` can target one output or all outputs).
-- Daemon backend modes:
-	- `--backend auto` (default): try native backend first, then fallback.
-	- `--backend native`: native backend only.
-	- `--backend swww`: swww backend only.
+
+The daemon is designed to be native and self-sustained within this project.
 
 ## Important Status Note
 
 The project is functional, but the fully self-sustained native Wayland renderer is not yet completed.
-Right now, wallpaper application uses the `swww` backend path when native rendering is unavailable.
+The daemon now accepts native wallpaper assignments internally. The full SCTK + layer-shell
+rendering path is being completed incrementally.
 
 ## Quick Start
 
@@ -37,7 +36,7 @@ cargo test --workspace
 ### 2) Run daemon
 
 ```bash
-cargo run -p vellumd -- --backend auto
+cargo run -p vellumd
 ```
 
 ### 3) Run TUI
@@ -87,4 +86,4 @@ make install DESTDIR=/tmp/vellum-pkg PREFIX=/usr
 2. wl_shm buffer lifecycle per output with strict memory management.
 3. Dynamic output hotplug handling with surface reallocation.
 4. Per-monitor scaling modes (`fit`, `fill`, `crop`) in daemon and TUI.
-5. Remove external apply fallback as native backend reaches parity.
+5. Complete native output rendering to remove any external integration requirements.

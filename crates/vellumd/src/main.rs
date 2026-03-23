@@ -1,31 +1,29 @@
 use anyhow::{Context, Result};
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use image::ImageReader;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::select;
-use tokio::sync::watch;
+use tokio::sync::{watch, Mutex};
 use tracing::{error, info, warn};
-use vellum_ipc::{Request, RequestEnvelope, Response, ResponseEnvelope};
+use vellum_ipc::{AssignmentEntry, Request, RequestEnvelope, Response, ResponseEnvelope};
 
 #[derive(Debug, Parser)]
 #[command(name = "vellumd", about = "Vellum wallpaper daemon")]
 struct Args {
     #[arg(long, value_name = "PATH")]
     socket: Option<PathBuf>,
-
-    #[arg(long, value_enum, default_value_t = BackendKind::Auto)]
-    backend: BackendKind,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum BackendKind {
-    Auto,
-    Native,
-    Swww,
+#[derive(Default)]
+struct DaemonState {
+    // `None` means "all outputs" target; Some(name) is per-monitor targeting.
+    assignments: HashMap<Option<String>, PathBuf>,
 }
 
 #[tokio::main]
@@ -38,7 +36,7 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
     let socket_path = resolve_socket_path(args.socket)?;
-    let backend = args.backend;
+    let state = Arc::new(Mutex::new(DaemonState::default()));
 
     if socket_path.exists() {
         std::fs::remove_file(&socket_path).with_context(|| {
@@ -57,9 +55,9 @@ async fn main() -> Result<()> {
             accept_result = listener.accept() => {
                 let (stream, _) = accept_result.context("socket accept failed")?;
                 let shutdown_tx = shutdown_tx.clone();
-                let backend = backend;
+                let state = Arc::clone(&state);
                 tokio::spawn(async move {
-                    if let Err(err) = handle_client(stream, shutdown_tx, backend).await {
+                    if let Err(err) = handle_client(stream, shutdown_tx, state).await {
                         warn!(error = %err, "client session ended with error");
                     }
                 });
@@ -107,7 +105,7 @@ fn resolve_socket_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
 async fn handle_client(
     stream: UnixStream,
     shutdown_tx: watch::Sender<bool>,
-    backend: BackendKind,
+    daemon_state: Arc<Mutex<DaemonState>>,
 ) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -153,7 +151,8 @@ async fn handle_client(
         let response = match request {
             Request::Ping => Response::Pong,
             Request::SetWallpaper { path, monitor } => {
-                match apply_wallpaper(&path, monitor.as_deref(), backend) {
+                let mut state = daemon_state.lock().await;
+                match apply_wallpaper_native(&path, monitor.as_deref(), &mut state) {
                     Ok(()) => Response::Ok,
                     Err(err) => Response::Error {
                         message: format!("failed to apply wallpaper: {err:#}"),
@@ -166,6 +165,12 @@ async fn handle_client(
                     message: format!("failed to query monitors: {err:#}"),
                 },
             },
+            Request::GetAssignments => {
+                let state = daemon_state.lock().await;
+                Response::Assignments {
+                    entries: assignment_entries(&state.assignments),
+                }
+            }
             Request::KillDaemon => {
                 let response = Response::Ok;
                 send_response(&mut writer, &response).await?;
@@ -181,7 +186,11 @@ async fn handle_client(
     }
 }
 
-fn apply_wallpaper(path: &str, monitor: Option<&str>, backend: BackendKind) -> Result<()> {
+fn apply_wallpaper_native(
+    path: &str,
+    monitor: Option<&str>,
+    daemon_state: &mut DaemonState,
+) -> Result<()> {
     let input = PathBuf::from(path);
     let canonical = input
         .canonicalize()
@@ -206,54 +215,25 @@ fn apply_wallpaper(path: &str, monitor: Option<&str>, backend: BackendKind) -> R
         }
     }
 
-    match backend {
-        BackendKind::Native => apply_wallpaper_native(&canonical, monitor),
-        BackendKind::Swww => apply_wallpaper_swww(&canonical, monitor),
-        BackendKind::Auto => match apply_wallpaper_native(&canonical, monitor) {
-            Ok(()) => Ok(()),
-            Err(native_err) => {
-                warn!(error = %native_err, "native backend unavailable, falling back to swww");
-                apply_wallpaper_swww(&canonical, monitor).with_context(|| {
-                        format!(
-                            "auto backend failed: native path failed ({native_err:#}) and swww fallback failed"
-                        )
-                    })
-            }
-        },
-    }
+    let key = monitor.map(str::to_string);
+    daemon_state.assignments.insert(key, canonical.clone());
+    info!(path = %canonical.display(), target = ?monitor, "accepted native wallpaper assignment");
+
+    // Rendering pipeline wiring (SCTK + layer-shell + wl_shm) is introduced incrementally.
+    Ok(())
 }
 
-fn apply_wallpaper_native(path: &PathBuf, _monitor: Option<&str>) -> Result<()> {
-    let _ = path;
-    anyhow::bail!(
-        "native backend is not yet enabled in this build; run vellumd with --backend swww or --backend auto"
-    )
-}
+fn assignment_entries(assignments: &HashMap<Option<String>, PathBuf>) -> Vec<AssignmentEntry> {
+    let mut entries: Vec<AssignmentEntry> = assignments
+        .iter()
+        .map(|(monitor, path)| AssignmentEntry {
+            monitor: monitor.clone(),
+            path: path.display().to_string(),
+        })
+        .collect();
 
-fn apply_wallpaper_swww(path: &PathBuf, monitor: Option<&str>) -> Result<()> {
-    if !command_exists("swww") {
-        anyhow::bail!("swww is not installed");
-    }
-
-    ensure_swww_daemon_running().context("failed to ensure swww daemon is running")?;
-
-    let mut command = ProcessCommand::new("swww");
-    command
-        .arg("img")
-        .arg(path)
-        .arg("--transition-type")
-        .arg("simple");
-
-    if let Some(output) = monitor {
-        command.arg("--outputs").arg(output);
-    }
-
-    let status = command.status().context("failed to execute swww")?;
-    if status.success() {
-        Ok(())
-    } else {
-        anyhow::bail!("swww exited with non-zero status")
-    }
+    entries.sort_by(|a, b| a.monitor.cmp(&b.monitor));
+    entries
 }
 
 fn detect_monitor_names() -> Result<Vec<String>> {
@@ -314,40 +294,6 @@ fn run_json_command(command: &str, args: &[&str]) -> Option<Value> {
 
     let stdout = String::from_utf8(output.stdout).ok()?;
     serde_json::from_str::<Value>(&stdout).ok()
-}
-
-fn command_exists(command: &str) -> bool {
-    ProcessCommand::new("which")
-        .arg(command)
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
-fn ensure_swww_daemon_running() -> Result<()> {
-    let query_status = ProcessCommand::new("swww")
-        .arg("query")
-        .status()
-        .context("failed to query swww daemon status")?;
-
-    if query_status.success() {
-        return Ok(());
-    }
-
-    if !command_exists("swww-daemon") {
-        anyhow::bail!("swww-daemon binary is missing")
-    }
-
-    let daemon_status = ProcessCommand::new("swww-daemon")
-        .arg("--format")
-        .arg("xrgb")
-        .status()
-        .context("failed to start swww-daemon")?;
-
-    if daemon_status.success() {
-        Ok(())
-    } else {
-        anyhow::bail!("swww-daemon exited with non-zero status")
-    }
 }
 
 async fn send_response(

@@ -20,7 +20,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::time::{timeout, Duration};
 use tracing::info;
-use vellum_ipc::{Request, RequestEnvelope, Response, ResponseEnvelope};
+use vellum_ipc::{AssignmentEntry, Request, RequestEnvelope, Response, ResponseEnvelope};
 
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -60,6 +60,7 @@ enum Command {
         monitor: Option<String>,
     },
     Monitors,
+    Assignments,
     Kill,
 }
 
@@ -165,6 +166,19 @@ async fn main() -> Result<()> {
                 }
                 Response::Error { message } => anyhow::bail!("daemon error: {message}"),
                 other => anyhow::bail!("unexpected monitors response from daemon: {other:?}"),
+            }
+        }
+        Command::Assignments => {
+            let socket_path = resolve_socket_path(args.socket)?;
+            let response = send_request(&socket_path, Request::GetAssignments).await?;
+
+            match response {
+                Response::Assignments { entries } => {
+                    print_assignment_entries(&entries);
+                    Ok(())
+                }
+                Response::Error { message } => anyhow::bail!("daemon error: {message}"),
+                other => anyhow::bail!("unexpected assignments response from daemon: {other:?}"),
             }
         }
         Command::Kill => {
@@ -325,7 +339,7 @@ fn run_ui_loop(
                 }
 
                 let status_line = if app.show_help {
-                    "h/j/k/l move  gg/G top/bottom  Ctrl-u/Ctrl-d page  Enter|Space apply  t cycle-target  m monitors  r reload  ? help  q quit"
+                    "h/j/k/l move  gg/G top/bottom  Ctrl-u/Ctrl-d page  Enter|Space apply  t cycle-target  m monitors  a assignments  r reload  ? help  q quit"
                         .to_string()
                 } else {
                     app.status.clone()
@@ -369,6 +383,7 @@ fn run_ui_loop(
                 KeyCode::Enter | KeyCode::Char(' ') => app.apply_selected_wallpaper(),
                 KeyCode::Char('t') => app.cycle_monitor_target(),
                 KeyCode::Char('m') => app.fetch_monitors(),
+                KeyCode::Char('a') => app.fetch_assignments(),
                 KeyCode::Char('r') => app.reload_files(),
                 KeyCode::Char('?') => app.toggle_help(),
                 KeyCode::Char('g') => {
@@ -619,6 +634,42 @@ impl App {
             }
             Err(err) => {
                 self.status = format!("Monitor query failed: {err:#}");
+            }
+        }
+    }
+
+    fn fetch_assignments(&mut self) {
+        let response = self.send_daemon_request(Request::GetAssignments);
+        match response {
+            Ok(Response::Assignments { entries }) => {
+                if entries.is_empty() {
+                    self.status = "No wallpaper assignments recorded yet".to_string();
+                } else {
+                    let compact = entries
+                        .iter()
+                        .map(|entry| {
+                            let monitor =
+                                entry.monitor.clone().unwrap_or_else(|| "all".to_string());
+                            let file = PathBuf::from(&entry.path)
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or("<path>")
+                                .to_string();
+                            format!("{monitor}:{file}")
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" | ");
+                    self.status = format!("Assignments {compact}");
+                }
+            }
+            Ok(Response::Error { message }) => {
+                self.status = format!("Assignments query failed: {message}");
+            }
+            Ok(other) => {
+                self.status = format!("Unexpected assignments response: {other:?}");
+            }
+            Err(err) => {
+                self.status = format!("Assignments query failed: {err:#}");
             }
         }
     }
@@ -938,4 +989,16 @@ async fn send_request(socket_path: &PathBuf, request: Request) -> Result<Respons
         .validate_version()
         .context("daemon returned unsupported protocol version")?;
     Ok(envelope.response)
+}
+
+fn print_assignment_entries(entries: &[AssignmentEntry]) {
+    if entries.is_empty() {
+        println!("no assignments recorded");
+        return;
+    }
+
+    for entry in entries {
+        let monitor = entry.monitor.as_deref().unwrap_or("all");
+        println!("{monitor} -> {}", entry.path);
+    }
 }
