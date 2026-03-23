@@ -1,76 +1,309 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout},
-    prelude::{Color, Frame, Line, Modifier, Style},
-    widgets::{block::BorderType, Block, Borders, Paragraph},
+    prelude::{Alignment, Color, Frame, Line, Modifier, Style},
+    symbols::border,
+    text::Span,
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
-use crate::app::{App, FocusPane};
+use crate::{
+    app::{App, FocusPane, TransitionField},
+    backend::awww::TransitionKind,
+};
 
 /// Renders the full terminal frame for the current application state.
 pub fn render(frame: &mut Frame<'_>, app: &App) {
-    let chunks = Layout::default()
+    let theme = Theme::from_tick(app.ticks);
+
+    let frame_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(frame.area());
+
+    render_header(frame, frame_chunks[0], app, theme);
+
+    let body_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Percentage(38),
             Constraint::Percentage(32),
             Constraint::Percentage(30),
         ])
-        .split(frame.area());
+        .split(frame_chunks[1]);
 
-    render_pane(
-        frame,
-        chunks[0],
-        "Wallpapers",
-        app,
-        FocusPane::Browser,
-        "fuzzy finder ready in phase 4",
-    );
-    render_pane(
-        frame,
-        chunks[1],
-        "Monitors",
-        app,
-        FocusPane::Monitor,
-        "monitor graph ready in phase 2",
-    );
-    render_pane(
-        frame,
-        chunks[2],
-        "Transitions",
-        app,
-        FocusPane::Transition,
-        "controls ready in phase 4",
-    );
+    render_browser_pane(frame, body_chunks[0], app, theme);
+    render_monitor_pane(frame, body_chunks[1], app, theme);
+    render_transition_pane(frame, body_chunks[2], app, theme);
 }
 
-/// Renders a single pane with dynamic styling based on current focus.
-fn render_pane(
+/// Renders top status information and key bindings.
+fn render_header(frame: &mut Frame<'_>, area: ratatui::layout::Rect, app: &App, theme: Theme) {
+    let status = format!(
+        "phase 3 layout | focus: {:?} | selected: {} | ticks: {}",
+        app.focus,
+        app.selected_wallpaper_name(),
+        app.ticks
+    );
+    let keys = "h/l pane  j/k row  Shift+H/Shift+L edit transition  q quit";
+
+    let text = Line::from(vec![
+        Span::styled(status, Style::default().fg(theme.header_fg)),
+        Span::raw("  |  "),
+        Span::styled(keys, Style::default().fg(theme.muted)),
+    ]);
+
+    let header = Paragraph::new(text)
+        .alignment(Alignment::Center)
+        .style(Style::default().bg(theme.background));
+    frame.render_widget(header, area);
+}
+
+/// Renders the wallpaper browser pane with dummy list data.
+fn render_browser_pane(
     frame: &mut Frame<'_>,
     area: ratatui::layout::Rect,
-    title: &'static str,
     app: &App,
-    pane: FocusPane,
-    subtitle: &'static str,
+    theme: Theme,
 ) {
-    let is_active = app.focus == pane;
-    let border_color = if is_active {
-        Color::Cyan
-    } else {
-        Color::DarkGray
-    };
+    let is_active = app.focus == FocusPane::Browser;
+    let border_color = if is_active { theme.focus } else { theme.idle };
 
-    let block = Block::default()
-        .title(Line::from(title).style(Style::default().add_modifier(Modifier::BOLD)))
-        .title_bottom(Line::from(subtitle).style(Style::default().fg(Color::Gray)))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border_color));
+    let block = pane_block(
+        "Wallpapers",
+        "Phase 4: filesystem + fuzzy",
+        border_color,
+        theme,
+    );
 
-    let body = Paragraph::new(
-        Line::from(format!("ticks: {}", app.ticks)).style(Style::default().fg(Color::White)),
-    )
-    .block(block)
-    .style(Style::default().bg(Color::Black));
+    let items = app
+        .wallpapers
+        .iter()
+        .enumerate()
+        .map(|(idx, entry)| {
+            let marker = if idx == app.selected_wallpaper {
+                "> "
+            } else {
+                "  "
+            };
+            ListItem::new(Line::from(format!("{marker}{entry}")))
+        })
+        .collect::<Vec<_>>();
+
+    let mut state = ListState::default().with_selected(Some(app.selected_wallpaper));
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(
+            Style::default()
+                .fg(theme.background)
+                .bg(theme.focus)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("-> ");
+
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
+/// Renders the monitor preview pane with a textual monitor layout map.
+fn render_monitor_pane(
+    frame: &mut Frame<'_>,
+    area: ratatui::layout::Rect,
+    app: &App,
+    theme: Theme,
+) {
+    let is_active = app.focus == FocusPane::Monitor;
+    let border_color = if is_active { theme.focus } else { theme.idle };
+
+    let selected = app.selected_monitor();
+    let mut lines = Vec::with_capacity(app.monitors.len() + 4);
+    lines.push(Line::from(format!(
+        "selected: {} ({}x{})",
+        selected.name, selected.width, selected.height
+    )));
+    lines.push(Line::from("layout:"));
+
+    for (idx, monitor) in app.monitors.iter().enumerate() {
+        let prefix = if idx == app.selected_monitor {
+            "*"
+        } else {
+            " "
+        };
+        lines.push(Line::from(format!(
+            "{prefix} {:<10} {:>4}x{:<4} @ ({:>5},{:>5})",
+            monitor.name, monitor.width, monitor.height, monitor.x, monitor.y
+        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from("preview frame:"));
+    lines.push(Line::from(monitor_bar(
+        selected.width,
+        selected.height,
+        24,
+        theme.accent,
+    )));
+
+    let body = Paragraph::new(lines)
+        .block(pane_block(
+            "Monitors",
+            "hyprctl/wlr-randr wired in phase 2",
+            border_color,
+            theme,
+        ))
+        .style(Style::default().fg(theme.text));
 
     frame.render_widget(body, area);
+}
+
+/// Renders transition settings pane with field selection and editable values.
+fn render_transition_pane(
+    frame: &mut Frame<'_>,
+    area: ratatui::layout::Rect,
+    app: &App,
+    theme: Theme,
+) {
+    let is_active = app.focus == FocusPane::Transition;
+    let border_color = if is_active { theme.focus } else { theme.idle };
+
+    let rows = vec![
+        transition_row(
+            "type",
+            transition_kind_label(app.transition_kind),
+            app.transition_field == TransitionField::Kind,
+            theme,
+        ),
+        transition_row(
+            "step",
+            &app.transition_step.to_string(),
+            app.transition_field == TransitionField::Step,
+            theme,
+        ),
+        transition_row(
+            "fps",
+            &app.transition_fps.to_string(),
+            app.transition_field == TransitionField::Fps,
+            theme,
+        ),
+        Line::from(""),
+        Line::from("Shift+H / Shift+L to tweak"),
+    ];
+
+    let body = Paragraph::new(rows)
+        .block(pane_block(
+            "Transitions",
+            "live apply in phase 4",
+            border_color,
+            theme,
+        ))
+        .style(Style::default().fg(theme.text));
+
+    frame.render_widget(body, area);
+}
+
+/// Creates a pane block with consistent style and title placement.
+fn pane_block(
+    title: &'static str,
+    subtitle: &'static str,
+    border_color: Color,
+    theme: Theme,
+) -> Block<'static> {
+    Block::default()
+        .title_top(Line::from(title).style(Style::default().add_modifier(Modifier::BOLD)))
+        .title_bottom(Line::from(subtitle).style(Style::default().fg(theme.muted)))
+        .borders(Borders::ALL)
+        .border_set(border::ROUNDED)
+        .border_style(Style::default().fg(border_color))
+        .style(Style::default().bg(theme.background))
+}
+
+/// Renders one transition row with selected-state emphasis.
+fn transition_row(label: &str, value: &str, selected: bool, theme: Theme) -> Line<'static> {
+    if selected {
+        Line::from(vec![
+            Span::styled("-> ", Style::default().fg(theme.focus)),
+            Span::styled(
+                format!("{label:<6}"),
+                Style::default()
+                    .fg(theme.focus)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(value.to_owned(), Style::default().fg(theme.accent)),
+        ])
+    } else {
+        Line::from(format!("   {label:<6}{value}"))
+    }
+}
+
+/// Builds a simple monitor ratio bar using ASCII fill characters.
+fn monitor_bar(width: u32, height: u32, max_units: usize, accent: Color) -> Line<'static> {
+    let dominant = width.max(height).max(1);
+    let horizontal_units = ((width as usize) * max_units) / (dominant as usize);
+    let vertical_units = ((height as usize) * max_units) / (dominant as usize);
+    let horizontal = "#".repeat(horizontal_units.max(1));
+    let vertical = "#".repeat(vertical_units.max(1));
+    Line::from(vec![
+        Span::styled(
+            format!("w[{horizontal:<max_units$}] ", max_units = max_units),
+            Style::default().fg(accent),
+        ),
+        Span::styled(
+            format!("h[{vertical:<max_units$}]", max_units = max_units),
+            Style::default().fg(accent),
+        ),
+    ])
+}
+
+/// Returns display text for transition kind values.
+fn transition_kind_label(kind: TransitionKind) -> &'static str {
+    match kind {
+        TransitionKind::Fade => "fade",
+        TransitionKind::Wipe => "wipe",
+        TransitionKind::Grow => "grow",
+    }
+}
+
+/// Shared color palette for current frame rendering.
+#[derive(Debug, Clone, Copy)]
+struct Theme {
+    /// Global background color.
+    background: Color,
+    /// Primary pane text color.
+    text: Color,
+    /// Header emphasized foreground.
+    header_fg: Color,
+    /// Active pane border color.
+    focus: Color,
+    /// Secondary accent color.
+    accent: Color,
+    /// Inactive border and tertiary text color.
+    muted: Color,
+    /// Idle pane border color.
+    idle: Color,
+}
+
+impl Theme {
+    /// Computes a subtle animated theme from the tick counter.
+    #[must_use]
+    fn from_tick(tick: u64) -> Self {
+        if (tick / 20).is_multiple_of(2) {
+            Self {
+                background: Color::Rgb(10, 18, 24),
+                text: Color::Rgb(232, 236, 240),
+                header_fg: Color::Rgb(126, 224, 255),
+                focus: Color::Rgb(84, 182, 255),
+                accent: Color::Rgb(96, 255, 180),
+                muted: Color::Rgb(124, 137, 150),
+                idle: Color::Rgb(64, 84, 96),
+            }
+        } else {
+            Self {
+                background: Color::Rgb(18, 17, 24),
+                text: Color::Rgb(236, 236, 244),
+                header_fg: Color::Rgb(255, 216, 102),
+                focus: Color::Rgb(252, 152, 103),
+                accent: Color::Rgb(166, 210, 120),
+                muted: Color::Rgb(142, 132, 153),
+                idle: Color::Rgb(90, 74, 105),
+            }
+        }
+    }
 }

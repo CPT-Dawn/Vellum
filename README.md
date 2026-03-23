@@ -22,6 +22,16 @@ Phase 2 includes:
 - Typed transition controls (`fade`, `wipe`, `grow`) for future transition lab integration
 - Unit tests for both monitor parser backends
 
+## Phase 3 Status
+
+Phase 3 includes:
+
+- Full three-pane TUI layout foundation with clear pane separation and dynamic theming
+- Dummy wallpaper browser pane with row selection and visual highlighting
+- Dummy monitor preview pane with textual layout map and ratio bars
+- Transition settings pane with editable dummy fields (type, step, fps)
+- Vim navigation enhanced for pane/row movement and transition value editing
+
 ## Run
 
 ```bash
