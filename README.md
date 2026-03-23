@@ -20,6 +20,11 @@ Wayland-native wallpaper manager with a daemon/client architecture.
 
 The daemon is designed to be native and self-sustained within this project.
 
+## Project Docs
+
+- docs/STATUS.md: delivery status and remaining completion items.
+- docs/REPO_STRUCTURE.md: current and target professional module layout.
+
 ## Important Status Note
 
 The project is functional, but the fully self-sustained native Wayland renderer is not yet completed.
