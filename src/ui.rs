@@ -51,11 +51,11 @@ fn render_header(frame: &mut Frame<'_>, area: ratatui::layout::Rect, app: &App, 
         .unwrap_or("<none>");
 
     let status = format!(
-        "phase 4 live integration | focus: {:?} | selected: {}",
+        "phase 5 advanced features | focus: {:?} | selected: {}",
         app.focus, selected
     );
 
-    let keys = "h/l pane  j/k row  / search  Enter confirm  c cancel  q quit";
+    let keys = "h/l pane  j/k row  / search  m aspect  p/o profile  g toggle playlist  ] next  Enter confirm";
 
     let text = Line::from(vec![
         Span::styled(status, Style::default().fg(theme.header_fg)),
@@ -179,6 +179,24 @@ fn render_monitor_pane(
             24,
             theme.accent,
         )));
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(format!(
+            "simulator mode: {}",
+            app.aspect_mode.label()
+        )));
+        if let Some(sim) = app.aspect_simulation() {
+            lines.push(Line::from(format!(
+                "image {}x{} -> draw {}x{}",
+                sim.image_width, sim.image_height, sim.draw_width, sim.draw_height
+            )));
+            lines.push(Line::from(format!(
+                "crop x:{} y:{} on monitor {}x{}",
+                sim.crop_x, sim.crop_y, sim.monitor_width, sim.monitor_height
+            )));
+        } else {
+            lines.push(Line::from("image dimensions unavailable for simulator"));
+        }
     }
 
     let body = Paragraph::new(lines)
@@ -225,6 +243,9 @@ fn render_transition_pane(
         Line::from(""),
         Line::from("Shift+H / Shift+L edits selected field"),
         Line::from("changes reapply live while preview is active"),
+        Line::from(""),
+        Line::from("p save profile  o load profile"),
+        Line::from("g toggle playlist  ] next playlist item"),
     ];
 
     let body = Paragraph::new(rows)

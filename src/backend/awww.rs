@@ -2,12 +2,14 @@
 
 use std::{path::Path, process::Stdio};
 
+use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
 use crate::backend::BackendError;
 
 /// Transition family supported by `awww`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum TransitionKind {
     /// Cross-fade transition.
     Fade,

@@ -45,6 +45,20 @@ Phase 4 includes:
 	- `c` cancels live preview and reverts
 - Monitor targeting integrated with selected output from compositor monitor list
 
+## Phase 5 Status
+
+Phase 5 includes:
+
+- Aspect Ratio Simulator in monitor pane with mode cycling (`m`: fit/fill/crop)
+- Image metadata probing for source dimensions used by simulator
+- Serde JSON persistence under config directory for profiles and playlists
+- Quick profile workflow:
+	- `p` saves current selection/transition/monitor/aspect mode
+	- `o` reloads and reapplies the saved profile
+- Playlist auto-cycling via background Tokio worker:
+	- `g` toggles automated cycling
+	- `]` applies next playlist entry immediately
+
 ## Run
 
 ```bash

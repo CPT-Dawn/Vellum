@@ -1,5 +1,6 @@
 mod app;
 mod backend;
+mod persistence;
 mod ui;
 mod wallpapers;
 
@@ -16,13 +17,15 @@ use crossterm::{
 };
 use directories::UserDirs;
 use ratatui::{backend::CrosstermBackend, Terminal};
+use tokio::sync::{mpsc, watch};
 
 use crate::{
-    app::{App, AppAction},
+    app::{App, AppAction, PlaylistControl},
     backend::{
         awww::{ApplyRequest, AwwwClient, TransitionSettings},
         monitors::{self, MonitorInfo},
     },
+    persistence::{load_state, save_state, state_file_path},
     wallpapers::discover_wallpapers,
 };
 
@@ -34,7 +37,9 @@ type AppResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 async fn main() -> AppResult<()> {
     let wallpapers = discover_initial_wallpapers()?;
     let monitors = discover_initial_monitors().await;
-    let mut app = App::new(wallpapers, monitors);
+    let state_path = state_file_path()?;
+    let stored_state = load_state(&state_path).unwrap_or_default();
+    let mut app = App::new(wallpapers, monitors, stored_state);
 
     let awww = AwwwClient::default();
     if let Err(err) = awww.start_daemon().await {
@@ -42,7 +47,7 @@ async fn main() -> AppResult<()> {
     }
 
     let mut terminal = init_terminal()?;
-    let result = run_app(&mut terminal, app, &awww).await;
+    let result = run_app(&mut terminal, app, &awww, state_path).await;
     restore_terminal(&mut terminal)?;
     result
 }
@@ -71,17 +76,28 @@ async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     mut app: App,
     awww: &AwwwClient,
+    state_path: PathBuf,
 ) -> AppResult<()> {
     const TICK_RATE: Duration = Duration::from_millis(120);
 
+    let (playlist_tick_tx, mut playlist_tick_rx) = mpsc::unbounded_channel::<()>();
+    let (playlist_cfg_tx, playlist_cfg_rx) = watch::channel(app.playlist_control());
+    let _playlist_worker = tokio::spawn(playlist_worker(playlist_cfg_rx, playlist_tick_tx));
+
     loop {
+        while playlist_tick_rx.try_recv().is_ok() {
+            execute_action(&mut app, awww, AppAction::AutoCycleNext, &state_path).await;
+            let _ = playlist_cfg_tx.send(app.playlist_control());
+        }
+
         terminal.draw(|frame| ui::render(frame, &app))?;
 
         if event::poll(TICK_RATE)? {
             if let Event::Key(key) = event::read()? {
                 let actions = app.on_key(key);
                 for action in actions {
-                    execute_action(&mut app, awww, action).await;
+                    execute_action(&mut app, awww, action, &state_path).await;
+                    let _ = playlist_cfg_tx.send(app.playlist_control());
                 }
             }
         } else {
@@ -98,8 +114,37 @@ async fn run_app(
     Ok(())
 }
 
+/// Tokio worker that emits periodic ticks when playlist auto-cycle is enabled.
+async fn playlist_worker(
+    mut cfg_rx: watch::Receiver<PlaylistControl>,
+    tick_tx: mpsc::UnboundedSender<()>,
+) {
+    loop {
+        let cfg = *cfg_rx.borrow();
+        if !cfg.enabled {
+            if cfg_rx.changed().await.is_err() {
+                return;
+            }
+            continue;
+        }
+
+        tokio::select! {
+            _ = tokio::time::sleep(cfg.interval) => {
+                if tick_tx.send(()).is_err() {
+                    return;
+                }
+            }
+            changed = cfg_rx.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
 /// Executes one app action and updates app status with success/failure details.
-async fn execute_action(app: &mut App, awww: &AwwwClient, action: AppAction) {
+async fn execute_action(app: &mut App, awww: &AwwwClient, action: AppAction, state_path: &PathBuf) {
     match action {
         AppAction::TryOnSelected => {
             let Some(path) = app.selected_wallpaper_path() else {
@@ -147,6 +192,52 @@ async fn execute_action(app: &mut App, awww: &AwwwClient, action: AppAction) {
                     }
                     Err(err) => app.set_status(format!("cancel failed: {err}")),
                 }
+            }
+        }
+        AppAction::SaveQuickProfile => {
+            app.save_quick_profile();
+            if let Err(err) = save_state(state_path, &app.stored_state) {
+                app.set_status(format!("profile save failed: {err}"));
+            }
+        }
+        AppAction::LoadQuickProfile => {
+            app.load_quick_profile();
+            let Some(path) = app.selected_wallpaper_path() else {
+                return;
+            };
+
+            match apply_for_selection(app, awww, &path).await {
+                Ok(()) => {
+                    app.mark_preview_active();
+                    app.set_status(format!("profile applied: {}", path.display()));
+                }
+                Err(err) => app.set_status(format!("profile apply failed: {err}")),
+            }
+        }
+        AppAction::TogglePlaylist => {
+            app.toggle_playlist();
+            if let Err(err) = save_state(state_path, &app.stored_state) {
+                app.set_status(format!("playlist state save failed: {err}"));
+            }
+        }
+        AppAction::AutoCycleNext => {
+            if !app.has_active_playlist_entries() {
+                app.set_status("auto-cycle skipped: playlist empty");
+                return;
+            }
+
+            let Some(path) = app.next_playlist_path() else {
+                app.set_status("auto-cycle skipped: no path");
+                return;
+            };
+
+            app.select_wallpaper_by_path(path.clone());
+            match apply_for_selection(app, awww, &path).await {
+                Ok(()) => {
+                    app.mark_confirmed();
+                    app.set_status(format!("playlist apply: {}", path.display()));
+                }
+                Err(err) => app.set_status(format!("playlist apply failed: {err}")),
             }
         }
     }

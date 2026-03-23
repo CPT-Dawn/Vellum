@@ -15,6 +15,8 @@ pub struct WallpaperItem {
     pub name: String,
     /// Absolute path used for backend apply operations.
     pub path: PathBuf,
+    /// Parsed image dimensions used by aspect ratio simulator.
+    pub dimensions: Option<(u32, u32)>,
 }
 
 /// Scans a directory recursively for supported image files.
@@ -61,9 +63,11 @@ fn walk_dir(root: &Path, out: &mut Vec<WallpaperItem>) -> io::Result<()> {
         }
 
         if let Some(name) = path.file_name().and_then(OsStr::to_str) {
+            let dimensions = image::image_dimensions(&path).ok();
             out.push(WallpaperItem {
                 name: name.to_owned(),
                 path,
+                dimensions,
             });
         }
     }
