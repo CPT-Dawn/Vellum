@@ -50,6 +50,7 @@ cargo run -p vellum-tui
 ```bash
 cargo run -p vellum-tui -- ping
 cargo run -p vellum-tui -- monitors
+cargo run -p vellum-tui -- assignments
 cargo run -p vellum-tui -- set /absolute/path/image.png
 cargo run -p vellum-tui -- set /absolute/path/image.png --monitor DP-1
 cargo run -p vellum-tui -- kill
@@ -63,6 +64,7 @@ cargo run -p vellum-tui -- kill
 - `Enter` / `Space`: apply selected wallpaper
 - `t`: cycle target output (all outputs or one monitor)
 - `m`: refresh monitor list from daemon
+- `a`: refresh and show assignment summary from daemon
 - `r`: reload image directory
 - `?`: toggle help
 - `q` / `Esc`: quit

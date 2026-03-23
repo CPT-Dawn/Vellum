@@ -79,6 +79,7 @@ struct App {
     socket_path: Option<PathBuf>,
     monitor_targets: Vec<String>,
     target_index: usize,
+    assignments: Vec<AssignmentEntry>,
 }
 
 #[derive(Clone)]
@@ -282,8 +283,9 @@ fn run_ui_loop(
                 frame.render_stateful_widget(browser, chunks[0], &mut list_state);
 
                 let selected = app.selected_file_name().unwrap_or("None selected");
+                let assignments = app.assignments_overview();
                 let metadata = Paragraph::new(format!(
-                    "Root: {}\nTotal images: {}\nCursor: {}\nSelected: {}\nMonitor: {}x{} ({:.2}:1) [{}]\nTarget Output: {}\nPreview: {}\nDaemon: {}\n\nMode: Normal\nHint: press ? for full keymap",
+                    "Root: {}\nTotal images: {}\nCursor: {}\nSelected: {}\nMonitor: {}x{} ({:.2}:1) [{}]\nTarget Output: {}\nAssignments: {}\nPreview: {}\nDaemon: {}\n\nMode: Normal\nHint: press ? for full keymap",
                     app.image_root.display(),
                     app.files.len(),
                     app.selected,
@@ -293,6 +295,7 @@ fn run_ui_loop(
                     app.monitor_profile.aspect_ratio(),
                     app.monitor_profile.source,
                     app.current_target_label(),
+                    assignments,
                     app.preview_info,
                     app.daemon_status(),
                 ))
@@ -442,9 +445,11 @@ impl App {
             socket_path,
             monitor_targets: Vec::new(),
             target_index: 0,
+            assignments: Vec::new(),
         };
         app.refresh_preview();
         app.refresh_monitor_targets();
+        app.refresh_assignments_cache_silent();
         Ok(app)
     }
 
@@ -599,6 +604,7 @@ impl App {
         match response {
             Ok(Response::Ok) => {
                 self.status = format!("Applied wallpaper: {}", path.display());
+                self.refresh_assignments_cache_silent();
             }
             Ok(Response::Error { message }) => {
                 self.status = format!("Daemon rejected wallpaper: {message}");
@@ -642,6 +648,7 @@ impl App {
         let response = self.send_daemon_request(Request::GetAssignments);
         match response {
             Ok(Response::Assignments { entries }) => {
+                self.assignments = entries.clone();
                 if entries.is_empty() {
                     self.status = "No wallpaper assignments recorded yet".to_string();
                 } else {
@@ -720,6 +727,41 @@ impl App {
             .context("daemon socket is not configured in this environment")?;
 
         send_request_blocking(socket_path, request)
+    }
+
+    fn refresh_assignments_cache_silent(&mut self) {
+        let response = self.send_daemon_request(Request::GetAssignments);
+        if let Ok(Response::Assignments { entries }) = response {
+            self.assignments = entries;
+        }
+    }
+
+    fn assignments_overview(&self) -> String {
+        if self.assignments.is_empty() {
+            return "none".to_string();
+        }
+
+        let shown = self
+            .assignments
+            .iter()
+            .take(3)
+            .map(|entry| {
+                let monitor = entry.monitor.as_deref().unwrap_or("all");
+                let file = PathBuf::from(&entry.path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("<path>")
+                    .to_string();
+                format!("{monitor}:{file}")
+            })
+            .collect::<Vec<_>>()
+            .join(" | ");
+
+        if self.assignments.len() > 3 {
+            format!("{shown} | +{} more", self.assignments.len() - 3)
+        } else {
+            shown
+        }
     }
 }
 
