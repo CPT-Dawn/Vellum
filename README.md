@@ -33,8 +33,9 @@ rendering path is being completed incrementally.
 
 Current visible output path in daemon:
 
-- On Wayland sessions, `vellumd` now manages `swaybg` per output to present wallpapers.
-- Ensure `swaybg` is installed on your system for wallpaper changes to be visible.
+- On Wayland sessions, `vellumd` prefers `swaybg` per output for visible wallpaper presentation.
+- If `swaybg` is unavailable, it falls back to `swww` when present.
+- If neither backend is available, assignment state is still tracked but visible wallpaper output may not change.
 
 ## Quick Start
 
