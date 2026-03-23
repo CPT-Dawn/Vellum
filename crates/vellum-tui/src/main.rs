@@ -66,6 +66,7 @@ enum Command {
     },
     Monitors,
     Assignments,
+    Clear,
     Kill,
 }
 
@@ -208,6 +209,19 @@ async fn main() -> Result<()> {
                 }
                 Response::Error { message } => anyhow::bail!("daemon error: {message}"),
                 other => anyhow::bail!("unexpected assignments response from daemon: {other:?}"),
+            }
+        }
+        Command::Clear => {
+            let socket_path = resolve_socket_path(args.socket)?;
+            let response = send_request(&socket_path, Request::ClearAssignments).await?;
+
+            match response {
+                Response::Ok => {
+                    println!("daemon assignments cleared");
+                    Ok(())
+                }
+                Response::Error { message } => anyhow::bail!("daemon error: {message}"),
+                other => anyhow::bail!("unexpected clear response from daemon: {other:?}"),
             }
         }
         Command::Kill => {
@@ -371,7 +385,7 @@ fn run_ui_loop(
                 }
 
                 let status_line = if app.show_help {
-                    "h/j/k/l move  gg/G top/bottom  Ctrl-u/Ctrl-d page  Enter|Space apply  t cycle-target  s cycle-scale  m monitors  a assignments  r reload  ? help  q quit"
+                    "h/j/k/l move  gg/G top/bottom  Ctrl-u/Ctrl-d page  Enter|Space apply  t cycle-target  s cycle-scale  m monitors  a assignments  x clear  r reload  ? help  q quit"
                         .to_string()
                 } else {
                     app.status.clone()
@@ -417,6 +431,7 @@ fn run_ui_loop(
                 KeyCode::Char('s') => app.cycle_scale_mode(),
                 KeyCode::Char('m') => app.fetch_monitors(),
                 KeyCode::Char('a') => app.fetch_assignments(),
+                KeyCode::Char('x') => app.clear_assignments(),
                 KeyCode::Char('r') => app.reload_files(),
                 KeyCode::Char('?') => app.toggle_help(),
                 KeyCode::Char('g') => {
@@ -709,6 +724,25 @@ impl App {
             }
             Err(err) => {
                 self.status = format!("Assignments query failed: {err:#}");
+            }
+        }
+    }
+
+    fn clear_assignments(&mut self) {
+        let response = self.send_daemon_request(Request::ClearAssignments);
+        match response {
+            Ok(Response::Ok) => {
+                self.assignments.clear();
+                self.status = "Cleared all daemon assignments".to_string();
+            }
+            Ok(Response::Error { message }) => {
+                self.status = format!("Clear failed: {message}");
+            }
+            Ok(other) => {
+                self.status = format!("Unexpected clear response: {other:?}");
+            }
+            Err(err) => {
+                self.status = format!("Clear failed: {err:#}");
             }
         }
     }

@@ -14,6 +14,7 @@ pub enum Request {
     },
     GetMonitors,
     GetAssignments,
+    ClearAssignments,
     KillDaemon,
 }
 
@@ -153,6 +154,16 @@ mod tests {
         let json = serde_json::to_string(&env).expect("set wallpaper request should serialize");
         let decoded: RequestEnvelope =
             serde_json::from_str(&json).expect("set wallpaper request should deserialize");
+
+        assert_eq!(decoded, env);
+    }
+
+    #[test]
+    fn clear_assignments_request_roundtrip() {
+        let env = RequestEnvelope::new(Request::ClearAssignments);
+        let json = serde_json::to_string(&env).expect("clear request should serialize");
+        let decoded: RequestEnvelope =
+            serde_json::from_str(&json).expect("clear request should deserialize");
 
         assert_eq!(decoded, env);
     }

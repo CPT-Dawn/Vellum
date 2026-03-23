@@ -223,6 +223,14 @@ async fn handle_client(
                     entries: assignment_entries(&state.assignments),
                 }
             }
+            Request::ClearAssignments => {
+                let mut state = daemon_state.lock().await;
+                state.assignments.clear();
+                if let Err(err) = save_state(&state_path, &state) {
+                    warn!(error = %err, "failed to persist daemon state after clear");
+                }
+                Response::Ok
+            }
             Request::KillDaemon => {
                 let response = Response::Ok;
                 send_response(&mut writer, &response).await?;
@@ -496,6 +504,25 @@ mod tests {
             .find(|entry| entry.monitor.as_deref() == Some("DP-1"))
             .expect("missing DP-1 assignment");
         assert_eq!(monitor_entry.mode, ScaleMode::Crop);
+
+        std::fs::remove_dir_all(&base).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn save_state_with_no_assignments_writes_empty_list() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after unix epoch")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("vellum-daemon-test-empty-{nonce}"));
+        std::fs::create_dir_all(&base).expect("test directory should be created");
+
+        let state = DaemonState::default();
+        let state_path = base.join("state.json");
+        save_state(&state_path, &state).expect("empty state should save");
+        let loaded = load_state(&state_path).expect("empty state should load");
+
+        assert!(loaded.assignments.is_empty());
 
         std::fs::remove_dir_all(&base).expect("test directory should be removed");
     }
