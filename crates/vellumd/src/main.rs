@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use image::ImageReader;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -20,6 +21,9 @@ use vellum_ipc::{
 struct Args {
     #[arg(long, value_name = "PATH")]
     socket: Option<PathBuf>,
+
+    #[arg(long, value_name = "PATH")]
+    state_file: Option<PathBuf>,
 }
 
 #[derive(Default)]
@@ -33,6 +37,18 @@ struct WallpaperAssignment {
     mode: ScaleMode,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedState {
+    assignments: Vec<PersistedAssignment>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedAssignment {
+    monitor: Option<String>,
+    path: String,
+    mode: ScaleMode,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -43,7 +59,8 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
     let socket_path = resolve_socket_path(args.socket)?;
-    let state = Arc::new(Mutex::new(DaemonState::default()));
+    let state_path = resolve_state_path(args.state_file)?;
+    let state = Arc::new(Mutex::new(load_state(&state_path)?));
 
     if socket_path.exists() {
         std::fs::remove_file(&socket_path).with_context(|| {
@@ -63,8 +80,9 @@ async fn main() -> Result<()> {
                 let (stream, _) = accept_result.context("socket accept failed")?;
                 let shutdown_tx = shutdown_tx.clone();
                 let state = Arc::clone(&state);
+                let state_path = state_path.clone();
                 tokio::spawn(async move {
-                    if let Err(err) = handle_client(stream, shutdown_tx, state).await {
+                    if let Err(err) = handle_client(stream, shutdown_tx, state, state_path).await {
                         warn!(error = %err, "client session ended with error");
                     }
                 });
@@ -109,10 +127,28 @@ fn resolve_socket_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
     Ok(PathBuf::from(runtime_dir).join("vellum.sock"))
 }
 
+fn resolve_state_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
+    if let Some(path) = explicit {
+        return Ok(path);
+    }
+
+    if let Ok(state_home) = std::env::var("XDG_STATE_HOME") {
+        return Ok(PathBuf::from(state_home).join("vellum").join("state.json"));
+    }
+
+    let home = std::env::var("HOME").context("HOME is not set; pass --state-file explicitly")?;
+    Ok(PathBuf::from(home)
+        .join(".local")
+        .join("state")
+        .join("vellum")
+        .join("state.json"))
+}
+
 async fn handle_client(
     stream: UnixStream,
     shutdown_tx: watch::Sender<bool>,
     daemon_state: Arc<Mutex<DaemonState>>,
+    state_path: PathBuf,
 ) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -164,7 +200,12 @@ async fn handle_client(
             } => {
                 let mut state = daemon_state.lock().await;
                 match apply_wallpaper_native(&path, monitor.as_deref(), mode, &mut state) {
-                    Ok(()) => Response::Ok,
+                    Ok(()) => {
+                        if let Err(err) = save_state(&state_path, &state) {
+                            warn!(error = %err, "failed to persist daemon state");
+                        }
+                        Response::Ok
+                    }
                     Err(err) => Response::Error {
                         message: format!("failed to apply wallpaper: {err:#}"),
                     },
@@ -255,6 +296,73 @@ fn assignment_entries(
 
     entries.sort_by(|a, b| a.monitor.cmp(&b.monitor));
     entries
+}
+
+fn load_state(state_path: &PathBuf) -> Result<DaemonState> {
+    if !state_path.exists() {
+        return Ok(DaemonState::default());
+    }
+
+    let payload = std::fs::read_to_string(state_path)
+        .with_context(|| format!("failed reading state file {}", state_path.display()))?;
+    let persisted: PersistedState = serde_json::from_str(&payload)
+        .with_context(|| format!("failed decoding state file {}", state_path.display()))?;
+
+    let mut assignments = HashMap::new();
+    for entry in persisted.assignments {
+        let input = PathBuf::from(entry.path);
+        let canonical = match input.canonicalize() {
+            Ok(path) => path,
+            Err(err) => {
+                warn!(error = %err, path = %input.display(), "skipping invalid persisted wallpaper path");
+                continue;
+            }
+        };
+
+        if !canonical.is_file() {
+            warn!(path = %canonical.display(), "skipping non-file persisted wallpaper path");
+            continue;
+        }
+
+        assignments.insert(
+            entry.monitor,
+            WallpaperAssignment {
+                path: canonical,
+                mode: entry.mode,
+            },
+        );
+    }
+
+    Ok(DaemonState { assignments })
+}
+
+fn save_state(state_path: &PathBuf, state: &DaemonState) -> Result<()> {
+    if let Some(parent) = state_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed creating state directory {}", parent.display()))?;
+    }
+
+    let mut persisted = PersistedState {
+        assignments: state
+            .assignments
+            .iter()
+            .map(|(monitor, assignment)| PersistedAssignment {
+                monitor: monitor.clone(),
+                path: assignment.path.display().to_string(),
+                mode: assignment.mode,
+            })
+            .collect(),
+    };
+
+    persisted
+        .assignments
+        .sort_by(|a, b| a.monitor.cmp(&b.monitor));
+
+    let json =
+        serde_json::to_string_pretty(&persisted).context("failed encoding daemon state to JSON")?;
+    std::fs::write(state_path, json)
+        .with_context(|| format!("failed writing state file {}", state_path.display()))?;
+    Ok(())
 }
 
 fn detect_monitor_names() -> Result<Vec<String>> {

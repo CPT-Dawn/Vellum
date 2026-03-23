@@ -14,6 +14,9 @@ Wayland-native wallpaper manager with a daemon/client architecture.
 - Terminal image preview with monitor-ratio frame.
 - IPC commands for ping, monitor query, wallpaper set, and daemon shutdown.
 - Multi-monitor targeting support (`SetWallpaper` can target one output or all outputs).
+- Per-assignment scaling modes (`fit`, `fill`, `crop`) across CLI and TUI.
+- Assignment introspection (`assignments` command and in-UI summary state).
+- Assignment persistence across daemon restarts (stored in XDG state path by default).
 
 The daemon is designed to be native and self-sustained within this project.
 
@@ -37,6 +40,8 @@ cargo test --workspace
 
 ```bash
 cargo run -p vellumd
+# optional explicit path:
+# cargo run -p vellumd -- --state-file /tmp/vellum-state.json
 ```
 
 ### 3) Run TUI

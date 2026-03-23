@@ -111,8 +111,12 @@ mod tests {
 
     #[test]
     fn response_envelope_roundtrip_json() {
-        let env = ResponseEnvelope::new(Response::Monitors {
-            names: vec!["DP-1".to_string(), "HDMI-A-1".to_string()],
+        let env = ResponseEnvelope::new(Response::Assignments {
+            entries: vec![AssignmentEntry {
+                monitor: Some("DP-1".to_string()),
+                path: "/tmp/wallpapers/arch.png".to_string(),
+                mode: ScaleMode::Fill,
+            }],
         });
         let json = serde_json::to_string(&env).expect("response envelope should serialize");
         let decoded: ResponseEnvelope =
@@ -136,5 +140,27 @@ mod tests {
             err,
             IpcProtocolError::UnsupportedVersion(version) if version == IPC_PROTOCOL_VERSION + 1
         ));
+    }
+
+    #[test]
+    fn set_wallpaper_request_roundtrip_includes_mode() {
+        let env = RequestEnvelope::new(Request::SetWallpaper {
+            path: "/tmp/wallpapers/city.jpg".to_string(),
+            monitor: Some("HDMI-A-1".to_string()),
+            mode: ScaleMode::Crop,
+        });
+
+        let json = serde_json::to_string(&env).expect("set wallpaper request should serialize");
+        let decoded: RequestEnvelope =
+            serde_json::from_str(&json).expect("set wallpaper request should deserialize");
+
+        assert_eq!(decoded, env);
+    }
+
+    #[test]
+    fn scale_mode_serializes_lowercase() {
+        let mode = ScaleMode::Fill;
+        let json = serde_json::to_string(&mode).expect("scale mode should serialize");
+        assert_eq!(json, "\"fill\"");
     }
 }
