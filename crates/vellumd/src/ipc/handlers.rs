@@ -6,8 +6,10 @@ use tokio::sync::Mutex;
 use tracing::warn;
 use vellum_ipc::{Request, Response, ScaleMode};
 
-use crate::monitor::{detect_monitor_names, normalize_monitor_snapshot, MonitorSnapshot};
-use crate::renderer::RendererState;
+use crate::monitor::{
+    detect_monitor_layouts, normalize_monitor_snapshot, MonitorLayout, MonitorSnapshot,
+};
+use crate::renderer::{OutputLayout, RendererState};
 use crate::state::{assignment_entries, save_state, DaemonState, WallpaperAssignment};
 
 pub(crate) struct HandlerOutcome {
@@ -205,15 +207,29 @@ async fn get_or_refresh_monitors(
         return Ok(cached);
     }
 
-    let detected = detect_monitor_names().context("monitor detection failed")?;
-    let normalized = normalize_monitor_snapshot(detected);
+    let detected = detect_monitor_layouts().context("monitor detection failed")?;
+    let names: Vec<String> = detected.iter().map(|layout| layout.name.clone()).collect();
+    let normalized = normalize_monitor_snapshot(names);
     let _ = monitor_snapshot
         .replace_if_changed(normalized.clone())
         .await;
 
     let mut renderer = renderer_state.lock().await;
     renderer.refresh_outputs(normalized.clone());
+    renderer.refresh_output_layouts(to_output_layouts(&detected));
     Ok(normalized)
+}
+
+fn to_output_layouts(layouts: &[MonitorLayout]) -> Vec<OutputLayout> {
+    layouts
+        .iter()
+        .map(|layout| OutputLayout {
+            name: layout.name.clone(),
+            width: layout.width,
+            height: layout.height,
+            scale_factor: layout.scale_factor,
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -44,11 +44,6 @@ pub(crate) fn normalize_monitor_snapshot(mut monitors: Vec<String>) -> Vec<Strin
     monitors
 }
 
-pub(crate) fn detect_monitor_names() -> Result<Vec<String>> {
-    let layouts = detect_monitor_layouts()?;
-    Ok(layouts.into_iter().map(|layout| layout.name).collect())
-}
-
 pub(crate) fn detect_monitor_layouts() -> Result<Vec<MonitorLayout>> {
     if let Some(layouts) = detect_wayland_registry_layouts() {
         return Ok(layouts);

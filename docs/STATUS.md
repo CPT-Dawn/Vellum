@@ -47,6 +47,7 @@
 - Renderer output registry now computes explicit add/remove deltas, and refresh logs lifecycle edges for monitor hotplug reconciliation.
 - Renderer now also requeues already-processed commands when wl_shm flush fails, preventing command loss after late-stage commit errors.
 - Daemon now propagates detected monitor width/height/scale layouts into renderer session surfaces, replacing static default geometry assumptions.
+- IPC monitor refresh fallback now also applies output layouts to renderer surfaces, keeping geometry and monitor-name snapshots coherent.
 
 ## In Progress
 
