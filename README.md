@@ -49,6 +49,11 @@ GitHub Actions runs these checks on pushes and pull requests:
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo test --workspace`
 
+Tagged pushes like `v0.1.0` trigger a release build workflow that archives:
+
+- `vellumd`
+- `vellum-tui`
+
 ### 2) Run daemon
 
 ```bash

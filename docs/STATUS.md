@@ -13,6 +13,7 @@
 - Daemon integration tests that spawn vellumd and verify IPC/persistence flows.
 - CI workflow for fmt, clippy, and workspace tests.
 - Daemon IPC split into server and handler modules.
+- Tagged release workflow that builds and archives Linux binaries.
 
 ## In Progress
 
@@ -24,11 +25,11 @@
 - Implement wl_output hotplug lifecycle (add/remove/reconfigure outputs).
 - Implement shared-memory buffer lifecycle and reclamation strategy.
 - Add renderer-focused performance checks and memory profiling benchmarks.
-- Add packaging/release pipeline for publishable artifacts.
+- Expand release pipeline to publish GitHub Releases and checksums.
 
 ## Recommended Next Slices
 
 1. Move TUI app state/actions/layout into dedicated modules.
 2. Implement first renderer backend milestone for one output.
 3. Add renderer-facing integration tests (command queue to backend behavior).
-4. Add release packaging workflow for tagged builds.
+4. Expand tagged release workflow with release publication and checksums.

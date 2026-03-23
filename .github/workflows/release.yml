@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-linux:
+    name: Build Linux Artifacts
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binaries
+        run: cargo build --workspace --release
+
+      - name: Prepare artifact directory
+        run: |
+          mkdir -p dist
+          cp target/release/vellumd dist/
+          cp target/release/vellum-tui dist/
+          tar -czf vellum-linux-x86_64.tar.gz -C dist vellumd vellum-tui
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vellum-linux-x86_64
+          path: vellum-linux-x86_64.tar.gz
