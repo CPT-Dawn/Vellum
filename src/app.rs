@@ -1,6 +1,13 @@
-use crossterm::event::{KeyCode, KeyEvent};
+//! Application state and input handling for `awww-tui`.
 
-use crate::backend::awww::TransitionKind;
+use std::path::PathBuf;
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use crate::{
+    backend::{awww::TransitionKind, monitors::MonitorInfo},
+    wallpapers::{fuzzy_filter_indices, WallpaperItem},
+};
 
 /// Active high-level pane in the TUI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,6 +18,28 @@ pub enum FocusPane {
     Monitor,
     /// Right transition settings pane.
     Transition,
+}
+
+impl FocusPane {
+    /// Moves focus to the previous pane in a cyclic order.
+    #[must_use]
+    pub fn move_left(self) -> Self {
+        match self {
+            Self::Browser => Self::Transition,
+            Self::Monitor => Self::Browser,
+            Self::Transition => Self::Monitor,
+        }
+    }
+
+    /// Moves focus to the next pane in a cyclic order.
+    #[must_use]
+    pub fn move_right(self) -> Self {
+        match self {
+            Self::Browser => Self::Monitor,
+            Self::Monitor => Self::Transition,
+            Self::Transition => Self::Browser,
+        }
+    }
 }
 
 /// Available transition setting rows in the transition pane.
@@ -46,136 +75,121 @@ impl TransitionField {
     }
 }
 
-/// Dummy monitor entry used for PHASE 3 layout rendering.
+/// Side-effect request emitted by key handling for runtime execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DummyMonitor {
-    /// Display connector name.
-    pub name: &'static str,
-    /// Top-left X coordinate.
-    pub x: i32,
-    /// Top-left Y coordinate.
-    pub y: i32,
-    /// Monitor width in pixels.
-    pub width: u32,
-    /// Monitor height in pixels.
-    pub height: u32,
+pub enum AppAction {
+    /// Apply selected wallpaper as a temporary live preview.
+    TryOnSelected,
+    /// Confirm currently selected wallpaper as committed choice.
+    ConfirmSelected,
+    /// Revert temporary preview to the last confirmed wallpaper.
+    CancelPreview,
 }
 
-const DUMMY_WALLPAPERS: &[&str] = &[
-    "aurora-icefield.jpg",
-    "neon-rain-alley.png",
-    "sunset-over-grid.webp",
-    "kinetic-particles.jpeg",
-    "quiet-forest-dawn.avif",
-    "cityline-midnight.png",
-    "paperfold-minimal.jpg",
-];
-
-const DUMMY_MONITORS: &[DummyMonitor] = &[
-    DummyMonitor {
-        name: "eDP-1",
-        x: 0,
-        y: 0,
-        width: 1920,
-        height: 1080,
-    },
-    DummyMonitor {
-        name: "DP-1",
-        x: 1920,
-        y: 0,
-        width: 2560,
-        height: 1440,
-    },
-    DummyMonitor {
-        name: "HDMI-A-1",
-        x: -1080,
-        y: 100,
-        width: 1080,
-        height: 1920,
-    },
-];
-
-impl FocusPane {
-    /// Moves focus to the previous pane in a cyclic order.
-    #[must_use]
-    pub fn move_left(self) -> Self {
-        match self {
-            Self::Browser => Self::Transition,
-            Self::Monitor => Self::Browser,
-            Self::Transition => Self::Monitor,
-        }
-    }
-
-    /// Moves focus to the next pane in a cyclic order.
-    #[must_use]
-    pub fn move_right(self) -> Self {
-        match self {
-            Self::Browser => Self::Monitor,
-            Self::Monitor => Self::Transition,
-            Self::Transition => Self::Browser,
-        }
-    }
-}
-
-/// Global application state shared by the event loop and renderer.
+/// Global application state shared by input, runtime, and renderer.
 #[derive(Debug, Clone)]
 pub struct App {
     /// Whether the application should terminate on the next loop iteration.
     pub should_quit: bool,
     /// The pane currently selected by keyboard navigation.
     pub focus: FocusPane,
-    /// Monotonic tick counter used for future animations and periodic tasks.
+    /// Monotonic tick counter used for subtle theme animation.
     pub ticks: u64,
-    /// Dummy wallpaper list shown by the PHASE 3 file browser pane.
-    pub wallpapers: &'static [&'static str],
-    /// Selected wallpaper row index.
-    pub selected_wallpaper: usize,
-    /// Dummy monitor layout entries for PHASE 3 monitor pane.
-    pub monitors: &'static [DummyMonitor],
+    /// Full wallpaper list discovered from filesystem.
+    pub wallpapers: Vec<WallpaperItem>,
+    /// Filtered indices into `wallpapers`, ranked by fuzzy matching.
+    pub filtered_wallpaper_indices: Vec<usize>,
+    /// Selected row index in the filtered list.
+    pub selected_wallpaper_row: usize,
+    /// Discovered monitor list from backend query.
+    pub monitors: Vec<MonitorInfo>,
     /// Selected monitor row index.
     pub selected_monitor: usize,
     /// Transition row currently selected in the transition pane.
     pub transition_field: TransitionField,
-    /// Transition kind preview value.
+    /// Transition kind value.
     pub transition_kind: TransitionKind,
-    /// Transition step preview value.
+    /// Transition step value.
     pub transition_step: u16,
-    /// Transition FPS preview value.
+    /// Transition FPS value.
     pub transition_fps: u16,
+    /// Browser fuzzy search query.
+    pub search_query: String,
+    /// Whether the browser is in search-input mode.
+    pub search_mode: bool,
+    /// Status line rendered in header.
+    pub status: String,
+    /// Last confirmed wallpaper path for cancel/revert behavior.
+    pub confirmed_wallpaper: Option<PathBuf>,
+    /// Whether a temporary preview is currently active.
+    pub preview_active: bool,
 }
 
-impl Default for App {
-    /// Builds the default initial state for application startup.
-    fn default() -> Self {
-        Self {
+impl App {
+    /// Builds initial app state from discovered wallpapers and monitor metadata.
+    #[must_use]
+    pub fn new(wallpapers: Vec<WallpaperItem>, monitors: Vec<MonitorInfo>) -> Self {
+        let mut app = Self {
             should_quit: false,
             focus: FocusPane::Browser,
             ticks: 0,
-            wallpapers: DUMMY_WALLPAPERS,
-            selected_wallpaper: 0,
-            monitors: DUMMY_MONITORS,
+            wallpapers,
+            filtered_wallpaper_indices: Vec::new(),
+            selected_wallpaper_row: 0,
+            monitors,
             selected_monitor: 0,
             transition_field: TransitionField::Kind,
             transition_kind: TransitionKind::Fade,
             transition_step: 16,
             transition_fps: 60,
-        }
-    }
-}
+            search_query: String::new(),
+            search_mode: false,
+            status: String::from("ready"),
+            confirmed_wallpaper: None,
+            preview_active: false,
+        };
 
-impl App {
-    /// Handles a terminal key event and mutates state accordingly.
-    pub fn on_key(&mut self, key: KeyEvent) {
+        app.rebuild_filter();
+        app
+    }
+
+    /// Handles a terminal key event and returns emitted runtime actions.
+    pub fn on_key(&mut self, key: KeyEvent) -> Vec<AppAction> {
+        let mut actions = Vec::new();
+
+        if self.handle_search_input(key, &mut actions) {
+            return actions;
+        }
+
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+            KeyCode::Char('q') => {
+                if self.preview_active {
+                    actions.push(AppAction::CancelPreview);
+                }
+                self.should_quit = true;
+            }
+            KeyCode::Esc => {
+                if self.preview_active {
+                    actions.push(AppAction::CancelPreview);
+                }
+                self.should_quit = true;
+            }
             KeyCode::Char('h') | KeyCode::Left => self.focus = self.focus.move_left(),
             KeyCode::Char('l') | KeyCode::Right => self.focus = self.focus.move_right(),
-            KeyCode::Char('j') | KeyCode::Down => self.navigate_next(),
-            KeyCode::Char('k') | KeyCode::Up => self.navigate_previous(),
-            KeyCode::Char('H') => self.adjust_left(),
-            KeyCode::Char('L') => self.adjust_right(),
+            KeyCode::Char('j') | KeyCode::Down => self.navigate_next(&mut actions),
+            KeyCode::Char('k') | KeyCode::Up => self.navigate_previous(&mut actions),
+            KeyCode::Char('H') => self.adjust_left(&mut actions),
+            KeyCode::Char('L') => self.adjust_right(&mut actions),
+            KeyCode::Char('/') if self.focus == FocusPane::Browser => {
+                self.search_mode = true;
+                self.set_status("search mode: type to fuzzy filter, Enter to exit");
+            }
+            KeyCode::Enter => actions.push(AppAction::ConfirmSelected),
+            KeyCode::Char('c') => actions.push(AppAction::CancelPreview),
             _ => {}
         }
+
+        actions
     }
 
     /// Advances periodic state once per tick interval.
@@ -183,27 +197,100 @@ impl App {
         self.ticks = self.ticks.saturating_add(1);
     }
 
-    /// Returns the currently selected dummy wallpaper name.
-    #[must_use]
-    pub fn selected_wallpaper_name(&self) -> &'static str {
-        self.wallpapers[self.selected_wallpaper]
+    /// Stores a user-visible status line.
+    pub fn set_status(&mut self, status: impl Into<String>) {
+        self.status = status.into();
     }
 
-    /// Returns the currently selected dummy monitor.
-    #[must_use]
-    pub fn selected_monitor(&self) -> DummyMonitor {
-        self.monitors[self.selected_monitor]
+    /// Marks preview state as active after a successful live apply.
+    pub fn mark_preview_active(&mut self) {
+        self.preview_active = true;
     }
 
-    /// Handles row navigation for the pane currently in focus.
-    fn navigate_next(&mut self) {
+    /// Marks selected wallpaper as confirmed after a successful apply.
+    pub fn mark_confirmed(&mut self) {
+        self.confirmed_wallpaper = self.selected_wallpaper_path();
+        self.preview_active = false;
+    }
+
+    /// Clears preview active state after cancel or revert completes.
+    pub fn clear_preview(&mut self) {
+        self.preview_active = false;
+    }
+
+    /// Returns currently selected wallpaper item, if any.
+    #[must_use]
+    pub fn selected_wallpaper(&self) -> Option<&WallpaperItem> {
+        let index = *self
+            .filtered_wallpaper_indices
+            .get(self.selected_wallpaper_row)?;
+        self.wallpapers.get(index)
+    }
+
+    /// Returns selected wallpaper path cloned for runtime command execution.
+    #[must_use]
+    pub fn selected_wallpaper_path(&self) -> Option<PathBuf> {
+        self.selected_wallpaper().map(|item| item.path.clone())
+    }
+
+    /// Returns selected monitor name for per-output wallpaper application.
+    #[must_use]
+    pub fn selected_monitor_name(&self) -> Option<&str> {
+        self.monitors
+            .get(self.selected_monitor)
+            .map(|monitor| monitor.name.as_str())
+    }
+
+    /// Handles search input mode and returns true when key was consumed.
+    fn handle_search_input(&mut self, key: KeyEvent, actions: &mut Vec<AppAction>) -> bool {
+        if self.focus != FocusPane::Browser || !self.search_mode {
+            return false;
+        }
+
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter => {
+                self.search_mode = false;
+                self.set_status("search mode closed");
+            }
+            KeyCode::Backspace => {
+                self.search_query.pop();
+                self.rebuild_filter();
+                if self.selected_wallpaper().is_some() {
+                    actions.push(AppAction::TryOnSelected);
+                }
+            }
+            KeyCode::Char(ch)
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                self.search_query.push(ch);
+                self.rebuild_filter();
+                if self.selected_wallpaper().is_some() {
+                    actions.push(AppAction::TryOnSelected);
+                }
+            }
+            _ => {}
+        }
+
+        true
+    }
+
+    /// Handles forward navigation for the currently focused pane.
+    fn navigate_next(&mut self, actions: &mut Vec<AppAction>) {
         match self.focus {
             FocusPane::Browser => {
-                self.selected_wallpaper =
-                    next_index(self.selected_wallpaper, self.wallpapers.len());
+                self.selected_wallpaper_row = next_index(
+                    self.selected_wallpaper_row,
+                    self.filtered_wallpaper_indices.len(),
+                );
+                if self.selected_wallpaper().is_some() {
+                    actions.push(AppAction::TryOnSelected);
+                }
             }
             FocusPane::Monitor => {
                 self.selected_monitor = next_index(self.selected_monitor, self.monitors.len());
+                if self.selected_wallpaper().is_some() {
+                    actions.push(AppAction::TryOnSelected);
+                }
             }
             FocusPane::Transition => {
                 self.transition_field = self.transition_field.next();
@@ -211,15 +298,23 @@ impl App {
         }
     }
 
-    /// Handles reverse row navigation for the pane currently in focus.
-    fn navigate_previous(&mut self) {
+    /// Handles reverse navigation for the currently focused pane.
+    fn navigate_previous(&mut self, actions: &mut Vec<AppAction>) {
         match self.focus {
             FocusPane::Browser => {
-                self.selected_wallpaper =
-                    prev_index(self.selected_wallpaper, self.wallpapers.len());
+                self.selected_wallpaper_row = prev_index(
+                    self.selected_wallpaper_row,
+                    self.filtered_wallpaper_indices.len(),
+                );
+                if self.selected_wallpaper().is_some() {
+                    actions.push(AppAction::TryOnSelected);
+                }
             }
             FocusPane::Monitor => {
                 self.selected_monitor = prev_index(self.selected_monitor, self.monitors.len());
+                if self.selected_wallpaper().is_some() {
+                    actions.push(AppAction::TryOnSelected);
+                }
             }
             FocusPane::Transition => {
                 self.transition_field = self.transition_field.prev();
@@ -227,8 +322,8 @@ impl App {
         }
     }
 
-    /// Decreases transition parameters while transition pane is focused.
-    fn adjust_left(&mut self) {
+    /// Decreases transition parameters when transition pane is focused.
+    fn adjust_left(&mut self, actions: &mut Vec<AppAction>) {
         if self.focus != FocusPane::Transition {
             return;
         }
@@ -244,10 +339,14 @@ impl App {
                 self.transition_fps = self.transition_fps.saturating_sub(1).max(1);
             }
         }
+
+        if self.preview_active {
+            actions.push(AppAction::TryOnSelected);
+        }
     }
 
-    /// Increases transition parameters while transition pane is focused.
-    fn adjust_right(&mut self) {
+    /// Increases transition parameters when transition pane is focused.
+    fn adjust_right(&mut self, actions: &mut Vec<AppAction>) {
         if self.focus != FocusPane::Transition {
             return;
         }
@@ -263,6 +362,20 @@ impl App {
                 self.transition_fps = self.transition_fps.saturating_add(1).min(240);
             }
         }
+
+        if self.preview_active {
+            actions.push(AppAction::TryOnSelected);
+        }
+    }
+
+    /// Recomputes fuzzy filtering and clamps selected row.
+    fn rebuild_filter(&mut self) {
+        self.filtered_wallpaper_indices =
+            fuzzy_filter_indices(&self.wallpapers, &self.search_query);
+        self.selected_wallpaper_row = clamp_index(
+            self.selected_wallpaper_row,
+            self.filtered_wallpaper_indices.len(),
+        );
     }
 }
 
@@ -286,6 +399,15 @@ fn prev_index(current: usize, len: usize) -> usize {
     } else {
         current - 1
     }
+}
+
+/// Clamps an index to a collection length, returning 0 when empty.
+#[must_use]
+fn clamp_index(current: usize, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    current.min(len - 1)
 }
 
 /// Cycles forward through transition kinds.

@@ -1,17 +1,30 @@
 mod app;
 mod backend;
 mod ui;
+mod wallpapers;
 
-use std::{io, time::Duration};
+use std::{
+    env, io,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use crossterm::{
     event::{self, Event},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use directories::UserDirs;
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use crate::app::App;
+use crate::{
+    app::{App, AppAction},
+    backend::{
+        awww::{ApplyRequest, AwwwClient, TransitionSettings},
+        monitors::{self, MonitorInfo},
+    },
+    wallpapers::discover_wallpapers,
+};
 
 /// Application-wide result type.
 type AppResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -19,8 +32,17 @@ type AppResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 /// Program entrypoint.
 #[tokio::main]
 async fn main() -> AppResult<()> {
+    let wallpapers = discover_initial_wallpapers()?;
+    let monitors = discover_initial_monitors().await;
+    let mut app = App::new(wallpapers, monitors);
+
+    let awww = AwwwClient::default();
+    if let Err(err) = awww.start_daemon().await {
+        app.set_status(format!("awww-daemon startup warning: {err}"));
+    }
+
     let mut terminal = init_terminal()?;
-    let result = run_app(&mut terminal, App::default()).await;
+    let result = run_app(&mut terminal, app, &awww).await;
     restore_terminal(&mut terminal)?;
     result
 }
@@ -48,6 +70,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Ap
 async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     mut app: App,
+    awww: &AwwwClient,
 ) -> AppResult<()> {
     const TICK_RATE: Duration = Duration::from_millis(120);
 
@@ -56,7 +79,10 @@ async fn run_app(
 
         if event::poll(TICK_RATE)? {
             if let Event::Key(key) = event::read()? {
-                app.on_key(key);
+                let actions = app.on_key(key);
+                for action in actions {
+                    execute_action(&mut app, awww, action).await;
+                }
             }
         } else {
             app.on_tick();
@@ -70,4 +96,110 @@ async fn run_app(
     }
 
     Ok(())
+}
+
+/// Executes one app action and updates app status with success/failure details.
+async fn execute_action(app: &mut App, awww: &AwwwClient, action: AppAction) {
+    match action {
+        AppAction::TryOnSelected => {
+            let Some(path) = app.selected_wallpaper_path() else {
+                app.set_status("no wallpaper selected");
+                return;
+            };
+
+            match apply_for_selection(app, awww, &path).await {
+                Ok(()) => {
+                    app.mark_preview_active();
+                    app.set_status(format!("live preview: {}", path.display()));
+                }
+                Err(err) => app.set_status(format!("preview failed: {err}")),
+            }
+        }
+        AppAction::ConfirmSelected => {
+            let Some(path) = app.selected_wallpaper_path() else {
+                app.set_status("no wallpaper selected");
+                return;
+            };
+
+            match apply_for_selection(app, awww, &path).await {
+                Ok(()) => {
+                    app.mark_confirmed();
+                    app.set_status(format!("confirmed: {}", path.display()));
+                }
+                Err(err) => app.set_status(format!("confirm failed: {err}")),
+            }
+        }
+        AppAction::CancelPreview => {
+            if let Some(path) = app.confirmed_wallpaper.clone() {
+                match apply_for_selection(app, awww, &path).await {
+                    Ok(()) => {
+                        app.clear_preview();
+                        app.set_status(format!("reverted preview to: {}", path.display()));
+                    }
+                    Err(err) => app.set_status(format!("revert failed: {err}")),
+                }
+            } else {
+                let output = app.selected_monitor_name();
+                match awww.clear_wallpaper(output).await {
+                    Ok(()) => {
+                        app.clear_preview();
+                        app.set_status("preview canceled: cleared wallpaper".to_owned());
+                    }
+                    Err(err) => app.set_status(format!("cancel failed: {err}")),
+                }
+            }
+        }
+    }
+}
+
+/// Applies wallpaper using current transition and selected output settings.
+async fn apply_for_selection(app: &App, awww: &AwwwClient, path: &Path) -> AppResult<()> {
+    let outputs = app
+        .selected_monitor_name()
+        .map(str::to_owned)
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    let transition = TransitionSettings {
+        kind: app.transition_kind,
+        step: app.transition_step,
+        fps: app.transition_fps,
+    };
+
+    let request = ApplyRequest {
+        image_path: path,
+        outputs: &outputs,
+        transition,
+    };
+
+    awww.apply_wallpaper(&request).await?;
+    Ok(())
+}
+
+/// Discovers monitor metadata with graceful fallback to an empty list.
+async fn discover_initial_monitors() -> Vec<MonitorInfo> {
+    monitors::query_monitors().await.unwrap_or_default()
+}
+
+/// Discovers wallpapers from configured root and returns an owned list.
+fn discover_initial_wallpapers() -> AppResult<Vec<wallpapers::WallpaperItem>> {
+    let root = resolve_wallpaper_root();
+    let items = discover_wallpapers(&root)?;
+    Ok(items)
+}
+
+/// Resolves wallpaper root from environment variable, then user picture directory.
+#[must_use]
+fn resolve_wallpaper_root() -> PathBuf {
+    if let Some(custom) = env::var_os("AWWW_TUI_WALLPAPER_DIR") {
+        return PathBuf::from(custom);
+    }
+
+    if let Some(user_dirs) = UserDirs::new() {
+        if let Some(pictures) = user_dirs.picture_dir() {
+            return pictures.to_path_buf();
+        }
+    }
+
+    PathBuf::from(".")
 }

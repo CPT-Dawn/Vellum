@@ -1,3 +1,5 @@
+//! Ratatui rendering layer for the awww-tui application.
+
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     prelude::{Alignment, Color, Frame, Line, Modifier, Style},
@@ -17,7 +19,11 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
 
     let frame_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
         .split(frame.area());
 
     render_header(frame, frame_chunks[0], app, theme);
@@ -34,17 +40,22 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
     render_browser_pane(frame, body_chunks[0], app, theme);
     render_monitor_pane(frame, body_chunks[1], app, theme);
     render_transition_pane(frame, body_chunks[2], app, theme);
+    render_footer(frame, frame_chunks[2], app, theme);
 }
 
 /// Renders top status information and key bindings.
 fn render_header(frame: &mut Frame<'_>, area: ratatui::layout::Rect, app: &App, theme: Theme) {
+    let selected = app
+        .selected_wallpaper()
+        .map(|item| item.name.as_str())
+        .unwrap_or("<none>");
+
     let status = format!(
-        "phase 3 layout | focus: {:?} | selected: {} | ticks: {}",
-        app.focus,
-        app.selected_wallpaper_name(),
-        app.ticks
+        "phase 4 live integration | focus: {:?} | selected: {}",
+        app.focus, selected
     );
-    let keys = "h/l pane  j/k row  Shift+H/Shift+L edit transition  q quit";
+
+    let keys = "h/l pane  j/k row  / search  Enter confirm  c cancel  q quit";
 
     let text = Line::from(vec![
         Span::styled(status, Style::default().fg(theme.header_fg)),
@@ -58,7 +69,28 @@ fn render_header(frame: &mut Frame<'_>, area: ratatui::layout::Rect, app: &App, 
     frame.render_widget(header, area);
 }
 
-/// Renders the wallpaper browser pane with dummy list data.
+/// Renders a footer status line.
+fn render_footer(frame: &mut Frame<'_>, area: ratatui::layout::Rect, app: &App, theme: Theme) {
+    let search = if app.search_mode {
+        format!("search: {}_", app.search_query)
+    } else if app.search_query.is_empty() {
+        String::from("search: <off>")
+    } else {
+        format!("search: {}", app.search_query)
+    };
+
+    let footer = Paragraph::new(Line::from(vec![
+        Span::styled(search, Style::default().fg(theme.accent)),
+        Span::raw("  |  "),
+        Span::styled(app.status.as_str(), Style::default().fg(theme.text)),
+    ]))
+    .alignment(Alignment::Left)
+    .style(Style::default().bg(theme.background));
+
+    frame.render_widget(footer, area);
+}
+
+/// Renders the wallpaper browser pane with fuzzy-filtered filesystem data.
 fn render_browser_pane(
     frame: &mut Frame<'_>,
     area: ratatui::layout::Rect,
@@ -68,28 +100,30 @@ fn render_browser_pane(
     let is_active = app.focus == FocusPane::Browser;
     let border_color = if is_active { theme.focus } else { theme.idle };
 
-    let block = pane_block(
-        "Wallpapers",
-        "Phase 4: filesystem + fuzzy",
-        border_color,
-        theme,
-    );
+    let subtitle = if app.search_mode {
+        "search mode active"
+    } else {
+        "filesystem + fuzzy finder"
+    };
+
+    let block = pane_block("Wallpapers", subtitle, border_color, theme);
 
     let items = app
-        .wallpapers
+        .filtered_wallpaper_indices
         .iter()
-        .enumerate()
-        .map(|(idx, entry)| {
-            let marker = if idx == app.selected_wallpaper {
-                "> "
-            } else {
-                "  "
-            };
-            ListItem::new(Line::from(format!("{marker}{entry}")))
+        .map(|index| {
+            let entry = &app.wallpapers[*index];
+            ListItem::new(Line::from(entry.name.clone()))
         })
         .collect::<Vec<_>>();
 
-    let mut state = ListState::default().with_selected(Some(app.selected_wallpaper));
+    let selected = if app.filtered_wallpaper_indices.is_empty() {
+        None
+    } else {
+        Some(app.selected_wallpaper_row)
+    };
+
+    let mut state = ListState::default().with_selected(selected);
     let list = List::new(items)
         .block(block)
         .highlight_style(
@@ -103,7 +137,7 @@ fn render_browser_pane(
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-/// Renders the monitor preview pane with a textual monitor layout map.
+/// Renders monitor metadata discovered from compositor IPC.
 fn render_monitor_pane(
     frame: &mut Frame<'_>,
     area: ratatui::layout::Rect,
@@ -113,39 +147,44 @@ fn render_monitor_pane(
     let is_active = app.focus == FocusPane::Monitor;
     let border_color = if is_active { theme.focus } else { theme.idle };
 
-    let selected = app.selected_monitor();
-    let mut lines = Vec::with_capacity(app.monitors.len() + 4);
-    lines.push(Line::from(format!(
-        "selected: {} ({}x{})",
-        selected.name, selected.width, selected.height
-    )));
-    lines.push(Line::from("layout:"));
+    let mut lines = Vec::with_capacity(app.monitors.len() + 5);
 
-    for (idx, monitor) in app.monitors.iter().enumerate() {
-        let prefix = if idx == app.selected_monitor {
-            "*"
-        } else {
-            " "
-        };
+    if app.monitors.is_empty() {
+        lines.push(Line::from("no monitors discovered"));
+        lines.push(Line::from("(hyprctl/wlr-randr unavailable)"));
+    } else {
+        let selected = &app.monitors[app.selected_monitor];
         lines.push(Line::from(format!(
-            "{prefix} {:<10} {:>4}x{:<4} @ ({:>5},{:>5})",
-            monitor.name, monitor.width, monitor.height, monitor.x, monitor.y
+            "selected: {} ({}x{})",
+            selected.name, selected.width, selected.height
+        )));
+        lines.push(Line::from("layout:"));
+
+        for (idx, monitor) in app.monitors.iter().enumerate() {
+            let prefix = if idx == app.selected_monitor {
+                "*"
+            } else {
+                " "
+            };
+            lines.push(Line::from(format!(
+                "{prefix} {:<10} {:>4}x{:<4} @ ({:>5},{:>5})",
+                monitor.name, monitor.width, monitor.height, monitor.x, monitor.y
+            )));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(monitor_bar(
+            selected.width,
+            selected.height,
+            24,
+            theme.accent,
         )));
     }
-
-    lines.push(Line::from(""));
-    lines.push(Line::from("preview frame:"));
-    lines.push(Line::from(monitor_bar(
-        selected.width,
-        selected.height,
-        24,
-        theme.accent,
-    )));
 
     let body = Paragraph::new(lines)
         .block(pane_block(
             "Monitors",
-            "hyprctl/wlr-randr wired in phase 2",
+            "j/k to choose output target",
             border_color,
             theme,
         ))
@@ -154,7 +193,7 @@ fn render_monitor_pane(
     frame.render_widget(body, area);
 }
 
-/// Renders transition settings pane with field selection and editable values.
+/// Renders transition settings pane with editable values.
 fn render_transition_pane(
     frame: &mut Frame<'_>,
     area: ratatui::layout::Rect,
@@ -184,13 +223,14 @@ fn render_transition_pane(
             theme,
         ),
         Line::from(""),
-        Line::from("Shift+H / Shift+L to tweak"),
+        Line::from("Shift+H / Shift+L edits selected field"),
+        Line::from("changes reapply live while preview is active"),
     ];
 
     let body = Paragraph::new(rows)
         .block(pane_block(
             "Transitions",
-            "live apply in phase 4",
+            "phase 4 live controls",
             border_color,
             theme,
         ))
@@ -240,6 +280,7 @@ fn monitor_bar(width: u32, height: u32, max_units: usize, accent: Color) -> Line
     let vertical_units = ((height as usize) * max_units) / (dominant as usize);
     let horizontal = "#".repeat(horizontal_units.max(1));
     let vertical = "#".repeat(vertical_units.max(1));
+
     Line::from(vec![
         Span::styled(
             format!("w[{horizontal:<max_units$}] ", max_units = max_units),

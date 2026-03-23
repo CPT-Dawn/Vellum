@@ -32,6 +32,19 @@ Phase 3 includes:
 - Transition settings pane with editable dummy fields (type, step, fps)
 - Vim navigation enhanced for pane/row movement and transition value editing
 
+## Phase 4 Status
+
+Phase 4 includes:
+
+- Real filesystem wallpaper browser with recursive image discovery
+- Fuzzy finding for wallpapers (`/` to enter search mode, `Backspace` to edit)
+- Live Try-On while browsing (`j`/`k` updates preview via `awww`)
+- Transition controls wired to backend apply (`type`, `step`, `fps`)
+- Confirm and revert flow:
+	- `Enter` confirms selected wallpaper
+	- `c` cancels live preview and reverts
+- Monitor targeting integrated with selected output from compositor monitor list
+
 ## Run
 
 ```bash
