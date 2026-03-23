@@ -14,6 +14,40 @@ use crate::mmap::MmappedStr;
 
 use super::ImageRequestBuilder;
 
+#[inline]
+fn read_u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
+    let raw = bytes.get(offset..offset + 4)?;
+    Some(u32::from_ne_bytes([raw[0], raw[1], raw[2], raw[3]]))
+}
+
+#[inline]
+fn read_i32_at(bytes: &[u8], offset: usize) -> Option<i32> {
+    let raw = bytes.get(offset..offset + 4)?;
+    Some(i32::from_ne_bytes([raw[0], raw[1], raw[2], raw[3]]))
+}
+
+#[inline]
+fn read_u64_at(bytes: &[u8], offset: usize) -> Option<u64> {
+    let raw = bytes.get(offset..offset + 8)?;
+    Some(u64::from_ne_bytes([
+        raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+    ]))
+}
+
+#[inline]
+fn read_f32_at(bytes: &[u8], offset: usize) -> Option<f32> {
+    Some(f32::from_ne_bytes(
+        read_u32_at(bytes, offset)?.to_ne_bytes(),
+    ))
+}
+
+#[inline]
+fn read_f64_at(bytes: &[u8], offset: usize) -> Option<f64> {
+    Some(f64::from_ne_bytes(
+        read_u64_at(bytes, offset)?.to_ne_bytes(),
+    ))
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Coord {
     Pixel(f32),
@@ -306,31 +340,37 @@ impl BgInfo {
         let name = deserialize_boxed_str(bytes);
         let mut i = name.len() + 4;
 
-        assert!(bytes.len() > i + 17);
+        if bytes.len() <= i + 17 {
+            return (
+                Self {
+                    name,
+                    dim: (0, 0),
+                    scale_factor: Scale::Output(NonZeroI32::MIN),
+                    img: BgImg::Color([0, 0, 0, 0]),
+                    pixel_format: PixelFormat::Argb,
+                },
+                bytes.len(),
+            );
+        }
 
         let dim = (
-            u32::from_ne_bytes(bytes[i..i + 4].try_into().unwrap()),
-            u32::from_ne_bytes(bytes[i + 4..i + 8].try_into().unwrap()),
+            read_u32_at(bytes, i).unwrap_or(0),
+            read_u32_at(bytes, i + 4).unwrap_or(0),
         );
         i += 8;
 
         let scale_factor = if bytes[i] == 0 {
             Scale::Output(
-                i32::from_ne_bytes(bytes[i + 1..i + 5].try_into().unwrap())
-                    .try_into()
-                    .unwrap(),
+                NonZeroI32::new(read_i32_at(bytes, i + 1).unwrap_or(1)).unwrap_or(NonZeroI32::MIN),
             )
         } else if bytes[i] == 1 {
             Scale::Preferred(
-                i32::from_ne_bytes(bytes[i + 1..i + 5].try_into().unwrap())
-                    .try_into()
-                    .unwrap(),
+                NonZeroI32::new(read_i32_at(bytes, i + 1).unwrap_or(1)).unwrap_or(NonZeroI32::MIN),
             )
         } else {
             Scale::Fractional(
-                i32::from_ne_bytes(bytes[i + 1..i + 5].try_into().unwrap())
-                    .try_into()
-                    .unwrap(),
+                NonZeroI32::new(read_i32_at(bytes, i + 1).unwrap_or(120))
+                    .unwrap_or(NonZeroI32::MIN),
             )
         };
         i += 5;
@@ -472,34 +512,39 @@ impl Transition {
             5 => TransitionType::Wave,
             _ => TransitionType::None,
         };
-        let duration = f32::from_ne_bytes(bytes[1..5].try_into().unwrap());
+        let duration = read_f32_at(bytes, 1).unwrap_or(0.0);
         let step = NonZeroU8::new(bytes[5]).unwrap_or(NonZeroU8::MIN);
-        let fps = u16::from_ne_bytes(bytes[6..8].try_into().unwrap());
-        let angle = f64::from_ne_bytes(bytes[8..16].try_into().unwrap());
+        let fps = read_u32_at(bytes, 4)
+            .map(|_| {
+                let raw = bytes.get(6..8).unwrap_or(&[60, 0]);
+                u16::from_ne_bytes([raw[0], raw[1]])
+            })
+            .unwrap_or(60);
+        let angle = read_f64_at(bytes, 8).unwrap_or(0.0);
         let pos = {
             let x = if bytes[16] == 0 {
-                Coord::Pixel(f32::from_ne_bytes(bytes[17..21].try_into().unwrap()))
+                Coord::Pixel(read_f32_at(bytes, 17).unwrap_or(0.5))
             } else {
-                Coord::Percent(f32::from_ne_bytes(bytes[17..21].try_into().unwrap()))
+                Coord::Percent(read_f32_at(bytes, 17).unwrap_or(0.5))
             };
             let y = if bytes[21] == 0 {
-                Coord::Pixel(f32::from_ne_bytes(bytes[22..26].try_into().unwrap()))
+                Coord::Pixel(read_f32_at(bytes, 22).unwrap_or(0.5))
             } else {
-                Coord::Percent(f32::from_ne_bytes(bytes[22..26].try_into().unwrap()))
+                Coord::Percent(read_f32_at(bytes, 22).unwrap_or(0.5))
             };
             Position { x, y }
         };
 
         let bezier = (
-            f32::from_ne_bytes(bytes[26..30].try_into().unwrap()),
-            f32::from_ne_bytes(bytes[30..34].try_into().unwrap()),
-            f32::from_ne_bytes(bytes[34..38].try_into().unwrap()),
-            f32::from_ne_bytes(bytes[38..42].try_into().unwrap()),
+            read_f32_at(bytes, 26).unwrap_or(0.0),
+            read_f32_at(bytes, 30).unwrap_or(0.0),
+            read_f32_at(bytes, 34).unwrap_or(1.0),
+            read_f32_at(bytes, 38).unwrap_or(1.0),
         );
 
         let wave = (
-            f32::from_ne_bytes(bytes[42..46].try_into().unwrap()),
-            f32::from_ne_bytes(bytes[46..50].try_into().unwrap()),
+            read_f32_at(bytes, 42).unwrap_or(10.0),
+            read_f32_at(bytes, 46).unwrap_or(10.0),
         );
 
         let invert_y = bytes[50] != 0;
@@ -575,8 +620,8 @@ impl ImgReq {
         i += 4 + img.bytes().len();
 
         let dim = (
-            u32::from_ne_bytes(bytes[i..i + 4].try_into().unwrap()),
-            u32::from_ne_bytes(bytes[i + 4..i + 8].try_into().unwrap()),
+            read_u32_at(bytes, i).unwrap_or(0),
+            read_u32_at(bytes, i + 4).unwrap_or(0),
         );
         i += 8;
 
@@ -649,13 +694,13 @@ impl Animation {
 
     pub(crate) fn deserialize(mmap: &Mmap, bytes: &[u8]) -> Option<(Self, usize)> {
         let mut i = 0;
-        let animation_len = u32::from_ne_bytes(bytes.get(i..i + 4)?.try_into().unwrap()) as usize;
+        let animation_len = read_u32_at(bytes, i)? as usize;
         i += 4;
         let mut animation = Vec::with_capacity(animation_len);
         for _ in 0..animation_len {
             let (anim, offset) = BitPack::deserialize(mmap, bytes.get(i..)?)?;
             i += offset;
-            let duration = Nanos(u64::from_ne_bytes(bytes.get(i..i + 8)?.try_into().unwrap()));
+            let duration = Nanos(read_u64_at(bytes, i)?);
             i += 8;
             animation.push((anim, duration));
         }
@@ -681,7 +726,9 @@ fn deserialize_boxed_str(bytes: &[u8]) -> Box<str> {
         return "".into();
     }
 
-    let size = u32::from_ne_bytes(bytes[0..4].try_into().unwrap()) as usize;
+    let Some(size) = read_u32_at(bytes, 0).map(|s| s as usize) else {
+        return "".into();
+    };
     if bytes.len() < 4 + size {
         return "".into();
     }

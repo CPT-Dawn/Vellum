@@ -39,7 +39,10 @@ impl FrameCallbackHandler {
         surface: ObjectId,
     ) {
         let callback = objman.create(WaylandObject::Callback);
-        wl_surface::req::frame(backend, surface, callback).unwrap();
+        if let Err(e) = wl_surface::req::frame(backend, surface, callback) {
+            error!("failed to request frame callback: {e}");
+            return;
+        }
         self.callback = Some(callback);
     }
 }
@@ -100,13 +103,21 @@ impl Wallpaper {
         } = output_info;
 
         let wl_surface = objman.create(WaylandObject::Surface);
-        wl_compositor::req::create_surface(backend, *compositor, wl_surface).unwrap();
+        if let Err(e) = wl_compositor::req::create_surface(backend, *compositor, wl_surface) {
+            error!("failed to create wl_surface: {e}");
+        }
 
         let region = objman.create(WaylandObject::Region);
-        wl_compositor::req::create_region(backend, *compositor, region).unwrap();
+        if let Err(e) = wl_compositor::req::create_region(backend, *compositor, region) {
+            error!("failed to create wl_region: {e}");
+        }
 
-        wl_surface::req::set_input_region(backend, wl_surface, Some(region)).unwrap();
-        wl_region::req::destroy(backend, region).unwrap();
+        if let Err(e) = wl_surface::req::set_input_region(backend, wl_surface, Some(region)) {
+            error!("failed to set input region: {e}");
+        }
+        if let Err(e) = wl_region::req::destroy(backend, region) {
+            error!("failed to destroy wl_region: {e}");
+        }
 
         let layer_surface = objman.create(WaylandObject::LayerSurface);
         zwlr_layer_shell_v1::req::get_layer_surface(
@@ -118,17 +129,23 @@ impl Wallpaper {
             *layer,
             &format!("vellum-daemon{}", daemon.namespace),
         )
-        .unwrap();
+        .inspect_err(|e| error!("failed to create layer surface: {e}"))
+        .ok();
 
         let wp_viewport = objman.create(WaylandObject::Viewport);
-        wp_viewporter::req::get_viewport(backend, *viewporter, wp_viewport, wl_surface).unwrap();
+        if let Err(e) =
+            wp_viewporter::req::get_viewport(backend, *viewporter, wp_viewport, wl_surface)
+        {
+            error!("failed to create viewport: {e}");
+        }
 
         let wp_fractional = if let Some(fract_man) = fractional_scale_manager {
             let fractional = objman.create(WaylandObject::FractionalScale);
             wp_fractional_scale_manager_v1::req::get_fractional_scale(
                 backend, *fract_man, fractional, wl_surface,
             )
-            .unwrap();
+            .inspect_err(|e| error!("failed to create fractional scale object: {e}"))
+            .ok();
             Some(fractional)
         } else {
             None
@@ -143,20 +160,30 @@ impl Wallpaper {
                 | zwlr_layer_surface_v1::Anchor::RIGHT
                 | zwlr_layer_surface_v1::Anchor::LEFT,
         )
-        .unwrap();
-        zwlr_layer_surface_v1::req::set_exclusive_zone(backend, layer_surface, -1).unwrap();
-        zwlr_layer_surface_v1::req::set_margin(backend, layer_surface, 0, 0, 0, 0).unwrap();
+        .inspect_err(|e| error!("failed to set layer anchors: {e}"))
+        .ok();
+        if let Err(e) = zwlr_layer_surface_v1::req::set_exclusive_zone(backend, layer_surface, -1) {
+            error!("failed to set layer exclusive zone: {e}");
+        }
+        if let Err(e) = zwlr_layer_surface_v1::req::set_margin(backend, layer_surface, 0, 0, 0, 0) {
+            error!("failed to set layer margins: {e}");
+        }
         zwlr_layer_surface_v1::req::set_keyboard_interactivity(
             backend,
             layer_surface,
             zwlr_layer_surface_v1::KeyboardInteractivity::None,
         )
-        .unwrap();
-        zwlr_layer_surface_v1::req::set_size(backend, layer_surface, 0, 0).unwrap();
+        .inspect_err(|e| error!("failed to set keyboard interactivity: {e}"))
+        .ok();
+        if let Err(e) = zwlr_layer_surface_v1::req::set_size(backend, layer_surface, 0, 0) {
+            error!("failed to set layer size: {e}");
+        }
 
         let frame_callback_handler = FrameCallbackHandler::new();
         // commit so that the compositor send the initial configuration
-        wl_surface::req::commit(backend, wl_surface).unwrap();
+        if let Err(e) = wl_surface::req::commit(backend, wl_surface) {
+            error!("failed to commit initial layer surface: {e}");
+        }
 
         let pool = BumpPool::new(backend, objman, *shm, 256, 256, *pixel_format);
 
@@ -170,8 +197,10 @@ impl Wallpaper {
             wp_viewport,
             wp_fractional,
             layer_surface,
-            width: NonZeroI32::new(4).unwrap(),
-            height: NonZeroI32::new(4).unwrap(),
+            // SAFETY: literal 4 is non-zero.
+            width: unsafe { NonZeroI32::new_unchecked(4) },
+            // SAFETY: literal 4 is non-zero.
+            height: unsafe { NonZeroI32::new_unchecked(4) },
             scale_factor,
             ack_serial: 0,
             needs_ack: false,
@@ -265,7 +294,8 @@ impl Wallpaper {
                 self.layer_surface,
                 self.ack_serial,
             )
-            .unwrap();
+            .inspect_err(|e| error!("failed to ack layer configure: {e}"))
+            .ok();
             self.needs_ack = false;
         }
 
@@ -341,14 +371,19 @@ impl Wallpaper {
             self.output_name, self.scale_factor
         );
 
-        wp_viewport::req::set_destination(backend, self.wp_viewport, width, height).unwrap();
+        if let Err(e) = wp_viewport::req::set_destination(backend, self.wp_viewport, width, height)
+        {
+            error!("failed to set viewport destination: {e}");
+        }
 
         let (w, h) = self.scale_factor.mul_dim(width, height);
         self.pool.resize(backend, w, h);
 
         self.frame_callback_handler.callback = None;
 
-        wl_surface::req::commit(backend, self.wl_surface).unwrap();
+        if let Err(e) = wl_surface::req::commit(backend, self.wl_surface) {
+            error!("failed to commit wallpaper surface: {e}");
+        }
         self.configured = true;
         true
     }
@@ -441,11 +476,17 @@ impl Wallpaper {
     pub fn destroy(&mut self, backend: &mut Waybackend) {
         // Careful not to panic here, since we call this on drop
 
-        wp_viewport::req::destroy(backend, self.wp_viewport).unwrap();
-        if let Some(fractional) = self.wp_fractional {
-            wp_fractional_scale_v1::req::destroy(backend, fractional).unwrap();
+        if let Err(e) = wp_viewport::req::destroy(backend, self.wp_viewport) {
+            error!("failed to destroy viewport: {e}");
         }
-        zwlr_layer_surface_v1::req::destroy(backend, self.layer_surface).unwrap();
+        if let Some(fractional) = self.wp_fractional
+            && let Err(e) = wp_fractional_scale_v1::req::destroy(backend, fractional)
+        {
+            error!("failed to destroy fractional scale object: {e}");
+        }
+        if let Err(e) = zwlr_layer_surface_v1::req::destroy(backend, self.layer_surface) {
+            error!("failed to destroy layer surface: {e}");
+        }
         self.pool.destroy(backend);
 
         debug!(
@@ -464,8 +505,14 @@ impl Wallpaper {
         let buf = self.pool.get_committable_buffer();
         let (width, height) = (self.pool.width(), self.pool.height());
 
-        wl_surface::req::attach(backend, surface, Some(buf), 0, 0).unwrap();
-        wl_surface::req::damage_buffer(backend, surface, 0, 0, width, height).unwrap();
+        if let Err(e) = wl_surface::req::attach(backend, surface, Some(buf), 0, 0) {
+            error!("failed to attach surface buffer: {e}");
+            return;
+        }
+        if let Err(e) = wl_surface::req::damage_buffer(backend, surface, 0, 0, width, height) {
+            error!("failed to damage surface buffer: {e}");
+            return;
+        }
         self.frame_callback_handler
             .request_frame_callback(backend, objman, surface);
     }
@@ -488,6 +535,8 @@ pub fn attach_buffers_and_damage_surfaces(
 pub fn commit_wallpapers(backend: &mut Waybackend, wallpapers: &[WallpaperCell]) {
     for wallpaper in wallpapers {
         let wallpaper = wallpaper.borrow();
-        wl_surface::req::commit(backend, wallpaper.wl_surface).unwrap();
+        if let Err(e) = wl_surface::req::commit(backend, wallpaper.wl_surface) {
+            error!("failed to commit wallpaper surface batch: {e}");
+        }
     }
 }

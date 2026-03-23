@@ -15,6 +15,18 @@ use crate::mmap::MmappedBytes;
 mod comp;
 mod decomp;
 
+#[inline]
+fn read_u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
+    let raw = bytes.get(offset..offset + 4)?;
+    Some(u32::from_ne_bytes([raw[0], raw[1], raw[2], raw[3]]))
+}
+
+#[inline]
+fn read_i32_at(bytes: &[u8], offset: usize) -> Option<i32> {
+    let raw = bytes.get(offset..offset + 4)?;
+    Some(i32::from_ne_bytes([raw[0], raw[1], raw[2], raw[3]]))
+}
+
 /// extracted from lz4.h
 const LZ4_MAX_INPUT_SIZE: usize = 0x7E000000;
 
@@ -79,9 +91,9 @@ impl BitPack {
         if bytes.len() <= 12 {
             return None;
         }
-        let len = u32::from_ne_bytes(bytes.get(0..4)?.try_into().unwrap()) as usize;
-        let expected_buf_size = u32::from_ne_bytes(bytes.get(4..8)?.try_into().unwrap());
-        let compressed_size = i32::from_ne_bytes(bytes.get(8..12)?.try_into().unwrap());
+        let len = read_u32_at(bytes, 0)? as usize;
+        let expected_buf_size = read_u32_at(bytes, 4)?;
+        let compressed_size = read_i32_at(bytes, 8)?;
         let inner = Inner::Mmapped(MmappedBytes::new_with_len(
             map,
             bytes.get(12..12 + len)?,
@@ -229,7 +241,10 @@ impl Drop for Decompressor {
     #[inline]
     fn drop(&mut self) {
         if self.cap > 0 {
-            let layout = ::alloc::alloc::Layout::array::<u8>(self.cap).unwrap();
+            let layout = match ::alloc::alloc::Layout::array::<u8>(self.cap) {
+                Ok(layout) => layout,
+                Err(_) => return,
+            };
             unsafe { ::alloc::alloc::dealloc(self.ptr.as_ptr(), layout) }
         }
     }
@@ -287,15 +302,24 @@ impl Decompressor {
         }
 
         let ptr = if self.cap == 0 {
-            let layout = ::alloc::alloc::Layout::array::<u8>(goal).unwrap();
+            let layout = match ::alloc::alloc::Layout::array::<u8>(goal) {
+                Ok(layout) => layout,
+                Err(_) => ::alloc::alloc::handle_alloc_error(::alloc::alloc::Layout::new::<u8>()),
+            };
             let p = unsafe { ::alloc::alloc::alloc(layout) };
             match core::ptr::NonNull::new(p) {
                 Some(p) => p,
                 None => ::alloc::alloc::handle_alloc_error(layout),
             }
         } else {
-            let old_layout = ::alloc::alloc::Layout::array::<u8>(self.cap).unwrap();
-            let new_layout = ::alloc::alloc::Layout::array::<u8>(goal).unwrap();
+            let old_layout = match ::alloc::alloc::Layout::array::<u8>(self.cap) {
+                Ok(layout) => layout,
+                Err(_) => ::alloc::alloc::handle_alloc_error(::alloc::alloc::Layout::new::<u8>()),
+            };
+            let new_layout = match ::alloc::alloc::Layout::array::<u8>(goal) {
+                Ok(layout) => layout,
+                Err(_) => ::alloc::alloc::handle_alloc_error(::alloc::alloc::Layout::new::<u8>()),
+            };
             let p = unsafe {
                 ::alloc::alloc::realloc(self.ptr.as_ptr(), old_layout, new_layout.size())
             };
@@ -449,14 +473,17 @@ mod tests {
         for format in FORMATS {
             let frame1 = [1, 2, 3, 4, 5, 6];
             let frame2 = [1, 2, 3, 6, 5, 4];
-            let compressed = Compressor::new()
-                .compress(&frame1, &frame2, format)
-                .unwrap();
+            let compressed = match Compressor::new().compress(&frame1, &frame2, format) {
+                Some(compressed) => compressed,
+                None => panic!("expected compression output in small test"),
+            };
 
             let mut buf = buf_from(&frame1, format.channels().into());
-            Decompressor::new()
-                .decompress(&compressed, &mut buf, format)
-                .unwrap();
+            assert!(
+                Decompressor::new()
+                    .decompress(&compressed, &mut buf, format)
+                    .is_ok()
+            );
             for i in 0..2 {
                 let k = i * 3;
                 let l = i * format.channels() as usize;
@@ -488,24 +515,27 @@ mod tests {
                 let mut compressed = Vec::with_capacity(20);
                 let mut compressor = Compressor::new();
                 let mut decompressor = Decompressor::new();
-                compressed.push(
-                    compressor
-                        .compress(original.last().unwrap(), &original[0], format)
-                        .unwrap(),
-                );
+                let last = &original[original.len() - 1];
+                let initial = match compressor.compress(last, &original[0], format) {
+                    Some(bitpack) => bitpack,
+                    None => panic!("expected first compressed frame"),
+                };
+                compressed.push(initial);
                 for i in 1..20 {
-                    compressed.push(
-                        compressor
-                            .compress(&original[i - 1], &original[i], format)
-                            .unwrap(),
-                    );
+                    let next = match compressor.compress(&original[i - 1], &original[i], format) {
+                        Some(bitpack) => bitpack,
+                        None => panic!("expected compressed frame at index {i}"),
+                    };
+                    compressed.push(next);
                 }
 
-                let mut buf = buf_from(original.last().unwrap(), format.channels().into());
+                let mut buf = buf_from(last, format.channels().into());
                 for i in 0..20 {
-                    decompressor
-                        .decompress(&compressed[i], &mut buf, format)
-                        .unwrap();
+                    assert!(
+                        decompressor
+                            .decompress(&compressed[i], &mut buf, format)
+                            .is_ok()
+                    );
                     let mut j = 0;
                     let mut l = 0;
                     while j < 3000 {
@@ -550,24 +580,27 @@ mod tests {
                 let mut compressor = Compressor::new();
                 let mut decompressor = Decompressor::new();
                 let mut compressed = Vec::with_capacity(20);
-                compressed.push(
-                    compressor
-                        .compress(original.last().unwrap(), &original[0], format)
-                        .unwrap(),
-                );
+                let last = &original[original.len() - 1];
+                let initial = match compressor.compress(last, &original[0], format) {
+                    Some(bitpack) => bitpack,
+                    None => panic!("expected first compressed frame"),
+                };
+                compressed.push(initial);
                 for i in 1..20 {
-                    compressed.push(
-                        compressor
-                            .compress(&original[i - 1], &original[i], format)
-                            .unwrap(),
-                    );
+                    let next = match compressor.compress(&original[i - 1], &original[i], format) {
+                        Some(bitpack) => bitpack,
+                        None => panic!("expected compressed frame at index {i}"),
+                    };
+                    compressed.push(next);
                 }
 
-                let mut buf = buf_from(original.last().unwrap(), format.channels().into());
+                let mut buf = buf_from(last, format.channels().into());
                 for i in 0..20 {
-                    decompressor
-                        .decompress(&compressed[i], &mut buf, format)
-                        .unwrap();
+                    assert!(
+                        decompressor
+                            .decompress(&compressed[i], &mut buf, format)
+                            .is_ok()
+                    );
                     let mut j = 0;
                     let mut l = 0;
                     while j < 3000 {

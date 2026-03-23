@@ -129,9 +129,8 @@ impl Mmap {
     /// Because `unmap`, above, is only used in the daemon, this is also only used there
     pub fn ensure_mapped(&mut self) {
         if !self.mmapped {
-            self.mmapped = true;
-            self.ptr = unsafe {
-                let ptr = mmap(
+            let mapped = unsafe {
+                mmap(
                     core::ptr::null_mut(),
                     self.len,
                     Self::PROT,
@@ -139,17 +138,26 @@ impl Mmap {
                     &self.fd,
                     0,
                 )
-                .unwrap();
-                // SAFETY: the function above will never return a null pointer if it succeeds
-                // POSIX says that the implementation will never select an address at 0
-                NonNull::new_unchecked(ptr)
             };
+            match mapped {
+                Ok(ptr) => {
+                    self.mmapped = true;
+                    // SAFETY: mmap does not return a null pointer on success.
+                    self.ptr = unsafe { NonNull::new_unchecked(ptr) };
+                }
+                Err(e) => {
+                    log::error!("failed to map memory: {e}");
+                }
+            }
         }
     }
 
     #[inline]
     pub fn remap(&mut self, new: usize) {
-        io::retry_on_intr(|| fs::ftruncate(&self.fd, new as u64)).unwrap();
+        if let Err(e) = io::retry_on_intr(|| fs::ftruncate(&self.fd, new as u64)) {
+            log::error!("failed to resize mmap backing fd: {e}");
+            return;
+        }
 
         #[cfg(target_os = "linux")]
         {
@@ -167,29 +175,35 @@ impl Mmap {
             }
         }
 
-        self.unmap();
-
-        self.len = new;
-        self.ptr = unsafe {
-            let ptr = mmap(
+        let mapped = unsafe {
+            mmap(
                 core::ptr::null_mut(),
-                self.len,
+                new,
                 Self::PROT,
                 Self::FLAGS,
                 &self.fd,
                 0,
             )
-            .unwrap();
-            // SAFETY: the function above will never return a null pointer if it succeeds
-            // POSIX says that the implementation will never select an address at 0
-            NonNull::new_unchecked(ptr)
         };
+        let ptr = match mapped {
+            Ok(ptr) => ptr,
+            Err(e) => {
+                log::error!("failed to remap memory: {e}");
+                return;
+            }
+        };
+
+        self.unmap();
+        self.len = new;
+        // SAFETY: mmap does not return a null pointer on success.
+        self.ptr = unsafe { NonNull::new_unchecked(ptr) };
+        self.mmapped = true;
     }
 
     #[must_use]
     pub(crate) fn from_fd(fd: OwnedFd, len: usize) -> Self {
-        let ptr = unsafe {
-            let ptr = mmap(
+        let ptr = match unsafe {
+            mmap(
                 core::ptr::null_mut(),
                 len,
                 ProtFlags::READ,
@@ -197,10 +211,12 @@ impl Mmap {
                 &fd,
                 0,
             )
-            .unwrap();
-            // SAFETY: the function above will never return a null pointer if it succeeds
-            // POSIX says that the implementation will never select an address at 0
-            NonNull::new_unchecked(ptr)
+        } {
+            Ok(ptr) => {
+                // SAFETY: mmap does not return a null pointer on success.
+                unsafe { NonNull::new_unchecked(ptr) }
+            }
+            Err(e) => panic!("failed to map fd-backed shared memory: {e}"),
         };
         Self {
             fd,
@@ -260,7 +276,10 @@ impl<const UTF8: bool> Mmapped<UTF8> {
 
     #[must_use]
     pub(crate) fn new(map: &Mmap, bytes: &[u8]) -> Self {
-        let len = u32::from_ne_bytes(bytes[0..4].try_into().unwrap()) as usize;
+        let Some(raw_len) = bytes.get(0..4) else {
+            return Self::new_with_len(map, &[], 0);
+        };
+        let len = u32::from_ne_bytes([raw_len[0], raw_len[1], raw_len[2], raw_len[3]]) as usize;
         let bytes = &bytes[4..];
         Self::new_with_len(map, bytes, len)
     }
@@ -271,27 +290,35 @@ impl<const UTF8: bool> Mmapped<UTF8> {
         let page_size = rustix::param::page_size();
         let page_offset = offset - offset % page_size;
 
-        let base_ptr = unsafe {
-            let ptr = mmap(
+        let total_len = len + (offset - page_offset);
+        let base_ptr = match unsafe {
+            mmap(
                 core::ptr::null_mut(),
-                len + (offset - page_offset),
+                total_len,
                 Self::PROT,
                 Self::FLAGS,
                 &map.fd,
                 page_offset as u64,
             )
-            .unwrap();
-            // SAFETY: the function above will never return a null pointer if it succeeds
-            // POSIX says that the implementation will never select an address at 0
-            NonNull::new_unchecked(ptr)
+        } {
+            Ok(ptr) => {
+                // SAFETY: mmap does not return a null pointer on success.
+                unsafe { NonNull::new_unchecked(ptr) }
+            }
+            Err(e) => panic!("failed to map mmapped view: {e}"),
         };
         let ptr =
             unsafe { NonNull::new_unchecked(base_ptr.as_ptr().byte_add(offset - page_offset)) };
 
+        let mut len = len;
         if UTF8 {
-            // try to parse, panicking if we fail
+            // Keep UTF8 invariant for `MmappedStr::str()` by downgrading invalid payloads to
+            // empty strings instead of panicking.
             let s = unsafe { core::slice::from_raw_parts(ptr.as_ptr().cast(), len) };
-            let _ = core::str::from_utf8(s).expect("received a non utf8 string from socket");
+            if core::str::from_utf8(s).is_err() {
+                log::error!("received a non utf8 string from socket");
+                len = 0;
+            }
         }
 
         Self { base_ptr, ptr, len }

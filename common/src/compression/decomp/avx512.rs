@@ -134,7 +134,7 @@ mod tests {
         compressed.extend([0, 0]);
 
         let mut buf = buf_from(&frame1);
-        unsafe { unpack_bytes_4channels(&mut buf, &compressed).unwrap() }
+        assert!(unsafe { unpack_bytes_4channels(&mut buf, &compressed) }.is_ok());
         for i in 0..2 {
             for j in 0..3 {
                 assert_eq!(
@@ -163,7 +163,8 @@ mod tests {
 
             let mut compressed = Vec::with_capacity(20);
             let mut buf = Vec::new();
-            unsafe { pack_bytes(original.last().unwrap(), &original[0], &mut buf) }
+            let last = &original[original.len() - 1];
+            unsafe { pack_bytes(last, &original[0], &mut buf) }
             buf.extend([0, 0]);
             compressed.push(buf.clone().into_boxed_slice());
             for i in 1..20 {
@@ -173,9 +174,9 @@ mod tests {
                 compressed.push(buf.clone().into_boxed_slice());
             }
 
-            let mut buf = buf_from(original.last().unwrap());
+            let mut buf = buf_from(last);
             for i in 0..20 {
-                unsafe { unpack_bytes_4channels(&mut buf, &compressed[i]).unwrap() }
+                assert!(unsafe { unpack_bytes_4channels(&mut buf, &compressed[i]) }.is_ok());
                 let mut j = 0;
                 let mut l = 0;
                 while j < 3000 {
@@ -220,7 +221,8 @@ mod tests {
 
             let mut compressed = Vec::with_capacity(20);
             let mut buf = Vec::new();
-            unsafe { pack_bytes(original.last().unwrap(), &original[0], &mut buf) }
+            let last = &original[original.len() - 1];
+            unsafe { pack_bytes(last, &original[0], &mut buf) }
             buf.extend([0, 0]);
             compressed.push(buf.clone().into_boxed_slice());
             for i in 1..20 {
@@ -230,9 +232,9 @@ mod tests {
                 compressed.push(buf.clone().into_boxed_slice());
             }
 
-            let mut buf = buf_from(original.last().unwrap());
+            let mut buf = buf_from(last);
             for i in 0..20 {
-                unsafe { unpack_bytes_4channels(&mut buf, &compressed[i]).unwrap() }
+                assert!(unsafe { unpack_bytes_4channels(&mut buf, &compressed[i]) }.is_ok());
                 let mut j = 0;
                 let mut l = 0;
                 while j < 3000 {

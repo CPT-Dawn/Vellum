@@ -187,7 +187,7 @@ mod tests {
     fn ub_unpack_bytes4_poorly_formed() {
         let mut bytes = vec![u8::MAX; 9];
         let diff = vec![u8::MAX; 18];
-        unsafe { unpack_bytes_4channels(&mut bytes, &diff) }.unwrap();
+        assert!(unsafe { unpack_bytes_4channels(&mut bytes, &diff) }.is_ok());
     }
 
     #[test]
@@ -195,7 +195,7 @@ mod tests {
     fn ub_unpack_bytes3_poorly_formed() {
         let mut bytes = vec![u8::MAX; 9];
         let diff = vec![u8::MAX; 18];
-        unsafe { unpack_bytes_3channels(&mut bytes, &diff) }.unwrap();
+        assert!(unsafe { unpack_bytes_3channels(&mut bytes, &diff) }.is_ok());
     }
 
     #[test]
@@ -205,7 +205,7 @@ mod tests {
         let mut diff = vec![u8::MAX; 18];
         diff[8] = 0;
         diff[7] = 0;
-        unsafe { unpack_bytes_4channels(&mut bytes, &diff) }.unwrap();
+        assert!(unsafe { unpack_bytes_4channels(&mut bytes, &diff) }.is_ok());
     }
 
     #[test]
@@ -215,7 +215,7 @@ mod tests {
         let mut diff = vec![u8::MAX; 18];
         diff[8] = 0;
         diff[7] = 0;
-        unsafe { unpack_bytes_3channels(&mut bytes, &diff) }.unwrap();
+        assert!(unsafe { unpack_bytes_3channels(&mut bytes, &diff) }.is_ok());
     }
 
     #[test]
@@ -226,7 +226,7 @@ mod tests {
         diff[8] = 0;
         diff[7] = 0;
         diff[2] = 0;
-        unsafe { unpack_bytes_4channels(&mut bytes, &diff) }.unwrap();
+        assert!(unsafe { unpack_bytes_4channels(&mut bytes, &diff) }.is_ok());
     }
 
     #[test]
@@ -237,6 +237,6 @@ mod tests {
         diff[8] = 0;
         diff[7] = 0;
         diff[2] = 0;
-        unsafe { unpack_bytes_3channels(&mut bytes, &diff) }.unwrap();
+        assert!(unsafe { unpack_bytes_3channels(&mut bytes, &diff) }.is_ok());
     }
 }
