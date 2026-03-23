@@ -11,6 +11,7 @@ pub(crate) struct DaemonState {
     pub(crate) assignments: HashMap<Option<String>, WallpaperAssignment>,
 }
 
+#[derive(Clone, Debug)]
 pub(crate) struct WallpaperAssignment {
     pub(crate) path: PathBuf,
     pub(crate) mode: ScaleMode,

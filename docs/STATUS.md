@@ -33,16 +33,23 @@
 - Renderer now uploads composed native frame bytes into shared-memory pool entries per output.
 - Renderer now emits native commit descriptors (output, stride, buffer id, source) from layer-shell session flow.
 - Renderer now forwards native commit descriptors into a wl_shm bridge stage that tracks latest per-output commits.
+- wl_shm bridge now executes native commit plans through a commit executor boundary with validation and error propagation back to renderer apply.
+- Renderer backend assignment state now advances transactionally only after successful wl_shm commit execution.
+- Daemon now runs a continuous monitor refresh loop and re-syncs renderer output surfaces when monitor snapshots change.
+- Daemon startup now replays persisted assignments into renderer state so restored assignments are applied immediately after boot.
+- Daemon now binds its IPC socket before bootstrap replay work, improving startup responsiveness and restart reliability.
+- Set-wallpaper daemon state rollback now restores the previous assignment on renderer failure, preserving transactional correctness.
+- Daemon monitor refresh loop and IPC handlers now share a synchronized monitor snapshot for monitor queries and target validation.
 
 ## In Progress
 
-- None.
+- Integrating live Wayland protocol event loop bindings into layer-shell session internals (replacing CLI-based monitor probing path).
 
 ## Remaining Before Project Completion
 
-- None.
+- Add compositor-backed integration tests in a Wayland test harness environment.
 
 ## Recommended Next Slices
 
-1. Integrate live Wayland protocol event loop bindings into layer-shell session internals.
+1. Finish wiring wl_output registry and lifecycle callbacks into layer-shell session state.
 2. Add compositor-backed integration tests in a Wayland test harness environment.

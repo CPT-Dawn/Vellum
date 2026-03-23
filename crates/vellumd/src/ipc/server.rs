@@ -9,6 +9,7 @@ use tracing::{debug, error};
 use vellum_ipc::{RequestEnvelope, Response, ResponseEnvelope};
 
 use crate::ipc::handlers::handle_request;
+use crate::monitor::MonitorSnapshot;
 use crate::renderer::RendererState;
 use crate::state::DaemonState;
 
@@ -17,6 +18,7 @@ pub(crate) async fn run_client_session(
     shutdown_tx: watch::Sender<bool>,
     daemon_state: Arc<Mutex<DaemonState>>,
     renderer_state: Arc<Mutex<RendererState>>,
+    monitor_snapshot: MonitorSnapshot,
     state_path: PathBuf,
 ) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
@@ -62,6 +64,7 @@ pub(crate) async fn run_client_session(
             envelope.request,
             &daemon_state,
             &renderer_state,
+            &monitor_snapshot,
             &state_path,
         )
         .await?;
