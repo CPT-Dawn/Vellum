@@ -1,4 +1,5 @@
 mod app;
+mod backend;
 mod ui;
 
 use std::{io, time::Duration};
