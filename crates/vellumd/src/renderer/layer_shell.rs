@@ -1,9 +1,10 @@
 use anyhow::Result;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use tracing::info;
+use tracing::{info, warn};
 use vellum_ipc::ScaleMode;
 
+use crate::renderer::image_blit::{render_frame, NativeFrame};
 use crate::renderer::shm_pool::ShmPool;
 use crate::renderer::swaybg::SwaybgController;
 
@@ -12,9 +13,11 @@ struct OutputSurface {
     width: u32,
     height: u32,
     scale_factor: u32,
+    current_stride: usize,
     current_buffer_id: Option<u64>,
     current_path: Option<PathBuf>,
     current_mode: Option<ScaleMode>,
+    current_frame: Option<NativeFrame>,
 }
 
 impl Default for OutputSurface {
@@ -23,9 +26,11 @@ impl Default for OutputSurface {
             width: 1920,
             height: 1080,
             scale_factor: 1,
+            current_stride: 1920 * 4,
             current_buffer_id: None,
             current_path: None,
             current_mode: None,
+            current_frame: None,
         }
     }
 }
@@ -128,6 +133,7 @@ impl LayerShellSession {
             }
             surface.current_path = None;
             surface.current_mode = None;
+            surface.current_frame = None;
         }
         self.presenter.clear_all();
 
@@ -146,18 +152,34 @@ impl LayerShellSession {
         path: &Path,
         mode: ScaleMode,
     ) -> Result<()> {
-        let logical_pixels = (surface.width as usize)
-            .saturating_mul(surface.height as usize)
-            .saturating_mul(surface.scale_factor as usize);
-        let required_bytes = logical_pixels.saturating_mul(4).max(4);
+        let target_width = surface.width.saturating_mul(surface.scale_factor).max(1);
+        let target_height = surface.height.saturating_mul(surface.scale_factor).max(1);
+
+        let frame = match render_frame(path, target_width, target_height, mode) {
+            Ok(frame) => frame,
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    path = %path.display(),
+                    width = target_width,
+                    height = target_height,
+                    "native frame rendering failed, using solid fallback frame"
+                );
+                NativeFrame::solid_black(target_width, target_height)
+            }
+        };
+
+        let required_bytes = frame.pixels.len().max(4);
 
         let next_buffer = pool.acquire(required_bytes)?;
         if let Some(previous) = surface.current_buffer_id.replace(next_buffer) {
             pool.release(previous);
         }
 
+        surface.current_stride = frame.stride;
         surface.current_path = Some(path.to_path_buf());
         surface.current_mode = Some(mode);
+        surface.current_frame = Some(frame);
         Ok(())
     }
 
@@ -193,6 +215,14 @@ impl LayerShellSession {
     pub(crate) fn presenter_process_count(&self) -> usize {
         self.presenter.running_count()
     }
+
+    #[cfg(test)]
+    pub(crate) fn frame_byte_len_for(&self, output: &str) -> Option<usize> {
+        self.surfaces
+            .get(output)
+            .and_then(|surface| surface.current_frame.as_ref())
+            .map(|frame| frame.pixels.len())
+    }
 }
 
 #[cfg(test)]
@@ -226,6 +256,7 @@ mod tests {
         assert_eq!(session.leased_buffer_count(), 2);
         assert!(session.has_assignment_for("DP-1"));
         assert!(session.has_assignment_for("HDMI-A-1"));
+        assert_eq!(session.frame_byte_len_for("DP-1"), Some(1920 * 1080 * 4));
 
         assert!(session.clear_assignments().is_ok());
         assert_eq!(session.leased_buffer_count(), 0);

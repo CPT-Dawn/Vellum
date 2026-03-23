@@ -29,6 +29,7 @@
 - Renderer now includes stress and latency checks for apply/clear flow and buffer boundedness.
 - Renderer now drives visible output via per-monitor swaybg presenter management on Wayland sessions.
 - IPC set/clear now fail fast if renderer presentation fails, avoiding false success responses.
+- Renderer now composes native per-output RGBA frame buffers with fit/fill/crop logic before presentation.
 
 ## In Progress
 

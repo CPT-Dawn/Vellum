@@ -1,5 +1,6 @@
 mod backend;
 mod command_queue;
+mod image_blit;
 mod image_pipeline;
 mod layer_shell;
 mod output_registry;
