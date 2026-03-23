@@ -5,6 +5,9 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
   build-linux:
     name: Build Linux Artifacts
@@ -29,9 +32,19 @@ jobs:
           cp target/release/vellumd dist/
           cp target/release/vellum-tui dist/
           tar -czf vellum-linux-x86_64.tar.gz -C dist vellumd vellum-tui
+          sha256sum vellum-linux-x86_64.tar.gz > SHA256SUMS
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
           name: vellum-linux-x86_64
-          path: vellum-linux-x86_64.tar.gz
+          path: |
+            vellum-linux-x86_64.tar.gz
+            SHA256SUMS
+
+      - name: Publish GitHub Release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            vellum-linux-x86_64.tar.gz
+            SHA256SUMS

@@ -15,6 +15,7 @@
 - Daemon IPC split into server and handler modules.
 - Tagged release workflow that builds and archives Linux binaries.
 - Renderer command queue now updates an internal backend assignment state.
+- Tagged release workflow now publishes GitHub Release assets with SHA256 checksums.
 
 ## In Progress
 
@@ -26,7 +27,6 @@
 - Implement wl_output hotplug lifecycle (add/remove/reconfigure outputs).
 - Implement shared-memory buffer lifecycle and reclamation strategy.
 - Add renderer-focused performance checks and memory profiling benchmarks.
-- Expand release pipeline to publish GitHub Releases and checksums.
 
 ## Recommended Next Slices
 
