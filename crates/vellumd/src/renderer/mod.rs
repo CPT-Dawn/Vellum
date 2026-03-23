@@ -121,8 +121,16 @@ impl RendererState {
             if let Err(err) = command_result {
                 // Requeue current and remaining commands so work is not lost on
                 // transient apply failures.
+                let requeued = pending.len().saturating_add(1);
+                let discarded_commits = self.session.drain_native_commit_plans().len();
                 self.queue
                     .prepend(std::iter::once(command).chain(pending.into_iter()));
+                warn!(
+                    requeued,
+                    discarded_commits,
+                    error = %err,
+                    "renderer command processing failed; commands requeued"
+                );
                 return Err(err);
             }
 
@@ -144,10 +152,19 @@ impl RendererState {
             );
         }
         self.shm_bridge.submit(commits);
-        let committed = self
-            .shm_bridge
-            .flush()
-            .context("wl_shm bridge flush failed")?;
+        let committed = match self.shm_bridge.flush() {
+            Ok(committed) => committed,
+            Err(err) => {
+                let requeued = successfully_applied.len();
+                self.queue.prepend(successfully_applied);
+                warn!(
+                    requeued,
+                    error = %err,
+                    "wl_shm bridge flush failed; commands requeued"
+                );
+                return Err(err).context("wl_shm bridge flush failed");
+            }
+        };
         info!(
             committed,
             outputs = self.shm_bridge.committed_output_count(),
@@ -187,6 +204,26 @@ impl RendererState {
     pub(crate) fn session_buffer_count(&self) -> usize {
         self.session.pool_entry_count()
     }
+
+    #[cfg(test)]
+    pub(crate) fn pending_command_count(&self) -> usize {
+        self.queue.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_invalid_commit_plan(&mut self, output: &str) {
+        use crate::renderer::native_commit::NativeCommitPlan;
+
+        self.shm_bridge.submit([NativeCommitPlan {
+            output: output.to_string(),
+            width: 1920,
+            height: 1080,
+            stride: 1,
+            buffer_id: 999,
+            source_path: PathBuf::from("/tmp/invalid.png"),
+            mode: ScaleMode::Fit,
+        }]);
+    }
 }
 
 #[cfg(test)]
@@ -225,5 +262,20 @@ mod tests {
 
         assert_eq!(renderer.backend.assignment_count(), 0);
         assert_eq!(renderer.committed_output_count(), 1);
+    }
+
+    #[test]
+    fn flush_failure_requeues_processed_commands() {
+        let mut renderer = RendererState::default();
+        renderer.refresh_outputs(vec!["DP-1".to_string()]);
+        renderer.enqueue_clear();
+        renderer.inject_invalid_commit_plan("DP-1");
+
+        let err = renderer
+            .apply_pending()
+            .expect_err("flush failure should bubble up");
+        assert!(err.to_string().contains("wl_shm bridge flush failed"));
+        assert_eq!(renderer.pending_command_count(), 1);
+        assert_eq!(renderer.backend_assignment_count(), 0);
     }
 }

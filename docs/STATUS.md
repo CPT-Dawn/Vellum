@@ -45,6 +45,7 @@
 - Daemon monitor discovery now includes a Wayland registry wl_output path before CLI fallbacks, moving monitor detection closer to native protocol flow.
 - Renderer apply loop now requeues failed and unprocessed render commands, preventing command loss on transient apply errors.
 - Renderer output registry now computes explicit add/remove deltas, and refresh logs lifecycle edges for monitor hotplug reconciliation.
+- Renderer now also requeues already-processed commands when wl_shm flush fails, preventing command loss after late-stage commit errors.
 
 ## In Progress
 
