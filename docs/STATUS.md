@@ -14,6 +14,7 @@
 - CI workflow for fmt, clippy, and workspace tests.
 - Daemon IPC split into server and handler modules.
 - Tagged release workflow that builds and archives Linux binaries.
+- Renderer command queue now updates an internal backend assignment state.
 
 ## In Progress
 
@@ -30,6 +31,6 @@
 ## Recommended Next Slices
 
 1. Move TUI app state/actions/layout into dedicated modules.
-2. Implement first renderer backend milestone for one output.
+2. Implement real Wayland output surface backend under renderer module.
 3. Add renderer-facing integration tests (command queue to backend behavior).
 4. Expand tagged release workflow with release publication and checksums.

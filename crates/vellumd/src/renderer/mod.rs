@@ -1,3 +1,4 @@
+mod backend;
 mod command_queue;
 mod output_registry;
 
@@ -5,6 +6,7 @@ use std::path::PathBuf;
 use tracing::info;
 use vellum_ipc::ScaleMode;
 
+use backend::BackendState;
 pub(crate) use command_queue::RenderCommand;
 use command_queue::RenderCommandQueue;
 pub(crate) use output_registry::OutputRegistry;
@@ -13,6 +15,7 @@ pub(crate) use output_registry::OutputRegistry;
 pub(crate) struct RendererState {
     outputs: OutputRegistry,
     queue: RenderCommandQueue,
+    backend: BackendState,
 }
 
 impl RendererState {
@@ -41,7 +44,7 @@ impl RendererState {
         // This is a scaffold stage: commands are queued and logged while the
         // concrete SCTK/layer-shell renderer backend is being implemented.
         for command in self.queue.drain() {
-            match command {
+            match &command {
                 RenderCommand::ApplyAssignment {
                     monitor,
                     path,
@@ -58,6 +61,42 @@ impl RendererState {
                     info!("renderer scaffold accepted clear command");
                 }
             }
+
+            // First renderer milestone: keep an internal backend assignment state
+            // synchronized with queued render commands.
+            self.backend.apply_command(command);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_then_clear_updates_backend_state() {
+        let mut renderer = RendererState::default();
+
+        renderer.enqueue_apply(
+            Some("DP-1".to_string()),
+            PathBuf::from("/tmp/wall.png"),
+            ScaleMode::Fill,
+        );
+        renderer.apply_pending();
+
+        assert_eq!(renderer.backend.assignment_count(), 1);
+        assert_eq!(
+            renderer.backend.assignment_mode_for(Some("DP-1")),
+            Some(ScaleMode::Fill)
+        );
+        assert_eq!(
+            renderer.backend.assignment_path_for(Some("DP-1")),
+            Some(PathBuf::from("/tmp/wall.png"))
+        );
+
+        renderer.enqueue_clear();
+        renderer.apply_pending();
+
+        assert_eq!(renderer.backend.assignment_count(), 0);
     }
 }
