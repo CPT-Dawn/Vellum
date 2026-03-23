@@ -26,6 +26,128 @@ const TICK_RATE_MS: u64 = 33;
 /// Minimum interval between automatic monitor re-probes.
 const MONITOR_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
+/// Available transition easings shown in the transition pane.
+const EASING_PRESETS: [&str; 4] = ["linear", "ease-in", "ease-out", "ease-in-out"];
+/// Available transition effects shown in the transition pane.
+const TRANSITION_EFFECTS: [&str; 4] = ["simple", "fade", "wipe", "grow"];
+
+/// Active pane focus within the three-column layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaneFocus {
+    /// File browser pane.
+    Browser,
+    /// Monitor preview pane.
+    Monitor,
+    /// Transition settings pane.
+    Transition,
+}
+
+impl PaneFocus {
+    /// Selects the next pane in the cycle.
+    fn next(self) -> Self {
+        match self {
+            Self::Browser => Self::Monitor,
+            Self::Monitor => Self::Transition,
+            Self::Transition => Self::Browser,
+        }
+    }
+
+    /// Selects the previous pane in the cycle.
+    fn prev(self) -> Self {
+        match self {
+            Self::Browser => Self::Transition,
+            Self::Monitor => Self::Browser,
+            Self::Transition => Self::Monitor,
+        }
+    }
+
+    /// Returns a human-readable pane name.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Browser => "Browser",
+            Self::Monitor => "Monitor",
+            Self::Transition => "Transition",
+        }
+    }
+}
+
+/// File-browser row metadata used in the scaffold list view.
+#[derive(Debug, Clone)]
+struct BrowserEntry {
+    /// Display name shown in the browser list.
+    name: String,
+    /// Whether this row represents a directory.
+    is_dir: bool,
+}
+
+/// Editable transition settings displayed in the right pane.
+#[derive(Debug, Clone)]
+struct TransitionState {
+    /// Current transition duration in milliseconds.
+    duration_ms: u32,
+    /// Current target frame rate.
+    fps: u16,
+    /// Selected easing preset index.
+    easing_idx: usize,
+    /// Selected effect preset index.
+    effect_idx: usize,
+    /// Selected field index for keyboard editing.
+    selected_field: usize,
+}
+
+impl Default for TransitionState {
+    /// Builds default transition settings for the phase scaffold.
+    fn default() -> Self {
+        Self {
+            duration_ms: 750,
+            fps: 60,
+            easing_idx: 3,
+            effect_idx: 1,
+            selected_field: 0,
+        }
+    }
+}
+
+impl TransitionState {
+    /// Moves field selection upward.
+    fn select_prev_field(&mut self) {
+        self.selected_field = self.selected_field.saturating_sub(1);
+    }
+
+    /// Moves field selection downward.
+    fn select_next_field(&mut self) {
+        self.selected_field = (self.selected_field + 1).min(3);
+    }
+
+    /// Increases selected field value.
+    fn increase_selected(&mut self) {
+        match self.selected_field {
+            0 => self.duration_ms = (self.duration_ms + 25).min(15_000),
+            1 => self.fps = (self.fps + 5).min(240),
+            2 => self.easing_idx = (self.easing_idx + 1) % EASING_PRESETS.len(),
+            3 => self.effect_idx = (self.effect_idx + 1) % TRANSITION_EFFECTS.len(),
+            _ => {}
+        }
+    }
+
+    /// Decreases selected field value.
+    fn decrease_selected(&mut self) {
+        match self.selected_field {
+            0 => self.duration_ms = self.duration_ms.saturating_sub(25).max(25),
+            1 => self.fps = self.fps.saturating_sub(5).max(10),
+            2 => {
+                self.easing_idx =
+                    (self.easing_idx + EASING_PRESETS.len() - 1) % EASING_PRESETS.len();
+            }
+            3 => {
+                self.effect_idx =
+                    (self.effect_idx + TRANSITION_EFFECTS.len() - 1) % TRANSITION_EFFECTS.len();
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Runtime monitor snapshot used by the TUI monitor pane.
 #[derive(Debug, Clone)]
 struct MonitorEntry {
@@ -84,6 +206,16 @@ struct AppState {
     last_monitor_refresh: Option<Instant>,
     /// Requests an immediate monitor refresh on the next tick.
     needs_monitor_refresh: bool,
+    /// Active pane focus.
+    focus: PaneFocus,
+    /// Browser rows for phase scaffold.
+    browser_entries: Vec<BrowserEntry>,
+    /// Selected browser row index.
+    browser_selected: usize,
+    /// Selected monitor index in preview pane.
+    monitor_selected: usize,
+    /// Editable transition controls.
+    transition: TransitionState,
 }
 
 impl Default for AppState {
@@ -98,6 +230,28 @@ impl Default for AppState {
             monitors: Vec::new(),
             last_monitor_refresh: None,
             needs_monitor_refresh: true,
+            focus: PaneFocus::Browser,
+            browser_entries: vec![
+                BrowserEntry {
+                    name: String::from("~/Pictures"),
+                    is_dir: true,
+                },
+                BrowserEntry {
+                    name: String::from("Aurora.jpg"),
+                    is_dir: false,
+                },
+                BrowserEntry {
+                    name: String::from("KoiLake.png"),
+                    is_dir: false,
+                },
+                BrowserEntry {
+                    name: String::from("MountainPass.webp"),
+                    is_dir: false,
+                },
+            ],
+            browser_selected: 0,
+            monitor_selected: 0,
+            transition: TransitionState::default(),
         }
     }
 }
@@ -168,8 +322,51 @@ fn handle_input(state: &mut AppState) -> io::Result<()> {
                     start_native_backend(state);
                 }
                 KeyCode::Char('h') => {
-                    state.status =
-                        String::from("Help: q/Esc quit, r refresh monitors, b start backend");
+                    state.status = String::from(
+                        "Help: Tab pane switch, arrows navigate, q quit, r refresh, b backend",
+                    );
+                }
+                KeyCode::Tab => {
+                    state.focus = state.focus.next();
+                    state.status = format!("Focus moved to {} pane", state.focus.as_str());
+                }
+                KeyCode::BackTab => {
+                    state.focus = state.focus.prev();
+                    state.status = format!("Focus moved to {} pane", state.focus.as_str());
+                }
+                KeyCode::Up => match state.focus {
+                    PaneFocus::Browser => {
+                        state.browser_selected = state.browser_selected.saturating_sub(1);
+                    }
+                    PaneFocus::Monitor => {
+                        state.monitor_selected = state.monitor_selected.saturating_sub(1);
+                    }
+                    PaneFocus::Transition => {
+                        state.transition.select_prev_field();
+                    }
+                },
+                KeyCode::Down => match state.focus {
+                    PaneFocus::Browser => {
+                        let max_idx = state.browser_entries.len().saturating_sub(1);
+                        state.browser_selected = (state.browser_selected + 1).min(max_idx);
+                    }
+                    PaneFocus::Monitor => {
+                        let max_idx = state.monitors.len().saturating_sub(1);
+                        state.monitor_selected = (state.monitor_selected + 1).min(max_idx);
+                    }
+                    PaneFocus::Transition => {
+                        state.transition.select_next_field();
+                    }
+                },
+                KeyCode::Left => {
+                    if state.focus == PaneFocus::Transition {
+                        state.transition.decrease_selected();
+                    }
+                }
+                KeyCode::Right => {
+                    if state.focus == PaneFocus::Transition {
+                        state.transition.increase_selected();
+                    }
                 }
                 _ => {}
             }
@@ -246,6 +443,9 @@ async fn refresh_monitors_if_due(state: &mut AppState) {
         Ok(monitors) => {
             let count = monitors.len();
             state.monitors = monitors;
+            state.monitor_selected = state
+                .monitor_selected
+                .min(state.monitors.len().saturating_sub(1));
             state.last_monitor_refresh = Some(Instant::now());
             state.needs_monitor_refresh = false;
             state.status = format!("Detected {count} monitor(s) from compositor");
@@ -417,13 +617,13 @@ fn draw_ui(frame: &mut Frame<'_>, state: &AppState) {
         ])
         .split(frame.area());
 
-    draw_header(frame, root[0]);
+    draw_header(frame, root[0], state);
     draw_body(frame, root[1], state);
     draw_footer(frame, root[2], state);
 }
 
 /// Draws the top status header.
-fn draw_header(frame: &mut Frame<'_>, area: Rect) {
+fn draw_header(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let title = Paragraph::new(Line::from(vec![
         Span::styled(
             "VELLUM",
@@ -431,7 +631,13 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect) {
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  native wallpaper control surface"),
+        Span::raw("  native wallpaper control surface  |  active pane: "),
+        Span::styled(
+            state.focus.as_str(),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
     ]))
     .block(
         Block::default()
@@ -453,35 +659,121 @@ fn draw_body(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         ])
         .split(area);
 
-    let file_browser =
-        Paragraph::new("File Browser\n- phase scaffold\n- no filesystem binding yet").block(
-            Block::default()
-                .title(" Browser ")
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded),
-        );
+    let file_browser = Paragraph::new(render_browser_lines(state)).block(
+        Block::default()
+            .title(" Browser ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(border_style_for_focus(state.focus, PaneFocus::Browser)),
+    );
 
-    let monitor_lines = if state.monitors.is_empty() {
-        String::from("Monitor Preview\n- no monitor data yet\n- press r to refresh")
-    } else {
-        let mut lines = String::from("Monitor Preview\n");
-        for monitor in &state.monitors {
-            let focus = if monitor.focused { " *" } else { "" };
-            let line = format!(
-                "- {}: {}x{} @ ({}, {}){}\n",
-                monitor.name, monitor.width, monitor.height, monitor.x, monitor.y, focus
-            );
-            lines.push_str(&line);
-        }
-        lines
-    };
+    let monitor_lines = render_monitor_lines(state);
 
     let monitor_preview = Paragraph::new(monitor_lines).block(
         Block::default()
             .title(" Monitor ")
             .borders(Borders::ALL)
-            .border_type(BorderType::Thick),
+            .border_type(BorderType::Thick)
+            .border_style(border_style_for_focus(state.focus, PaneFocus::Monitor)),
     );
+
+    let transition_message = render_transition_lines(state);
+
+    let transition_panel = Paragraph::new(transition_message).block(
+        Block::default()
+            .title(" Transition Settings ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(border_style_for_focus(state.focus, PaneFocus::Transition)),
+    );
+
+    frame.render_widget(file_browser, columns[0]);
+    frame.render_widget(monitor_preview, columns[1]);
+    frame.render_widget(transition_panel, columns[2]);
+}
+
+/// Computes pane border style depending on focus state.
+fn border_style_for_focus(active: PaneFocus, pane: PaneFocus) -> Style {
+    if active == pane {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    }
+}
+
+/// Builds browser pane content with highlighted selection.
+fn render_browser_lines(state: &AppState) -> String {
+    let mut lines = String::from("Library\n");
+    for (idx, entry) in state.browser_entries.iter().enumerate() {
+        let marker = if idx == state.browser_selected {
+            ">"
+        } else {
+            " "
+        };
+        let kind = if entry.is_dir { "[D]" } else { "[I]" };
+        let row = format!("{} {} {}\n", marker, kind, entry.name);
+        lines.push_str(&row);
+    }
+    lines.push_str("\nTab: next pane | Up/Down: navigate");
+    lines
+}
+
+/// Builds monitor pane content with selected monitor detail.
+fn render_monitor_lines(state: &AppState) -> String {
+    if state.monitors.is_empty() {
+        return String::from("Outputs\n- no monitor data yet\n\nr: refresh monitors");
+    }
+
+    let mut lines = String::from("Outputs\n");
+    for (idx, monitor) in state.monitors.iter().enumerate() {
+        let marker = if idx == state.monitor_selected {
+            ">"
+        } else {
+            " "
+        };
+        let focused = if monitor.focused { "*" } else { " " };
+        let row = format!(
+            "{} [{}] {} {}x{}\n",
+            marker, focused, monitor.name, monitor.width, monitor.height
+        );
+        lines.push_str(&row);
+    }
+
+    if let Some(selected) = state.monitors.get(state.monitor_selected) {
+        let detail = format!(
+            "\nSelected\n- position: ({}, {})\n- resolution: {}x{}",
+            selected.x, selected.y, selected.width, selected.height
+        );
+        lines.push_str(&detail);
+    }
+
+    lines
+}
+
+/// Builds transition settings pane content with editable fields.
+fn render_transition_lines(state: &AppState) -> String {
+    let rows = [
+        format!("duration_ms: {}", state.transition.duration_ms),
+        format!("fps: {}", state.transition.fps),
+        format!("easing: {}", EASING_PRESETS[state.transition.easing_idx]),
+        format!(
+            "effect: {}",
+            TRANSITION_EFFECTS[state.transition.effect_idx]
+        ),
+    ];
+
+    let mut lines = String::from("Parameters\n");
+    for (idx, row) in rows.iter().enumerate() {
+        let marker = if idx == state.transition.selected_field {
+            ">"
+        } else {
+            " "
+        };
+        let line = format!("{} {}\n", marker, row);
+        lines.push_str(&line);
+    }
 
     let backend_state = if state
         .backend
@@ -493,35 +785,19 @@ fn draw_body(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     } else {
         "stopped"
     };
-    let backend_message = if let Some(error) = &state.backend.last_error {
-        format!(
-            "Backend\n- status: {backend_state}\n- namespace: {}\n- last error: {error}",
-            state.backend.namespace
-        )
-    } else {
-        format!(
-            "Backend\n- status: {backend_state}\n- namespace: {}\n- integrated via vellum-core",
-            state.backend.namespace
-        )
-    };
-
-    let transition_panel = Paragraph::new(backend_message).block(
-        Block::default()
-            .title(" Native Backend ")
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded),
+    let backend_line = format!(
+        "\nBackend\n- status: {}\n- namespace: {}\n\nLeft/Right: tweak value",
+        backend_state, state.backend.namespace
     );
-
-    frame.render_widget(file_browser, columns[0]);
-    frame.render_widget(monitor_preview, columns[1]);
-    frame.render_widget(transition_panel, columns[2]);
+    lines.push_str(&backend_line);
+    lines
 }
 
 /// Draws footer hints and runtime diagnostics.
 fn draw_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let frame_age_ms = state.last_frame.elapsed().as_millis();
     let diagnostics = format!(
-        "{} | frames={} | frame_age={}ms | q/Esc quit | r refresh | b start backend",
+        "{} | frames={} | frame_age={}ms | q quit | Tab switch pane | arrows navigate | r refresh | b backend",
         state.status, state.frame_count, frame_age_ms
     );
     let footer = Paragraph::new(diagnostics).block(
