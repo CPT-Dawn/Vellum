@@ -33,9 +33,10 @@ rendering path is being completed incrementally.
 
 Current visible output path in daemon:
 
+- On Hyprland sessions, `vellumd` uses `hyprctl hyprpaper` commands and retries after auto-starting `hyprpaper` when installed.
 - On Wayland sessions, `vellumd` prefers `swaybg` per output for visible wallpaper presentation.
 - If `swaybg` is unavailable, it falls back to `swww` when present.
-- If neither backend is available, assignment state is still tracked but visible wallpaper output may not change.
+- If no presenter backend is available, wallpaper apply requests return an error instead of false success.
 
 ## Quick Start
 

@@ -2,11 +2,14 @@ use anyhow::{bail, Context, Result};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::thread;
+use std::time::Duration;
 use tracing::warn;
 use vellum_ipc::ScaleMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PresenterBackend {
+    Hyprpaper,
     None,
     Swaybg,
     Swww,
@@ -14,6 +17,7 @@ enum PresenterBackend {
 
 pub(crate) struct SwaybgController {
     disabled: bool,
+    wayland_session: bool,
     backend: PresenterBackend,
     children: BTreeMap<String, Child>,
     warned_missing_backend: bool,
@@ -28,8 +32,11 @@ impl Default for SwaybgController {
             .unwrap_or(false);
 
         let wayland_session = std::env::var_os("WAYLAND_DISPLAY").is_some();
+        let hyprland_session = std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some();
         let backend = if disabled || !wayland_session {
             PresenterBackend::None
+        } else if hyprland_session && command_exists("hyprctl") {
+            PresenterBackend::Hyprpaper
         } else if command_exists("swaybg") {
             PresenterBackend::Swaybg
         } else if command_exists("swww") {
@@ -40,6 +47,7 @@ impl Default for SwaybgController {
 
         Self {
             disabled,
+            wayland_session,
             backend,
             children: BTreeMap::new(),
             warned_missing_backend: false,
@@ -64,17 +72,80 @@ impl SwaybgController {
 
         match self.backend {
             PresenterBackend::None => {
-                if !self.warned_missing_backend {
-                    warn!(
-                        "no external presenter backend found (swaybg/swww); keeping assignment state without visible wallpaper output"
+                if self.wayland_session {
+                    bail!(
+                        "no wallpaper presenter backend available in Wayland session (tried hyprpaper/swaybg/swww)"
                     );
-                    self.warned_missing_backend = true;
                 }
+
+                Ok(())
+            }
+            PresenterBackend::Hyprpaper => {
+                if let Err(err) = self.apply_with_hyprpaper(output, path) {
+                    if !self.warned_missing_backend {
+                        warn!(error = %err, "hyprpaper apply failed, attempting fallback backends");
+                        self.warned_missing_backend = true;
+                    }
+
+                    if command_exists("swaybg") {
+                        self.backend = PresenterBackend::Swaybg;
+                        return self.apply_with_swaybg(output, path, mode);
+                    }
+                    if command_exists("swww") {
+                        self.backend = PresenterBackend::Swww;
+                        return self.apply_with_swww(path);
+                    }
+
+                    return Err(err.context(
+                        "no fallback presenter backend available; install and run hyprpaper, or install swaybg/swww",
+                    ));
+                }
+
                 Ok(())
             }
             PresenterBackend::Swaybg => self.apply_with_swaybg(output, path, mode),
             PresenterBackend::Swww => self.apply_with_swww(path),
         }
+    }
+
+    fn apply_with_hyprpaper(&mut self, output: &str, path: &Path) -> Result<()> {
+        if let Err(first_err) = self.run_hyprpaper_sequence(output, path) {
+            if command_exists("hyprpaper") {
+                let _ = Command::new("hyprpaper")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn();
+                thread::sleep(Duration::from_millis(300));
+
+                if let Ok(()) = self.run_hyprpaper_sequence(output, path) {
+                    return Ok(());
+                }
+            }
+
+            return Err(first_err);
+        }
+
+        Ok(())
+    }
+
+    fn run_hyprpaper_sequence(&self, output: &str, path: &Path) -> Result<()> {
+        run_status(
+            Command::new("hyprctl")
+                .arg("hyprpaper")
+                .arg("preload")
+                .arg(path),
+            "failed to preload wallpaper in hyprpaper",
+        )?;
+
+        let wallpaper_arg = format!("{output},{}", path.display());
+        run_status(
+            Command::new("hyprctl")
+                .arg("hyprpaper")
+                .arg("wallpaper")
+                .arg(&wallpaper_arg),
+            "failed to set hyprpaper wallpaper",
+        )
     }
 
     fn apply_with_swaybg(&mut self, output: &str, path: &Path, mode: ScaleMode) -> Result<()> {
@@ -145,6 +216,17 @@ impl SwaybgController {
     }
 
     pub(crate) fn clear_all(&mut self) {
+        if matches!(self.backend, PresenterBackend::Hyprpaper) {
+            let _ = run_status(
+                Command::new("hyprctl")
+                    .arg("hyprpaper")
+                    .arg("unload")
+                    .arg("all"),
+                "failed to clear hyprpaper wallpapers",
+            );
+            return;
+        }
+
         if matches!(self.backend, PresenterBackend::Swww) {
             let _ = Command::new("swww")
                 .arg("clear")
@@ -181,6 +263,31 @@ fn command_exists(name: &str) -> bool {
         .stderr(Stdio::null())
         .status()
         .is_ok()
+}
+
+fn run_status(command: &mut Command, context: &str) -> Result<()> {
+    let output = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .with_context(|| context.to_string())?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stderr.is_empty() && stdout.is_empty() {
+        bail!("{context}");
+    }
+
+    if !stderr.is_empty() {
+        bail!("{context}: {stderr}");
+    }
+
+    bail!("{context}: {stdout}")
 }
 
 fn scale_mode_to_swaybg(mode: ScaleMode) -> &'static str {
