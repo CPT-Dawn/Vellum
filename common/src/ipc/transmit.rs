@@ -24,6 +24,8 @@ use super::Transition;
 use crate::mmap::Mmap;
 use crate::mmap::MmappedStr;
 
+const MAX_IPC_SHM_LEN: usize = 256 * 1024 * 1024;
+
 // could be enum
 pub struct RawMsg {
     code: Code,
@@ -89,15 +91,31 @@ impl From<RawMsg> for RequestRecv {
             Code::ReqPing => Self::Ping,
             Code::ReqQuery => Self::Query,
             Code::ReqClear => {
-                let mmap = value.shm.unwrap();
+                let Some(mmap) = value.shm else {
+                    return Self::Kill;
+                };
                 let bytes = mmap.slice();
+                if bytes.len() < 5 {
+                    return Self::Kill;
+                }
                 let len = bytes[0] as usize;
                 let mut outputs = Vec::with_capacity(len);
                 let mut i = 1;
                 for _ in 0..len {
+                    if i + 4 > bytes.len() {
+                        return Self::Kill;
+                    }
+                    let output_len =
+                        u32::from_ne_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
+                    if i + 4 + output_len > bytes.len() {
+                        return Self::Kill;
+                    }
                     let output = MmappedStr::new(&mmap, &bytes[i..]);
                     i += 4 + output.str().len();
                     outputs.push(output);
+                }
+                if i + 4 > bytes.len() {
+                    return Self::Kill;
                 }
                 let color = [bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]];
                 Self::Clear(ClearReq {
@@ -106,8 +124,13 @@ impl From<RawMsg> for RequestRecv {
                 })
             }
             Code::ReqImg => {
-                let mmap = value.shm.unwrap();
+                let Some(mmap) = value.shm else {
+                    return Self::Kill;
+                };
                 let bytes = mmap.slice();
+                if bytes.len() < 52 {
+                    return Self::Kill;
+                }
                 let transition = Transition::deserialize(&bytes[0..]);
                 let len = bytes[51] as usize;
 
@@ -117,23 +140,49 @@ impl From<RawMsg> for RequestRecv {
 
                 let mut i = 52;
                 for _ in 0..len {
+                    if i >= bytes.len() {
+                        return Self::Kill;
+                    }
                     let (img, offset) = ImgReq::deserialize(&mmap, &bytes[i..]);
+                    if i + offset > bytes.len() {
+                        return Self::Kill;
+                    }
                     i += offset;
                     imgs.push(img);
 
+                    if i >= bytes.len() {
+                        return Self::Kill;
+                    }
                     let n_outputs = bytes[i] as usize;
                     i += 1;
                     let mut out = Vec::with_capacity(n_outputs);
                     for _ in 0..n_outputs {
+                        if i + 4 > bytes.len() {
+                            return Self::Kill;
+                        }
+                        let output_len =
+                            u32::from_ne_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
+                        if i + 4 + output_len > bytes.len() {
+                            return Self::Kill;
+                        }
                         let output = MmappedStr::new(&mmap, &bytes[i..]);
                         i += 4 + output.str().len();
                         out.push(output);
                     }
                     outputs.push(out.into());
 
+                    if i >= bytes.len() {
+                        return Self::Kill;
+                    }
                     if bytes[i] == 1 {
-                        let (animation, offset) =
-                            Animation::deserialize(&mmap, &bytes[i + 1..]).unwrap();
+                        let Some((animation, offset)) =
+                            Animation::deserialize(&mmap, &bytes[i + 1..])
+                        else {
+                            return Self::Kill;
+                        };
+                        if i + offset > bytes.len() {
+                            return Self::Kill;
+                        }
                         i += offset;
                         animations.push(animation);
                     }
@@ -165,21 +214,32 @@ impl From<RawMsg> for Answer {
             Code::ResConfigured => Self::Ping(true),
             Code::ResAwait => Self::Ping(false),
             Code::ResInfo => {
-                let mmap = value.shm.unwrap();
+                let Some(mmap) = value.shm else {
+                    return Self::Ok;
+                };
                 let bytes = mmap.slice();
+                if bytes.is_empty() {
+                    return Self::Info(Vec::new().into());
+                }
                 let len = bytes[0] as usize;
                 let mut bg_infos = Vec::with_capacity(len);
 
                 let mut i = 1;
                 for _ in 0..len {
+                    if i >= bytes.len() {
+                        break;
+                    }
                     let (info, offset) = BgInfo::deserialize(&bytes[i..]);
+                    if offset == 0 {
+                        break;
+                    }
                     i += offset;
                     bg_infos.push(info);
                 }
 
                 Self::Info(bg_infos.into())
             }
-            _ => panic!("Received malformed answer from daemon"),
+            _ => Self::Ok,
         }
     }
 }
@@ -289,11 +349,15 @@ impl IpcSocket {
         let mut ancillary_buf = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
 
         let mut control = net::RecvAncillaryBuffer::new(&mut ancillary_buf);
+        let mut received = 0usize;
 
         for _ in 0..5 {
             let iov = io::IoSliceMut::new(&mut buf);
             match net::recvmsg(self.as_fd(), &mut [iov], &mut control, RecvFlags::WAITALL) {
-                Ok(_) => break,
+                Ok(msg) => {
+                    received = msg.bytes;
+                    break;
+                }
                 Err(Errno::WOULDBLOCK | Errno::INTR) => {
                     _ = thread::nanosleep(&thread::Timespec {
                         tv_sec: 0,
@@ -304,8 +368,16 @@ impl IpcSocket {
             }
         }
 
+        if received != buf.len() {
+            return Err(Errno::BADMSG).context(IpcErrorKind::Read);
+        }
+
         let code = u64::from_ne_bytes(buf[0..8].try_into().unwrap()).try_into()?;
         let len = u64::from_ne_bytes(buf[8..16].try_into().unwrap()) as usize;
+
+        if len > MAX_IPC_SHM_LEN {
+            return Err(Errno::MSGSIZE).context(IpcErrorKind::MalformedMsg);
+        }
 
         let shm = if len == 0 {
             debug_assert!(

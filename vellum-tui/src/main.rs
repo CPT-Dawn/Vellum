@@ -34,6 +34,8 @@ use vellum_core::{VellumServer, VellumServerConfig};
 
 /// UI refresh cadence in milliseconds.
 const TICK_RATE_MS: u64 = 33;
+/// Delay before re-running fuzzy filter after typing.
+const BROWSER_FILTER_DEBOUNCE_MS: u64 = 60;
 /// Minimum interval between automatic monitor re-probes.
 const MONITOR_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
@@ -320,6 +322,10 @@ struct AppState {
     browser_dir: PathBuf,
     /// Fuzzy query used to filter browser entries.
     browser_query: String,
+    /// Whether browser filter recomputation is pending.
+    browser_filter_dirty: bool,
+    /// Last timestamp when browser query changed.
+    browser_filter_last_input: Instant,
     /// Selected browser row index.
     browser_selected: usize,
     /// Selected monitor index in preview pane.
@@ -359,6 +365,8 @@ impl Default for AppState {
             browser_all_entries: Vec::new(),
             browser_dir: preferred_initial_browser_dir(),
             browser_query: String::new(),
+            browser_filter_dirty: false,
+            browser_filter_last_input: Instant::now(),
             browser_selected: 0,
             monitor_selected: 0,
             transition: TransitionState::default(),
@@ -413,6 +421,7 @@ async fn run_app() -> io::Result<()> {
     while !state.should_quit {
         tick.tick().await;
         handle_input(&mut state).await?;
+        flush_browser_filter_if_due(&mut state);
         refresh_monitors_if_due(&mut state).await;
         poll_backend_status(&mut state).await;
         run_playlist_tick(&mut state).await;
@@ -452,12 +461,12 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
                     state.status = format!("Aspect simulator mode: {}", state.aspect_mode.as_str());
                 }
                 KeyCode::Char('u') => {
-                    if state.focus == PaneFocus::Browser {
-                        if let Some(parent) = state.browser_dir.parent().map(Path::to_path_buf) {
-                            state.browser_dir = parent;
-                            if let Err(err) = reload_browser_directory(state) {
-                                state.status = format!("Failed to open parent directory: {err}");
-                            }
+                    if state.focus == PaneFocus::Browser
+                        && let Some(parent) = state.browser_dir.parent().map(Path::to_path_buf)
+                    {
+                        state.browser_dir = parent;
+                        if let Err(err) = reload_browser_directory(state) {
+                            state.status = format!("Failed to open parent directory: {err}");
                         }
                     }
                 }
@@ -508,7 +517,7 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
                 KeyCode::Backspace => {
                     if state.focus == PaneFocus::Browser && !state.browser_query.is_empty() {
                         state.browser_query.pop();
-                        apply_browser_filter(state);
+                        schedule_browser_filter(state);
                     }
                 }
                 KeyCode::Enter => {
@@ -544,7 +553,7 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
                 KeyCode::Char(c) => {
                     if state.focus == PaneFocus::Browser && !c.is_control() {
                         state.browser_query.push(c);
-                        apply_browser_filter(state);
+                        schedule_browser_filter(state);
                     }
                 }
                 _ => {}
@@ -553,6 +562,31 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+/// Marks browser filtering as dirty and schedules a debounced recompute.
+fn schedule_browser_filter(state: &mut AppState) {
+    state.browser_filter_dirty = true;
+    state.browser_filter_last_input = Instant::now();
+
+    if state.browser_query.is_empty() {
+        apply_browser_filter(state);
+        state.browser_filter_dirty = false;
+    }
+}
+
+/// Recomputes browser fuzzy results once the debounce threshold passes.
+fn flush_browser_filter_if_due(state: &mut AppState) {
+    if !state.browser_filter_dirty {
+        return;
+    }
+
+    if state.browser_filter_last_input.elapsed()
+        >= Duration::from_millis(BROWSER_FILTER_DEBOUNCE_MS)
+    {
+        apply_browser_filter(state);
+        state.browser_filter_dirty = false;
+    }
 }
 
 /// Starts the native Vellum backend daemon in a dedicated blocking task.
@@ -846,6 +880,7 @@ fn reload_browser_directory(state: &mut AppState) -> io::Result<()> {
 
     state.browser_all_entries = entries;
     apply_browser_filter(state);
+    state.browser_filter_dirty = false;
     Ok(())
 }
 
@@ -1048,14 +1083,13 @@ fn load_profile(state: &mut AppState, profile_name: &str) -> Result<(), String> 
     reload_browser_directory(state)
         .map_err(|err| format!("cannot reload browser after profile load: {err}"))?;
 
-    if let Some(selected_monitor_name) = data.selected_monitor {
-        if let Some(index) = state
+    if let Some(selected_monitor_name) = data.selected_monitor
+        && let Some(index) = state
             .monitors
             .iter()
             .position(|monitor| monitor.name == selected_monitor_name)
-        {
-            state.monitor_selected = index;
-        }
+    {
+        state.monitor_selected = index;
     }
 
     Ok(())
@@ -1317,18 +1351,44 @@ fn draw_ui(frame: &mut Frame<'_>, state: &AppState) {
 
 /// Draws the top status header.
 fn draw_header(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let backend_running = state
+        .backend
+        .task
+        .as_ref()
+        .is_some_and(|task| !task.is_finished());
+
     let title = Paragraph::new(Line::from(vec![
         Span::styled(
             "VELLUM",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(Color::LightCyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  native wallpaper control surface  |  active pane: "),
+        Span::raw("  native wallpaper control surface  "),
+        Span::styled(
+            if backend_running {
+                "[backend: running]"
+            } else {
+                "[backend: stopped]"
+            },
+            Style::default()
+                .fg(if backend_running {
+                    Color::LightGreen
+                } else {
+                    Color::Yellow
+                })
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            format!("[outputs: {}]", state.monitors.len()),
+            Style::default().fg(Color::Gray),
+        ),
+        Span::raw("  active pane: "),
         Span::styled(
             state.focus.as_str(),
             Style::default()
-                .fg(Color::Yellow)
+                .fg(Color::LightYellow)
                 .add_modifier(Modifier::BOLD),
         ),
     ]))
@@ -1336,6 +1396,7 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Double)
+            .border_style(Style::default().fg(Color::Gray))
             .title(" Session "),
     );
     frame.render_widget(title, area);
@@ -1354,7 +1415,13 @@ fn draw_body(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 
     let file_browser = Paragraph::new(render_browser_lines(state)).block(
         Block::default()
-            .title(" Browser ")
+            .title(Line::from(vec![
+                Span::raw(" Browser "),
+                Span::styled(
+                    format!("({})", state.browser_entries.len()),
+                    Style::default().fg(Color::Gray),
+                ),
+            ]))
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(border_style_for_focus(state.focus, PaneFocus::Browser)),
@@ -1364,7 +1431,7 @@ fn draw_body(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 
     let monitor_preview = Paragraph::new(monitor_lines).block(
         Block::default()
-            .title(" Monitor ")
+            .title(" Monitor Grid ")
             .borders(Borders::ALL)
             .border_type(BorderType::Thick)
             .border_style(border_style_for_focus(state.focus, PaneFocus::Monitor)),
@@ -1374,7 +1441,7 @@ fn draw_body(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 
     let transition_panel = Paragraph::new(transition_message).block(
         Block::default()
-            .title(" Transition Settings ")
+            .title(" Transition + Runtime ")
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(border_style_for_focus(state.focus, PaneFocus::Transition)),
@@ -1389,22 +1456,27 @@ fn draw_body(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 fn border_style_for_focus(active: PaneFocus, pane: PaneFocus) -> Style {
     if active == pane {
         Style::default()
-            .fg(Color::Yellow)
+            .fg(Color::LightCyan)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(Color::Gray)
     }
 }
 
 /// Builds browser pane content with highlighted selection.
 fn render_browser_lines(state: &AppState) -> String {
     let mut lines = format!(
-        "Dir: {}\nFilter: {}\n\n",
+        "Dir: {}\nFilter: {}{}\n\n",
         state.browser_dir.display(),
         if state.browser_query.is_empty() {
             "(none)"
         } else {
             state.browser_query.as_str()
+        },
+        if state.browser_filter_dirty {
+            "  [updating]"
+        } else {
+            ""
         }
     );
 
@@ -1430,7 +1502,7 @@ fn render_browser_lines(state: &AppState) -> String {
         let row = format!("{} {} {}\n", marker, kind, entry.name);
         lines.push_str(&row);
     }
-    lines.push_str("\nEnter: open/apply | u: parent | Type: fuzzy filter");
+    lines.push_str("\nEnter: open/apply | u: parent | Type: fuzzy filter | Backspace: edit query");
     lines
 }
 
@@ -1591,7 +1663,7 @@ fn render_transition_lines(state: &AppState) -> String {
 fn draw_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let frame_age_ms = state.last_frame.elapsed().as_millis();
     let diagnostics = format!(
-        "{} | frames={} | frame_age={}ms | q quit | Tab pane | arrows nav | Enter apply/open | type fuzzy | x aspect mode | F5/F6/F7 playlist | F8/F9 profile",
+        "{} | frames={} | frame_age={}ms | q/Esc quit | Tab/Shift+Tab pane | arrows nav | Enter open/apply | r refresh | x aspect | F5/F6/F7 playlist | F8/F9 profile",
         state.status, state.frame_count, frame_age_ms
     );
     let footer = Paragraph::new(diagnostics).block(

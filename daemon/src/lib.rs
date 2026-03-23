@@ -957,7 +957,7 @@ pub fn is_daemon_running(namespace: &str) -> Result<bool, IpcError> {
     let answer = Answer::receive(sock.recv()?);
     match answer {
         Answer::Ping(_) => Ok(true),
-        _ => panic!("Daemon did not return Answer::Ping, as expected"),
+        _ => Ok(false),
     }
 }
 

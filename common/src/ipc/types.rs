@@ -450,7 +450,19 @@ impl Transition {
     }
 
     pub(super) fn deserialize(bytes: &[u8]) -> Self {
-        assert!(bytes.len() > 50);
+        if bytes.len() <= 50 {
+            return Self {
+                transition_type: TransitionType::None,
+                duration: 0.0,
+                step: NonZeroU8::MIN,
+                fps: 60,
+                angle: 0.0,
+                pos: Position::new(Coord::Percent(0.5), Coord::Percent(0.5)),
+                bezier: (0.0, 0.0, 1.0, 1.0),
+                wave: (10.0, 10.0),
+                invert_y: false,
+            };
+        }
         let transition_type = match bytes[0] {
             0 => TransitionType::Simple,
             1 => TransitionType::Fade,
@@ -461,7 +473,7 @@ impl Transition {
             _ => TransitionType::None,
         };
         let duration = f32::from_ne_bytes(bytes[1..5].try_into().unwrap());
-        let step = NonZeroU8::new(bytes[5]).expect("received step of 0");
+        let step = NonZeroU8::new(bytes[5]).unwrap_or(NonZeroU8::MIN);
         let fps = u16::from_ne_bytes(bytes[6..8].try_into().unwrap());
         let angle = f64::from_ne_bytes(bytes[8..16].try_into().unwrap());
         let pos = {
@@ -665,8 +677,17 @@ pub struct ImageReq {
 }
 
 fn deserialize_boxed_str(bytes: &[u8]) -> Box<str> {
+    if bytes.len() < 4 {
+        return "".into();
+    }
+
     let size = u32::from_ne_bytes(bytes[0..4].try_into().unwrap()) as usize;
-    core::str::from_utf8(&bytes[4..4 + size])
-        .expect("received a non utf8 string from socket")
-        .into()
+    if bytes.len() < 4 + size {
+        return "".into();
+    }
+
+    match core::str::from_utf8(&bytes[4..4 + size]) {
+        Ok(text) => text.into(),
+        Err(_) => "".into(),
+    }
 }
