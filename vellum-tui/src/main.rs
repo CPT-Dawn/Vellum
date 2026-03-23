@@ -1765,7 +1765,7 @@ async fn apply_wallpaper_request(
                     namespace.as_ref(),
                     mode.as_ref(),
                     filter.as_ref(),
-                    &[output_for_builder.clone()],
+                    std::slice::from_ref(&output_for_builder),
                     None,
                 );
 
