@@ -221,8 +221,7 @@ impl Daemon {
         let bytes = match stream.recv() {
             Ok(bytes) => bytes,
             Err(e) => {
-                error!("FATAL: cannot read socket: {e}. Exiting...");
-                exit_daemon();
+                warn!("cannot read socket request: {e}");
                 return;
             }
         };
@@ -254,6 +253,10 @@ impl Daemon {
             }
             RequestRecv::Pause => {
                 self.paused = !self.paused;
+                Answer::Ok
+            }
+            RequestRecv::Invalid => {
+                warn!("received malformed IPC request; ignoring");
                 Answer::Ok
             }
             RequestRecv::Kill => {
@@ -696,7 +699,7 @@ fn run_server(config: VellumServerConfig) -> Result<(), VellumServerError> {
 
     #[cfg(debug_assertions)]
     common::log::init(if config.quiet {
-        Filter::Debug
+        Filter::Error
     } else {
         Filter::Trace
     });

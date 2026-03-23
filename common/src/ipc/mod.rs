@@ -146,6 +146,7 @@ pub enum RequestRecv {
     Clear(ClearReq),
     Img(ImageReq),
     Pause,
+    Invalid,
     Kill,
 }
 

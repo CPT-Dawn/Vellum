@@ -92,30 +92,30 @@ impl From<RawMsg> for RequestRecv {
             Code::ReqQuery => Self::Query,
             Code::ReqClear => {
                 let Some(mmap) = value.shm else {
-                    return Self::Kill;
+                    return Self::Invalid;
                 };
                 let bytes = mmap.slice();
                 if bytes.len() < 5 {
-                    return Self::Kill;
+                    return Self::Invalid;
                 }
                 let len = bytes[0] as usize;
                 let mut outputs = Vec::with_capacity(len);
                 let mut i = 1;
                 for _ in 0..len {
                     if i + 4 > bytes.len() {
-                        return Self::Kill;
+                        return Self::Invalid;
                     }
                     let output_len =
                         u32::from_ne_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
                     if i + 4 + output_len > bytes.len() {
-                        return Self::Kill;
+                        return Self::Invalid;
                     }
                     let output = MmappedStr::new(&mmap, &bytes[i..]);
                     i += 4 + output.str().len();
                     outputs.push(output);
                 }
                 if i + 4 > bytes.len() {
-                    return Self::Kill;
+                    return Self::Invalid;
                 }
                 let color = [bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]];
                 Self::Clear(ClearReq {
@@ -125,11 +125,11 @@ impl From<RawMsg> for RequestRecv {
             }
             Code::ReqImg => {
                 let Some(mmap) = value.shm else {
-                    return Self::Kill;
+                    return Self::Invalid;
                 };
                 let bytes = mmap.slice();
                 if bytes.len() < 52 {
-                    return Self::Kill;
+                    return Self::Invalid;
                 }
                 let transition = Transition::deserialize(&bytes[0..]);
                 let len = bytes[51] as usize;
@@ -141,29 +141,50 @@ impl From<RawMsg> for RequestRecv {
                 let mut i = 52;
                 for _ in 0..len {
                     if i >= bytes.len() {
-                        return Self::Kill;
+                        return Self::Invalid;
                     }
+
+                    if i + 4 > bytes.len() {
+                        return Self::Invalid;
+                    }
+                    let path_len = u32::from_ne_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
+                    if i + 4 + path_len > bytes.len() {
+                        return Self::Invalid;
+                    }
+
+                    let img_len_index = i + 4 + path_len;
+                    if img_len_index + 4 > bytes.len() {
+                        return Self::Invalid;
+                    }
+                    let img_len = u32::from_ne_bytes(
+                        bytes[img_len_index..img_len_index + 4].try_into().unwrap(),
+                    ) as usize;
+                    let img_end = img_len_index + 4 + img_len;
+                    if img_end + 9 > bytes.len() {
+                        return Self::Invalid;
+                    }
+
                     let (img, offset) = ImgReq::deserialize(&mmap, &bytes[i..]);
                     if i + offset > bytes.len() {
-                        return Self::Kill;
+                        return Self::Invalid;
                     }
                     i += offset;
                     imgs.push(img);
 
                     if i >= bytes.len() {
-                        return Self::Kill;
+                        return Self::Invalid;
                     }
                     let n_outputs = bytes[i] as usize;
                     i += 1;
                     let mut out = Vec::with_capacity(n_outputs);
                     for _ in 0..n_outputs {
                         if i + 4 > bytes.len() {
-                            return Self::Kill;
+                            return Self::Invalid;
                         }
                         let output_len =
                             u32::from_ne_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
                         if i + 4 + output_len > bytes.len() {
-                            return Self::Kill;
+                            return Self::Invalid;
                         }
                         let output = MmappedStr::new(&mmap, &bytes[i..]);
                         i += 4 + output.str().len();
@@ -172,16 +193,16 @@ impl From<RawMsg> for RequestRecv {
                     outputs.push(out.into());
 
                     if i >= bytes.len() {
-                        return Self::Kill;
+                        return Self::Invalid;
                     }
                     if bytes[i] == 1 {
                         let Some((animation, offset)) =
                             Animation::deserialize(&mmap, &bytes[i + 1..])
                         else {
-                            return Self::Kill;
+                            return Self::Invalid;
                         };
-                        if i + offset > bytes.len() {
-                            return Self::Kill;
+                        if i + 1 + offset > bytes.len() {
+                            return Self::Invalid;
                         }
                         i += offset;
                         animations.push(animation);
@@ -202,7 +223,7 @@ impl From<RawMsg> for RequestRecv {
             }
             Code::ReqPause => Self::Pause,
             Code::ReqKill => Self::Kill,
-            _ => Self::Kill,
+            _ => Self::Invalid,
         }
     }
 }
