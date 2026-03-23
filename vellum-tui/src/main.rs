@@ -1,13 +1,20 @@
 use std::{
-    io,
+    fs, io,
+    num::NonZeroU8,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
+use common::ipc::{
+    Answer, Coord, ImageRequestBuilder, ImgSend, IpcSocket, PixelFormat, Position, RequestSend,
+    Transition, TransitionType,
+};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use image::ImageReader;
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
@@ -76,8 +83,12 @@ impl PaneFocus {
 struct BrowserEntry {
     /// Display name shown in the browser list.
     name: String,
+    /// Absolute path represented by this row.
+    path: PathBuf,
     /// Whether this row represents a directory.
     is_dir: bool,
+    /// Whether this row represents the synthetic parent directory action.
+    is_parent: bool,
 }
 
 /// Editable transition settings displayed in the right pane.
@@ -210,6 +221,12 @@ struct AppState {
     focus: PaneFocus,
     /// Browser rows for phase scaffold.
     browser_entries: Vec<BrowserEntry>,
+    /// Full unfiltered browser rows for current directory.
+    browser_all_entries: Vec<BrowserEntry>,
+    /// Current directory shown in the browser pane.
+    browser_dir: PathBuf,
+    /// Fuzzy query used to filter browser entries.
+    browser_query: String,
     /// Selected browser row index.
     browser_selected: usize,
     /// Selected monitor index in preview pane.
@@ -231,24 +248,10 @@ impl Default for AppState {
             last_monitor_refresh: None,
             needs_monitor_refresh: true,
             focus: PaneFocus::Browser,
-            browser_entries: vec![
-                BrowserEntry {
-                    name: String::from("~/Pictures"),
-                    is_dir: true,
-                },
-                BrowserEntry {
-                    name: String::from("Aurora.jpg"),
-                    is_dir: false,
-                },
-                BrowserEntry {
-                    name: String::from("KoiLake.png"),
-                    is_dir: false,
-                },
-                BrowserEntry {
-                    name: String::from("MountainPass.webp"),
-                    is_dir: false,
-                },
-            ],
+            browser_entries: Vec::new(),
+            browser_all_entries: Vec::new(),
+            browser_dir: preferred_initial_browser_dir(),
+            browser_query: String::new(),
             browser_selected: 0,
             monitor_selected: 0,
             transition: TransitionState::default(),
@@ -287,12 +290,15 @@ async fn run_app() -> io::Result<()> {
     terminal.clear()?;
 
     let mut state = AppState::default();
+    if let Err(err) = reload_browser_directory(&mut state) {
+        state.status = format!("Browser initialization failed: {err}");
+    }
     start_native_backend(&mut state);
     let mut tick = tokio::time::interval(Duration::from_millis(TICK_RATE_MS));
 
     while !state.should_quit {
         tick.tick().await;
-        handle_input(&mut state)?;
+        handle_input(&mut state).await?;
         refresh_monitors_if_due(&mut state).await;
         poll_backend_status(&mut state).await;
         terminal.draw(|frame| draw_ui(frame, &state))?;
@@ -304,7 +310,7 @@ async fn run_app() -> io::Result<()> {
 }
 
 /// Reads keyboard events and mutates app state.
-fn handle_input(state: &mut AppState) -> io::Result<()> {
+async fn handle_input(state: &mut AppState) -> io::Result<()> {
     while event::poll(Duration::from_millis(0))? {
         if let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
@@ -323,8 +329,18 @@ fn handle_input(state: &mut AppState) -> io::Result<()> {
                 }
                 KeyCode::Char('h') => {
                     state.status = String::from(
-                        "Help: Tab pane switch, arrows navigate, q quit, r refresh, b backend",
+                        "Help: Tab pane switch, arrows navigate, Enter apply/open, / filter",
                     );
+                }
+                KeyCode::Char('u') => {
+                    if state.focus == PaneFocus::Browser {
+                        if let Some(parent) = state.browser_dir.parent().map(Path::to_path_buf) {
+                            state.browser_dir = parent;
+                            if let Err(err) = reload_browser_directory(state) {
+                                state.status = format!("Failed to open parent directory: {err}");
+                            }
+                        }
+                    }
                 }
                 KeyCode::Tab => {
                     state.focus = state.focus.next();
@@ -366,6 +382,23 @@ fn handle_input(state: &mut AppState) -> io::Result<()> {
                 KeyCode::Right => {
                     if state.focus == PaneFocus::Transition {
                         state.transition.increase_selected();
+                    }
+                }
+                KeyCode::Backspace => {
+                    if state.focus == PaneFocus::Browser && !state.browser_query.is_empty() {
+                        state.browser_query.pop();
+                        apply_browser_filter(state);
+                    }
+                }
+                KeyCode::Enter => {
+                    if state.focus == PaneFocus::Browser {
+                        activate_browser_selection(state).await;
+                    }
+                }
+                KeyCode::Char(c) => {
+                    if state.focus == PaneFocus::Browser && !c.is_control() {
+                        state.browser_query.push(c);
+                        apply_browser_filter(state);
                     }
                 }
                 _ => {}
@@ -606,6 +639,246 @@ fn extract_wlr_dimensions(object: &serde_json::Map<String, Value>) -> Option<(u3
         })
 }
 
+/// Chooses the startup directory for the file browser.
+fn preferred_initial_browser_dir() -> PathBuf {
+    if let Some(home) = std::env::var_os("HOME") {
+        let pictures = PathBuf::from(home).join("Pictures");
+        if pictures.is_dir() {
+            return pictures;
+        }
+    }
+
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Reloads filesystem entries for the current browser directory.
+fn reload_browser_directory(state: &mut AppState) -> io::Result<()> {
+    let mut entries = Vec::new();
+
+    if let Some(parent) = state.browser_dir.parent() {
+        entries.push(BrowserEntry {
+            name: String::from(".."),
+            path: parent.to_path_buf(),
+            is_dir: true,
+            is_parent: true,
+        });
+    }
+
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    for dir_entry in fs::read_dir(&state.browser_dir)? {
+        let entry = dir_entry?;
+        let path = entry.path();
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let meta = entry.metadata()?;
+
+        if meta.is_dir() {
+            dirs.push(BrowserEntry {
+                name: format!("{file_name}/"),
+                path,
+                is_dir: true,
+                is_parent: false,
+            });
+            continue;
+        }
+
+        if meta.is_file() && is_supported_image_path(&path) {
+            files.push(BrowserEntry {
+                name: file_name,
+                path,
+                is_dir: false,
+                is_parent: false,
+            });
+        }
+    }
+
+    dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+    entries.extend(dirs);
+    entries.extend(files);
+
+    state.browser_all_entries = entries;
+    apply_browser_filter(state);
+    Ok(())
+}
+
+/// Applies fuzzy filtering to browser rows based on the active query.
+fn apply_browser_filter(state: &mut AppState) {
+    if state.browser_query.is_empty() {
+        state.browser_entries = state.browser_all_entries.clone();
+    } else {
+        let mut scored = state
+            .browser_all_entries
+            .iter()
+            .cloned()
+            .filter_map(|entry| {
+                fuzzy_score(&state.browser_query, &entry.name).map(|score| (score, entry))
+            })
+            .collect::<Vec<_>>();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
+        state.browser_entries = scored.into_iter().map(|(_, entry)| entry).collect();
+    }
+
+    state.browser_selected = state
+        .browser_selected
+        .min(state.browser_entries.len().saturating_sub(1));
+}
+
+/// Computes a lightweight subsequence-based fuzzy match score.
+fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
+    let query = query.to_ascii_lowercase();
+    let candidate = candidate.to_ascii_lowercase();
+
+    let mut q_chars = query.chars();
+    let mut current = q_chars.next()?;
+    let mut score = 0_i32;
+    let mut run = 0_i32;
+
+    for (idx, ch) in candidate.chars().enumerate() {
+        if ch == current {
+            run += 1;
+            score += 10 + run * 3 - i32::try_from(idx).unwrap_or(i32::MAX / 8);
+            if let Some(next) = q_chars.next() {
+                current = next;
+            } else {
+                score += 40;
+                return Some(score);
+            }
+        } else {
+            run = 0;
+        }
+    }
+
+    None
+}
+
+/// Activates the selected browser row by opening directories or applying wallpaper files.
+async fn activate_browser_selection(state: &mut AppState) {
+    let Some(entry) = state.browser_entries.get(state.browser_selected).cloned() else {
+        state.status = String::from("No browser entry selected");
+        return;
+    };
+
+    if entry.is_dir {
+        state.browser_dir = entry.path;
+        state.browser_query.clear();
+        match reload_browser_directory(state) {
+            Ok(()) => {
+                let action = if entry.is_parent {
+                    "Moved to parent directory"
+                } else {
+                    "Opened directory"
+                };
+                state.status = format!("{}: {}", action, state.browser_dir.display());
+            }
+            Err(err) => {
+                state.status = format!("Failed to open directory: {err}");
+            }
+        }
+        return;
+    }
+
+    let transition = build_transition_from_state(&state.transition);
+    let namespace = state.backend.namespace.clone();
+    let file_path = entry.path;
+    let outputs = if let Some(monitor) = state.monitors.get(state.monitor_selected) {
+        vec![monitor.name.clone()]
+    } else {
+        Vec::new()
+    };
+
+    match apply_wallpaper_request(file_path.clone(), transition, namespace, outputs).await {
+        Ok(message) => state.status = message,
+        Err(err) => state.status = format!("Wallpaper apply failed: {err}"),
+    }
+}
+
+/// Sends a native wallpaper image request through the daemon IPC channel.
+async fn apply_wallpaper_request(
+    file_path: PathBuf,
+    transition: Transition,
+    namespace: String,
+    outputs: Vec<String>,
+) -> Result<String, String> {
+    let path_for_error = file_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let decoded = ImageReader::open(&file_path)
+            .map_err(|err| format!("cannot open image '{}': {err}", path_for_error.display()))?
+            .decode()
+            .map_err(|err| format!("cannot decode image '{}': {err}", path_for_error.display()))?
+            .to_rgb8();
+        let (width, height) = decoded.dimensions();
+
+        let img_send = ImgSend {
+            path: file_path.to_string_lossy().to_string(),
+            dim: (width, height),
+            format: PixelFormat::Rgb,
+            img: decoded.into_raw().into_boxed_slice(),
+        };
+
+        let mut builder = ImageRequestBuilder::new(transition)
+            .map_err(|err| format!("request mmap failed: {err}"))?;
+        builder.push(img_send, &namespace, "fit", "lanczos3", &outputs, None);
+
+        let socket = IpcSocket::client(&namespace).map_err(|err| err.to_string())?;
+        RequestSend::Img(builder.build())
+            .send(&socket)
+            .map_err(|err| err.to_string())?;
+
+        let answer = Answer::receive(socket.recv().map_err(|err| err.to_string())?);
+        match answer {
+            Answer::Ok => Ok(format!("Applied wallpaper: {}", file_path.display())),
+            Answer::Ping(ready) => Ok(format!("Applied wallpaper (backend ready={ready})")),
+            Answer::Info(_) => Ok(format!("Applied wallpaper: {}", file_path.display())),
+        }
+    })
+    .await
+    .map_err(|err| format!("background task error: {err}"))?
+}
+
+/// Builds a daemon transition configuration from current TUI controls.
+fn build_transition_from_state(state: &TransitionState) -> Transition {
+    let transition_type = match TRANSITION_EFFECTS[state.effect_idx] {
+        "fade" => TransitionType::Fade,
+        "wipe" => TransitionType::Wipe,
+        "grow" => TransitionType::Grow,
+        _ => TransitionType::Simple,
+    };
+
+    let bezier = match EASING_PRESETS[state.easing_idx] {
+        "linear" => (0.0, 0.0, 1.0, 1.0),
+        "ease-in" => (0.42, 0.0, 1.0, 1.0),
+        "ease-out" => (0.0, 0.0, 0.58, 1.0),
+        _ => (0.42, 0.0, 0.58, 1.0),
+    };
+
+    Transition {
+        transition_type,
+        duration: state.duration_ms as f32 / 1000.0,
+        step: NonZeroU8::new(2).expect("step must be non-zero"),
+        fps: state.fps,
+        angle: 0.0,
+        pos: Position::new(Coord::Percent(0.5), Coord::Percent(0.5)),
+        bezier,
+        wave: (10.0, 10.0),
+        invert_y: false,
+    }
+}
+
+/// Checks whether a path looks like a supported image file.
+fn is_supported_image_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp"
+            )
+        })
+        .unwrap_or(false)
+}
+
 /// Renders the initial multi-pane Ratatui layout.
 fn draw_ui(frame: &mut Frame<'_>, state: &AppState) {
     let root = Layout::default()
@@ -648,7 +921,7 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     frame.render_widget(title, area);
 }
 
-/// Draws the three core panes for the Phase 1 shell.
+/// Draws the three core panes for the interactive TUI shell.
 fn draw_body(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let columns = Layout::default()
         .direction(Direction::Horizontal)
@@ -705,18 +978,39 @@ fn border_style_for_focus(active: PaneFocus, pane: PaneFocus) -> Style {
 
 /// Builds browser pane content with highlighted selection.
 fn render_browser_lines(state: &AppState) -> String {
-    let mut lines = String::from("Library\n");
+    let mut lines = format!(
+        "Dir: {}\nFilter: {}\n\n",
+        state.browser_dir.display(),
+        if state.browser_query.is_empty() {
+            "(none)"
+        } else {
+            state.browser_query.as_str()
+        }
+    );
+
+    if state.browser_entries.is_empty() {
+        lines.push_str("No matching entries\n");
+        lines.push_str("Type to fuzzy filter or Backspace to clear");
+        return lines;
+    }
+
     for (idx, entry) in state.browser_entries.iter().enumerate() {
         let marker = if idx == state.browser_selected {
             ">"
         } else {
             " "
         };
-        let kind = if entry.is_dir { "[D]" } else { "[I]" };
+        let kind = if entry.is_parent {
+            "[U]"
+        } else if entry.is_dir {
+            "[D]"
+        } else {
+            "[I]"
+        };
         let row = format!("{} {} {}\n", marker, kind, entry.name);
         lines.push_str(&row);
     }
-    lines.push_str("\nTab: next pane | Up/Down: navigate");
+    lines.push_str("\nEnter: open/apply | u: parent | Type: fuzzy filter");
     lines
 }
 
@@ -786,7 +1080,7 @@ fn render_transition_lines(state: &AppState) -> String {
         "stopped"
     };
     let backend_line = format!(
-        "\nBackend\n- status: {}\n- namespace: {}\n\nLeft/Right: tweak value",
+        "\nBackend\n- status: {}\n- namespace: {}\n\nLeft/Right: tweak value, Enter in Browser: apply",
         backend_state, state.backend.namespace
     );
     lines.push_str(&backend_line);
@@ -797,7 +1091,7 @@ fn render_transition_lines(state: &AppState) -> String {
 fn draw_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let frame_age_ms = state.last_frame.elapsed().as_millis();
     let diagnostics = format!(
-        "{} | frames={} | frame_age={}ms | q quit | Tab switch pane | arrows navigate | r refresh | b backend",
+        "{} | frames={} | frame_age={}ms | q quit | Tab pane | arrows nav | Enter apply/open | type fuzzy | r refresh | b backend",
         state.status, state.frame_count, frame_age_ms
     );
     let footer = Paragraph::new(diagnostics).block(
