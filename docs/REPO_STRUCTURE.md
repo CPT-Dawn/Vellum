@@ -14,20 +14,29 @@ This repository now follows a more modular Rust layout and is prepared for upcom
 - crates/
   - vellum-ipc/
     - src/lib.rs
+    - src/protocol.rs
+    - src/envelope.rs
   - vellumd/
     - src/main.rs
     - src/cli.rs
     - src/paths.rs
     - src/monitor.rs
     - src/state.rs
+    - src/ipc/
+      - mod.rs
+      - server.rs
+      - handlers.rs
     - src/renderer/
       - mod.rs
+      - backend.rs
       - command_queue.rs
       - output_registry.rs
   - vellum-tui/
     - src/main.rs
     - src/cli.rs
     - src/daemon_client.rs
+    - src/display.rs
+    - src/images.rs
 
 ## Target Professional Structure (Near-Term)
 

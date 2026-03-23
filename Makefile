@@ -7,13 +7,24 @@ LICENSE_DIR := $(PREFIX)/share/licenses/vellum
 CARGO ?= cargo
 TARGET_DIR ?= target/release
 
-.PHONY: all build release install install-bins install-service install-license uninstall clean fmt clippy test
+.PHONY: all build release release-package release-checksum release-verify install install-bins install-service install-license uninstall clean fmt clippy test
 
 all: build
 
 build:
 	$(CARGO) build --release --workspace
 
+release-package: build
+	mkdir -p dist
+	cp "$(TARGET_DIR)/vellumd" dist/
+	cp "$(TARGET_DIR)/vellum-tui" dist/
+	tar -czf vellum-linux-x86_64.tar.gz -C dist vellumd vellum-tui
+
+release-checksum: release-package
+	sha256sum vellum-linux-x86_64.tar.gz > SHA256SUMS
+
+release-verify:
+	sha256sum --check SHA256SUMS
 release: build
 
 install: build install-bins install-service install-license

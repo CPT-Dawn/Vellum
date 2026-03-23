@@ -56,6 +56,13 @@ Tagged pushes like `v0.1.0` trigger a release workflow that:
 - publishes `vellum-linux-x86_64.tar.gz` to GitHub Releases
 - publishes `SHA256SUMS` for artifact verification
 
+Local release/checksum helpers:
+
+```bash
+make release-checksum
+make release-verify
+```
+
 ### 2) Run daemon
 
 ```bash
