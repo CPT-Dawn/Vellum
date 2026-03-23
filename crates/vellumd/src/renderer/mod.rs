@@ -61,6 +61,7 @@ impl RendererState {
     pub(crate) fn apply_pending(&mut self) -> Result<()> {
         // This is a scaffold stage: commands are queued and logged while the
         // concrete SCTK/layer-shell renderer backend is being implemented.
+        let mut successfully_applied = Vec::new();
         for command in self.queue.drain() {
             match &command {
                 RenderCommand::ApplyAssignment {
@@ -103,9 +104,7 @@ impl RendererState {
                 }
             }
 
-            // First renderer milestone: keep an internal backend assignment state
-            // synchronized with queued render commands.
-            self.backend.apply_command(command);
+            successfully_applied.push(command);
         }
 
         // Bridge stage: forward native commit descriptors into wl_shm bridge.
@@ -123,9 +122,28 @@ impl RendererState {
             );
         }
         self.shm_bridge.submit(commits);
-        self.shm_bridge.flush();
+        let committed = self
+            .shm_bridge
+            .flush()
+            .context("wl_shm bridge flush failed")?;
+        info!(
+            committed,
+            outputs = self.shm_bridge.committed_output_count(),
+            "wl_shm bridge committed native plans"
+        );
+
+        // Keep daemon-facing assignment state aligned with successful native
+        // commit execution only.
+        for command in successfully_applied {
+            self.backend.apply_command(command);
+        }
 
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn committed_output_count(&self) -> usize {
+        self.shm_bridge.committed_output_count()
     }
 
     #[cfg(test)]
@@ -146,11 +164,6 @@ impl RendererState {
     #[cfg(test)]
     pub(crate) fn session_buffer_count(&self) -> usize {
         self.session.pool_entry_count()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn committed_output_count(&self) -> usize {
-        self.shm_bridge.committed_output_count()
     }
 }
 

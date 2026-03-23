@@ -40,6 +40,7 @@
 - Daemon now binds its IPC socket before bootstrap replay work, improving startup responsiveness and restart reliability.
 - Set-wallpaper daemon state rollback now restores the previous assignment on renderer failure, preserving transactional correctness.
 - Daemon monitor refresh loop and IPC handlers now share a synchronized monitor snapshot for monitor queries and target validation.
+- Startup replay now self-heals persisted state by pruning assignments that fail to reapply and saving the corrected state file.
 
 ## In Progress
 

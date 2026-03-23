@@ -21,7 +21,7 @@ use crate::ipc::server::run_client_session;
 use crate::monitor::{detect_monitor_names, normalize_monitor_snapshot, MonitorSnapshot};
 use crate::paths::{resolve_socket_path, resolve_state_path};
 use crate::renderer::RendererState;
-use crate::state::{load_state, DaemonState};
+use crate::state::{load_state, save_state, DaemonState};
 
 fn replay_snapshot(state: &DaemonState) -> Vec<(Option<String>, PathBuf, ScaleMode)> {
     let mut snapshot: Vec<(Option<String>, PathBuf, ScaleMode)> = state
@@ -37,6 +37,7 @@ fn replay_snapshot(state: &DaemonState) -> Vec<(Option<String>, PathBuf, ScaleMo
 async fn replay_persisted_assignments(
     state: Arc<Mutex<DaemonState>>,
     renderer_state: Arc<Mutex<RendererState>>,
+    state_path: &PathBuf,
 ) {
     let snapshot = {
         let state = state.lock().await;
@@ -47,16 +48,46 @@ async fn replay_persisted_assignments(
         return;
     }
 
-    let mut renderer = renderer_state.lock().await;
+    let mut failed = Vec::new();
     for (monitor, path, mode) in snapshot {
-        renderer.enqueue_apply(monitor, path, mode);
+        let mut renderer = renderer_state.lock().await;
+        renderer.enqueue_apply(monitor.clone(), path, mode);
+
+        if let Err(err) = renderer.apply_pending() {
+            warn!(error = %err, target = ?monitor, "failed replay assignment during startup");
+            failed.push(monitor);
+        }
     }
 
-    if let Err(err) = renderer.apply_pending() {
-        warn!(error = %err, "failed to replay persisted assignments into renderer");
-    } else {
+    if failed.is_empty() {
         info!("replayed persisted assignments into renderer");
+        return;
     }
+
+    let mut state = state.lock().await;
+    let pruned = prune_failed_assignments(&mut state, &failed);
+    if pruned == 0 {
+        return;
+    }
+
+    if let Err(err) = save_state(state_path, &state) {
+        warn!(error = %err, pruned, "failed to persist pruned startup assignments");
+    } else {
+        warn!(
+            pruned,
+            "pruned failed startup assignments from persisted state"
+        );
+    }
+}
+
+fn prune_failed_assignments(state: &mut DaemonState, failed: &[Option<String>]) -> usize {
+    let mut removed = 0usize;
+    for key in failed {
+        if state.assignments.remove(key).is_some() {
+            removed = removed.saturating_add(1);
+        }
+    }
+    removed
 }
 
 async fn monitor_refresh_loop(
@@ -132,7 +163,8 @@ async fn main() -> Result<()> {
         renderer.refresh_outputs(normalized.clone());
     }
 
-    replay_persisted_assignments(Arc::clone(&state), Arc::clone(&renderer_state)).await;
+    replay_persisted_assignments(Arc::clone(&state), Arc::clone(&renderer_state), &state_path)
+        .await;
 
     tokio::spawn(monitor_refresh_loop(
         Arc::clone(&renderer_state),
@@ -199,7 +231,7 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::replay_snapshot;
+    use super::{prune_failed_assignments, replay_snapshot};
     use crate::state::{DaemonState, WallpaperAssignment};
     use std::path::PathBuf;
     use vellum_ipc::ScaleMode;
@@ -228,5 +260,29 @@ mod tests {
         assert_eq!(snapshot[0].1, PathBuf::from("/tmp/all.png"));
         assert_eq!(snapshot[1].0, Some("DP-1".to_string()));
         assert_eq!(snapshot[1].1, PathBuf::from("/tmp/dp.png"));
+    }
+
+    #[test]
+    fn prune_failed_assignments_removes_only_requested_keys() {
+        let mut state = DaemonState::default();
+        state.assignments.insert(
+            None,
+            WallpaperAssignment {
+                path: PathBuf::from("/tmp/all.png"),
+                mode: ScaleMode::Fill,
+            },
+        );
+        state.assignments.insert(
+            Some("DP-1".to_string()),
+            WallpaperAssignment {
+                path: PathBuf::from("/tmp/dp.png"),
+                mode: ScaleMode::Crop,
+            },
+        );
+
+        let removed = prune_failed_assignments(&mut state, &[None, Some("HDMI-A-1".to_string())]);
+        assert_eq!(removed, 1);
+        assert_eq!(state.assignments.len(), 1);
+        assert!(state.assignments.contains_key(&Some("DP-1".to_string())));
     }
 }
