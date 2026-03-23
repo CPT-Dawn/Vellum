@@ -3,6 +3,9 @@ use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 static IS_TTY: AtomicBool = AtomicBool::new(false);
 static FILTER: AtomicU8 = AtomicU8::new(Filter::Fatal as u8);
+static HOOK: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+pub type LogHook = fn(Filter, &str);
 
 #[cfg(debug_assertions)]
 pub const MIN_LEVEL: Filter = Filter::Trace;
@@ -27,6 +30,11 @@ pub fn init(filter: Filter) {
     let stderr = unsafe { rustix::stdio::stderr() };
     IS_TTY.store(rustix::termios::isatty(stderr), Ordering::SeqCst);
     FILTER.store(filter as u8, Ordering::SeqCst);
+}
+
+pub fn set_hook(hook: Option<LogHook>) {
+    let ptr = hook.map_or(0, |f| f as usize);
+    HOOK.store(ptr, Ordering::SeqCst);
 }
 
 #[cold]
@@ -61,6 +69,13 @@ pub fn log(filter: Filter, msg: core::fmt::Arguments) {
         Some(s) => ::alloc::borrow::Cow::Borrowed(s),
         None => ::alloc::borrow::Cow::Owned(msg.to_string()),
     };
+
+    let hook_ptr = HOOK.load(Ordering::Relaxed);
+    if hook_ptr != 0 {
+        // SAFETY: hook_ptr is only ever set by set_hook from a function pointer.
+        let hook: LogHook = unsafe { core::mem::transmute(hook_ptr) };
+        hook(filter, msg.as_ref());
+    }
 
     // this is unsafe because in no-std environments the stderr file descriptor may be invalid
     #[allow(unused_unsafe)]
