@@ -17,10 +17,6 @@ impl OutputRegistry {
     pub(crate) fn contains(&self, name: &str) -> bool {
         self.outputs.contains(name)
     }
-
-    pub(crate) fn names(&self) -> Vec<String> {
-        self.outputs.iter().cloned().collect()
-    }
 }
 
 #[cfg(test)]

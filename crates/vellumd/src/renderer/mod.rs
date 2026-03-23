@@ -60,8 +60,4 @@ impl RendererState {
             }
         }
     }
-
-    pub(crate) fn output_names(&self) -> Vec<String> {
-        self.outputs.names()
-    }
 }

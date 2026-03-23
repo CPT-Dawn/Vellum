@@ -1,0 +1,96 @@
+use anyhow::{Context, Result};
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixStream;
+use tokio::sync::{watch, Mutex};
+use tracing::error;
+use vellum_ipc::{RequestEnvelope, Response, ResponseEnvelope};
+
+use crate::ipc::handlers::handle_request;
+use crate::renderer::RendererState;
+use crate::state::DaemonState;
+
+pub(crate) async fn run_client_session(
+    stream: UnixStream,
+    shutdown_tx: watch::Sender<bool>,
+    daemon_state: Arc<Mutex<DaemonState>>,
+    renderer_state: Arc<Mutex<RendererState>>,
+    state_path: PathBuf,
+) -> Result<()> {
+    let (reader, mut writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+        let bytes = reader
+            .read_line(&mut line)
+            .await
+            .context("failed to read from client socket")?;
+
+        if bytes == 0 {
+            return Ok(());
+        }
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let envelope = match serde_json::from_str::<RequestEnvelope>(trimmed) {
+            Ok(envelope) => envelope,
+            Err(err) => {
+                let response = Response::Error {
+                    message: format!("invalid request json: {err}"),
+                };
+                send_response(&mut writer, &response).await?;
+                continue;
+            }
+        };
+
+        if let Err(err) = envelope.validate_version() {
+            let response = Response::Error {
+                message: err.to_string(),
+            };
+            send_response(&mut writer, &response).await?;
+            continue;
+        }
+
+        let outcome = handle_request(
+            envelope.request,
+            &daemon_state,
+            &renderer_state,
+            &state_path,
+        )
+        .await?;
+
+        if let Err(err) = send_response(&mut writer, &outcome.response).await {
+            error!(error = %err, "failed sending response to client");
+            return Err(err);
+        }
+
+        if outcome.shutdown {
+            let _ = shutdown_tx.send(true);
+            return Ok(());
+        }
+    }
+}
+
+async fn send_response(
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    response: &Response,
+) -> Result<()> {
+    let envelope = ResponseEnvelope::new(response.clone());
+    let payload = serde_json::to_string(&envelope).context("failed to serialize response")?;
+    writer
+        .write_all(payload.as_bytes())
+        .await
+        .context("failed to write response payload")?;
+    writer
+        .write_all(b"\n")
+        .await
+        .context("failed to write response newline")?;
+    writer.flush().await.context("failed to flush response")?;
+    Ok(())
+}

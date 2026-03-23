@@ -12,6 +12,7 @@
 - TUI extracted CLI and daemon transport modules.
 - Daemon integration tests that spawn vellumd and verify IPC/persistence flows.
 - CI workflow for fmt, clippy, and workspace tests.
+- Daemon IPC split into server and handler modules.
 
 ## In Progress
 
@@ -27,7 +28,7 @@
 
 ## Recommended Next Slices
 
-1. Add daemon IPC handler module split (`ipc/server.rs`, `ipc/handlers.rs`).
-2. Move TUI app state/actions/layout into dedicated modules.
-3. Add integration test harness that boots daemon and exercises IPC flows.
-4. Implement first renderer backend milestone for one output.
+1. Move TUI app state/actions/layout into dedicated modules.
+2. Implement first renderer backend milestone for one output.
+3. Add renderer-facing integration tests (command queue to backend behavior).
+4. Add release packaging workflow for tagged builds.
