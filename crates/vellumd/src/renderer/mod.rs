@@ -3,6 +3,7 @@ mod command_queue;
 mod image_blit;
 mod image_pipeline;
 mod layer_shell;
+mod native_commit;
 mod output_registry;
 mod perf_checks;
 mod shm_pool;
@@ -102,6 +103,21 @@ impl RendererState {
             // First renderer milestone: keep an internal backend assignment state
             // synchronized with queued render commands.
             self.backend.apply_command(command);
+        }
+
+        // Bridge stage: drain native commit descriptors so a future wl_shm/layer-
+        // shell loop can consume the exact buffer metadata and submit commits.
+        for commit in self.session.drain_native_commit_plans() {
+            info!(
+                output = %commit.output,
+                width = commit.width,
+                height = commit.height,
+                stride = commit.stride,
+                buffer_id = commit.buffer_id,
+                path = %commit.source_path.display(),
+                ?commit.mode,
+                "native commit plan prepared"
+            );
         }
 
         Ok(())

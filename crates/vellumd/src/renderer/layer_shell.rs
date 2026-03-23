@@ -5,6 +5,7 @@ use tracing::{info, warn};
 use vellum_ipc::ScaleMode;
 
 use crate::renderer::image_blit::{render_frame, NativeFrame};
+use crate::renderer::native_commit::NativeCommitPlan;
 use crate::renderer::shm_pool::ShmPool;
 use crate::renderer::swaybg::SwaybgController;
 
@@ -40,6 +41,7 @@ pub(crate) struct LayerShellSession {
     surfaces: BTreeMap<String, OutputSurface>,
     shm_pool: ShmPool,
     presenter: SwaybgController,
+    pending_commits: Vec<NativeCommitPlan>,
 }
 
 impl LayerShellSession {
@@ -63,6 +65,8 @@ impl LayerShellSession {
                 }
             }
             self.presenter.remove_output(&output);
+            self.pending_commits
+                .retain(|commit| commit.output != output);
         }
 
         for output in incoming.keys() {
@@ -102,13 +106,27 @@ impl LayerShellSession {
         match monitor {
             Some(target) => {
                 if let Some(surface) = self.surfaces.get_mut(target) {
-                    Self::render_to_surface(surface, &mut self.shm_pool, path, mode)?;
+                    Self::render_to_surface(
+                        target,
+                        surface,
+                        &mut self.shm_pool,
+                        &mut self.pending_commits,
+                        path,
+                        mode,
+                    )?;
                     self.presenter.apply_to_output(target, path, mode)?;
                 }
             }
             None => {
                 for (output, surface) in &mut self.surfaces {
-                    Self::render_to_surface(surface, &mut self.shm_pool, path, mode)?;
+                    Self::render_to_surface(
+                        output,
+                        surface,
+                        &mut self.shm_pool,
+                        &mut self.pending_commits,
+                        path,
+                        mode,
+                    )?;
                     self.presenter.apply_to_output(output, path, mode)?;
                 }
             }
@@ -135,6 +153,7 @@ impl LayerShellSession {
             surface.current_mode = None;
             surface.current_frame = None;
         }
+        self.pending_commits.clear();
         self.presenter.clear_all();
 
         self.shm_pool.reclaim_unused(0);
@@ -147,8 +166,10 @@ impl LayerShellSession {
     }
 
     fn render_to_surface(
+        output: &str,
         surface: &mut OutputSurface,
         pool: &mut ShmPool,
+        pending_commits: &mut Vec<NativeCommitPlan>,
         path: &Path,
         mode: ScaleMode,
     ) -> Result<()> {
@@ -181,7 +202,21 @@ impl LayerShellSession {
         surface.current_path = Some(path.to_path_buf());
         surface.current_mode = Some(mode);
         surface.current_frame = Some(frame);
+
+        pending_commits.push(NativeCommitPlan {
+            output: output.to_string(),
+            width: target_width,
+            height: target_height,
+            stride: surface.current_stride,
+            buffer_id: next_buffer,
+            source_path: path.to_path_buf(),
+            mode,
+        });
         Ok(())
+    }
+
+    pub(crate) fn drain_native_commit_plans(&mut self) -> Vec<NativeCommitPlan> {
+        self.pending_commits.drain(..).collect()
     }
 
     #[cfg(test)]
@@ -224,6 +259,11 @@ impl LayerShellSession {
             .and_then(|surface| surface.current_frame.as_ref())
             .map(|frame| frame.pixels.len())
     }
+
+    #[cfg(test)]
+    pub(crate) fn pending_commit_count(&self) -> usize {
+        self.pending_commits.len()
+    }
 }
 
 #[cfg(test)]
@@ -258,6 +298,10 @@ mod tests {
         assert!(session.has_assignment_for("DP-1"));
         assert!(session.has_assignment_for("HDMI-A-1"));
         assert_eq!(session.frame_byte_len_for("DP-1"), Some(1920 * 1080 * 4));
+        assert_eq!(session.pending_commit_count(), 2);
+
+        let commits = session.drain_native_commit_plans();
+        assert_eq!(commits.len(), 2);
 
         assert!(session.clear_assignments().is_ok());
         assert_eq!(session.leased_buffer_count(), 0);

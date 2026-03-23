@@ -33,6 +33,7 @@ This repository now follows a more modular Rust layout and is prepared for upcom
       - image_blit.rs
       - image_pipeline.rs
       - layer_shell.rs
+      - native_commit.rs
       - output_registry.rs
       - shm_pool.rs
       - perf_checks.rs
