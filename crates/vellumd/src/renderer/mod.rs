@@ -11,6 +11,7 @@ mod swaybg;
 mod wl_shm_bridge;
 
 use anyhow::{Context, Result};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use tracing::{info, warn};
 use vellum_ipc::ScaleMode;
@@ -62,8 +63,10 @@ impl RendererState {
         // This is a scaffold stage: commands are queued and logged while the
         // concrete SCTK/layer-shell renderer backend is being implemented.
         let mut successfully_applied = Vec::new();
-        for command in self.queue.drain() {
-            match &command {
+        let mut pending: VecDeque<RenderCommand> = self.queue.drain().into();
+
+        while let Some(command) = pending.pop_front() {
+            let command_result = match &command {
                 RenderCommand::ApplyAssignment {
                     monitor,
                     path,
@@ -95,13 +98,23 @@ impl RendererState {
                         })?;
 
                     info!(target = ?monitor, path = %path.display(), ?mode, "renderer scaffold accepted apply command");
+                    Ok(())
                 }
                 RenderCommand::ClearAssignments => {
                     self.session
                         .clear_assignments()
                         .context("renderer session clear failed")?;
                     info!("renderer scaffold accepted clear command");
+                    Ok(())
                 }
+            };
+
+            if let Err(err) = command_result {
+                // Requeue current and remaining commands so work is not lost on
+                // transient apply failures.
+                self.queue
+                    .prepend(std::iter::once(command).chain(pending.into_iter()));
+                return Err(err);
             }
 
             successfully_applied.push(command);
