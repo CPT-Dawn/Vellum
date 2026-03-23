@@ -172,6 +172,7 @@ impl LayerShellSession {
         let required_bytes = frame.pixels.len().max(4);
 
         let next_buffer = pool.acquire(required_bytes)?;
+        pool.upload(next_buffer, &frame.pixels)?;
         if let Some(previous) = surface.current_buffer_id.replace(next_buffer) {
             pool.release(previous);
         }

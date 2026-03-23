@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone)]
 struct BufferEntry {
     bytes: usize,
+    payload: Vec<u8>,
     in_use: bool,
     last_touched_generation: u64,
 }
@@ -49,11 +50,36 @@ impl ShmPool {
             id,
             BufferEntry {
                 bytes: required_bytes,
+                payload: vec![0; required_bytes],
                 in_use: true,
                 last_touched_generation: self.generation,
             },
         );
         Ok(id)
+    }
+
+    pub(crate) fn upload(&mut self, id: u64, payload: &[u8]) -> Result<()> {
+        let entry = self
+            .entries
+            .get_mut(&id)
+            .ok_or_else(|| anyhow::anyhow!("unknown shm buffer id {id}"))?;
+
+        if payload.is_empty() {
+            bail!("payload must be greater than zero bytes");
+        }
+        if payload.len() > entry.bytes {
+            bail!(
+                "payload larger than allocated shm buffer: payload={} allocated={}",
+                payload.len(),
+                entry.bytes
+            );
+        }
+
+        entry.payload[..payload.len()].copy_from_slice(payload);
+        if payload.len() < entry.payload.len() {
+            entry.payload[payload.len()..].fill(0);
+        }
+        Ok(())
     }
 
     pub(crate) fn release(&mut self, id: u64) {
@@ -87,6 +113,18 @@ impl ShmPool {
 
     pub(crate) fn entry_count(&self) -> usize {
         self.entries.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn payload_len_for(&self, id: u64) -> Option<usize> {
+        self.entries.get(&id).map(|entry| entry.payload.len())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn payload_head_for(&self, id: u64, count: usize) -> Option<Vec<u8>> {
+        self.entries
+            .get(&id)
+            .map(|entry| entry.payload.iter().take(count).copied().collect())
     }
 }
 
@@ -122,5 +160,17 @@ mod tests {
 
         pool.reclaim_unused(0);
         assert_eq!(pool.entry_count(), 0);
+    }
+
+    #[test]
+    fn upload_writes_payload_into_buffer() {
+        let mut pool = ShmPool::default();
+        let id = pool.acquire(8).expect("acquire should succeed");
+
+        pool.upload(id, &[1, 2, 3, 4])
+            .expect("upload should succeed");
+
+        assert_eq!(pool.payload_len_for(id), Some(8));
+        assert_eq!(pool.payload_head_for(id, 6), Some(vec![1, 2, 3, 4, 0, 0]));
     }
 }
