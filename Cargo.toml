@@ -12,6 +12,7 @@ rust-version = "1.89.0"
 
 [workspace.dependencies]
 common = { path = "common" }
+vellum-core = { path = "daemon" }
 
 [workspace.lints.clippy]
 correctness = { level = "deny", priority = -1 }

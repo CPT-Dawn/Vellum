@@ -55,7 +55,7 @@ static EXIT: AtomicBool = AtomicBool::new(false);
 
 /// Immutable runtime settings for the native wallpaper daemon.
 #[derive(Clone, Debug)]
-pub struct AwwwServerConfig {
+pub struct VellumServerConfig {
     /// Preferred pixel format for compositor buffers.
     pub format: Option<PixelFormat>,
     /// If true, suppress informational logs and emit only errors.
@@ -68,7 +68,7 @@ pub struct AwwwServerConfig {
     pub namespace: String,
 }
 
-impl Default for AwwwServerConfig {
+impl Default for VellumServerConfig {
     fn default() -> Self {
         Self {
             format: None,
@@ -82,32 +82,32 @@ impl Default for AwwwServerConfig {
 
 /// Runtime daemon façade that exposes a native entrypoint for Vellum.
 #[derive(Debug)]
-pub struct AwwwServer {
-    config: AwwwServerConfig,
+pub struct VellumServer {
+    config: VellumServerConfig,
 }
 
-impl AwwwServer {
+impl VellumServer {
     /// Creates a new server instance that can be started with [`Self::run`].
     #[must_use]
-    pub fn new(config: AwwwServerConfig) -> Self {
+    pub fn new(config: VellumServerConfig) -> Self {
         Self { config }
     }
 
     /// Runs the event loop until a shutdown signal or `Kill` request is received.
-    pub fn run(self) -> Result<(), AwwwServerError> {
+    pub fn run(self) -> Result<(), VellumServerError> {
         run_server(self.config)
     }
 }
 
 /// Error type returned by native daemon startup and runtime operations.
 #[derive(Debug)]
-pub enum AwwwServerError {
+pub enum VellumServerError {
     WaylandInit(String),
     SocketInit(String),
     Runtime(String),
 }
 
-impl core::fmt::Display for AwwwServerError {
+impl core::fmt::Display for VellumServerError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::WaylandInit(msg) => write!(f, "wayland initialization failed: {msg}"),
@@ -117,7 +117,14 @@ impl core::fmt::Display for AwwwServerError {
     }
 }
 
-impl core::error::Error for AwwwServerError {}
+impl core::error::Error for VellumServerError {}
+
+/// Backward-compatible aliases retained during migration.
+pub type AwwwServerConfig = VellumServerConfig;
+/// Backward-compatible aliases retained during migration.
+pub type AwwwServer = VellumServer;
+/// Backward-compatible aliases retained during migration.
+pub type AwwwServerError = VellumServerError;
 
 fn exit_daemon() {
     EXIT.store(true, Ordering::Relaxed);
@@ -165,7 +172,7 @@ impl Daemon {
     fn new(
         backend: waybackend::Waybackend,
         objman: objman::ObjectManager<WaylandObject>,
-        config: AwwwServerConfig,
+        config: VellumServerConfig,
         mut pending_outputs: Vec<OutputInfo>,
     ) -> Self {
         let registry = objman.get_first(WaylandObject::Registry).unwrap();
@@ -679,7 +686,7 @@ enum WaylandObject {
     FractionalScale,
 }
 
-fn run_server(config: AwwwServerConfig) -> Result<(), AwwwServerError> {
+fn run_server(config: VellumServerConfig) -> Result<(), VellumServerError> {
     #[cfg(not(debug_assertions))]
     common::log::init(if config.quiet {
         Filter::Error
@@ -726,13 +733,13 @@ fn run_server(config: AwwwServerConfig) -> Result<(), AwwwServerError> {
             );
         },
     ) {
-        return Err(AwwwServerError::WaylandInit(e.to_string()));
+        return Err(VellumServerError::WaylandInit(e.to_string()));
     }
 
     // create the socket listener and setup the signal handlers
-    // this will also return an error if there is an `awww-daemon` instance already
+    // this will also return an error if there is a `vellum-daemon` instance already
     // running
-    let listener = SocketWrapper::new(&config.namespace).map_err(AwwwServerError::SocketInit)?;
+    let listener = SocketWrapper::new(&config.namespace).map_err(VellumServerError::SocketInit)?;
     setup_signals();
 
     // use the initializer to create the Daemon, then drop it to free up the memory
@@ -751,7 +758,7 @@ fn run_server(config: AwwwServerConfig) -> Result<(), AwwwServerError> {
         daemon
             .backend
             .flush()
-            .map_err(|e| AwwwServerError::Runtime(e.to_string()))?;
+            .map_err(|e| VellumServerError::Runtime(e.to_string()))?;
 
         let mut fds = [
             PollFd::new(&daemon.backend.wayland_fd, PollFlags::IN),
@@ -763,7 +770,7 @@ fn run_server(config: AwwwServerConfig) -> Result<(), AwwwServerError> {
         match rustix::event::poll(&mut fds, daemon.poll_time.as_ref()) {
             Ok(_) => (),
             Err(rustix::io::Errno::INTR | rustix::io::Errno::WOULDBLOCK) => continue,
-            Err(e) => return Err(AwwwServerError::Runtime(e.to_string())),
+            Err(e) => return Err(VellumServerError::Runtime(e.to_string())),
         }
 
         clock::reset();
@@ -774,7 +781,7 @@ fn run_server(config: AwwwServerConfig) -> Result<(), AwwwServerError> {
         if wayland_event {
             let mut msgs = receiver
                 .recv(&daemon.backend.wayland_fd)
-                .map_err(|e| AwwwServerError::Runtime(e.to_string()))?;
+                .map_err(|e| VellumServerError::Runtime(e.to_string()))?;
             while let Some(sender_id) = msgs.next() {
                 let sender_id = match sender_id {
                     Ok(sender_id) => sender_id,
@@ -826,7 +833,7 @@ fn run_server(config: AwwwServerConfig) -> Result<(), AwwwServerError> {
             match rustix::net::accept(&listener.fd) {
                 Ok(stream) => daemon.recv_socket_msg(IpcSocket::new(stream)),
                 Err(rustix::io::Errno::INTR | rustix::io::Errno::WOULDBLOCK) => continue,
-                Err(e) => return Err(AwwwServerError::Runtime(e.to_string())),
+                Err(e) => return Err(VellumServerError::Runtime(e.to_string())),
             }
         }
 
@@ -893,7 +900,7 @@ impl SocketWrapper {
         if fs::access(&addr, fs::Access::EXISTS).is_ok() {
             if is_daemon_running(namespace).map_err(|s| s.to_string())? {
                 return Err(
-                    "There is an awww-daemon instance already running on this socket!".to_string(),
+                    "There is a vellum-daemon instance already running on this socket!".to_string(),
                 );
             }
             warn!(
