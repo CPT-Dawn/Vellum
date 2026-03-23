@@ -442,3 +442,61 @@ async fn send_response(
     writer.flush().await.context("failed to flush response")?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn save_and_load_state_roundtrip() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after unix epoch")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("vellum-daemon-test-{nonce}"));
+        std::fs::create_dir_all(&base).expect("test directory should be created");
+
+        let image_a = base.join("wall-a.png");
+        let image_b = base.join("wall-b.png");
+        std::fs::write(&image_a, b"a").expect("should create image A fixture");
+        std::fs::write(&image_b, b"b").expect("should create image B fixture");
+
+        let mut state = DaemonState::default();
+        state.assignments.insert(
+            None,
+            WallpaperAssignment {
+                path: image_a.clone(),
+                mode: ScaleMode::Fit,
+            },
+        );
+        state.assignments.insert(
+            Some("DP-1".to_string()),
+            WallpaperAssignment {
+                path: image_b.clone(),
+                mode: ScaleMode::Crop,
+            },
+        );
+
+        let state_path = base.join("state.json");
+        save_state(&state_path, &state).expect("state should save");
+        let loaded = load_state(&state_path).expect("state should load");
+
+        let entries = assignment_entries(&loaded.assignments);
+        assert_eq!(entries.len(), 2);
+
+        let all_entry = entries
+            .iter()
+            .find(|entry| entry.monitor.is_none())
+            .expect("missing all-target assignment");
+        assert_eq!(all_entry.mode, ScaleMode::Fit);
+
+        let monitor_entry = entries
+            .iter()
+            .find(|entry| entry.monitor.as_deref() == Some("DP-1"))
+            .expect("missing DP-1 assignment");
+        assert_eq!(monitor_entry.mode, ScaleMode::Crop);
+
+        std::fs::remove_dir_all(&base).expect("test directory should be removed");
+    }
+}
