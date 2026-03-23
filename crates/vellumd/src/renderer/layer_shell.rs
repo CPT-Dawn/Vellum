@@ -8,6 +8,7 @@ use crate::renderer::image_blit::{render_frame, NativeFrame};
 use crate::renderer::native_commit::NativeCommitPlan;
 use crate::renderer::shm_pool::ShmPool;
 use crate::renderer::swaybg::SwaybgController;
+use crate::renderer::OutputLayout;
 
 #[derive(Debug, Clone)]
 struct OutputSurface {
@@ -78,6 +79,21 @@ impl LayerShellSession {
             count = self.surfaces.len(),
             "renderer layer-shell output snapshot updated"
         );
+        Ok(())
+    }
+
+    pub(crate) fn sync_output_layouts<I>(&mut self, layouts: I) -> Result<()>
+    where
+        I: IntoIterator<Item = OutputLayout>,
+    {
+        for layout in layouts {
+            if let Some(surface) = self.surfaces.get_mut(&layout.name) {
+                surface.width = layout.width.max(1);
+                surface.height = layout.height.max(1);
+                surface.scale_factor = layout.scale_factor.max(1);
+            }
+        }
+
         Ok(())
     }
 
@@ -269,6 +285,7 @@ impl LayerShellSession {
 #[cfg(test)]
 mod tests {
     use super::LayerShellSession;
+    use crate::renderer::OutputLayout;
     use std::path::Path;
     use vellum_ipc::ScaleMode;
 
@@ -323,5 +340,24 @@ mod tests {
             .apply_assignment(Some("DP-1"), Path::new("/tmp/next.png"), ScaleMode::Crop)
             .is_ok());
         assert!(session.pool_total_bytes() >= baseline);
+    }
+
+    #[test]
+    fn sync_output_layouts_updates_surface_dimensions() {
+        let mut session = LayerShellSession::default();
+        assert!(session.sync_outputs(vec!["DP-1".to_string()]).is_ok());
+        assert!(session
+            .sync_output_layouts(vec![OutputLayout {
+                name: "DP-1".to_string(),
+                width: 4,
+                height: 3,
+                scale_factor: 2,
+            }])
+            .is_ok());
+
+        assert!(session
+            .apply_assignment(Some("DP-1"), Path::new("/tmp/layout.png"), ScaleMode::Fit)
+            .is_ok());
+        assert_eq!(session.frame_byte_len_for("DP-1"), Some(8 * 6 * 4));
     }
 }

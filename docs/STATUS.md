@@ -46,6 +46,7 @@
 - Renderer apply loop now requeues failed and unprocessed render commands, preventing command loss on transient apply errors.
 - Renderer output registry now computes explicit add/remove deltas, and refresh logs lifecycle edges for monitor hotplug reconciliation.
 - Renderer now also requeues already-processed commands when wl_shm flush fails, preventing command loss after late-stage commit errors.
+- Daemon now propagates detected monitor width/height/scale layouts into renderer session surfaces, replacing static default geometry assumptions.
 
 ## In Progress
 

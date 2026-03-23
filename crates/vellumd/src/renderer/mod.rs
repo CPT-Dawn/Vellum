@@ -24,6 +24,14 @@ use layer_shell::LayerShellSession;
 pub(crate) use output_registry::OutputRegistry;
 use wl_shm_bridge::WlShmBridge;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OutputLayout {
+    pub(crate) name: String,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) scale_factor: u32,
+}
+
 #[derive(Default)]
 pub(crate) struct RendererState {
     outputs: OutputRegistry,
@@ -48,6 +56,12 @@ impl RendererState {
                 removed = ?delta.removed,
                 "renderer output lifecycle changed"
             );
+        }
+    }
+
+    pub(crate) fn refresh_output_layouts(&mut self, layouts: Vec<OutputLayout>) {
+        if let Err(err) = self.session.sync_output_layouts(layouts) {
+            warn!(error = %err, "renderer session failed to refresh output layouts");
         }
     }
 

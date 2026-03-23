@@ -8,6 +8,14 @@ use wayland_client::globals::{registry_queue_init, GlobalListContents};
 use wayland_client::protocol::{wl_output, wl_registry};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MonitorLayout {
+    pub(crate) name: String,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) scale_factor: u32,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct MonitorSnapshot {
     names: Arc<RwLock<Vec<String>>>,
@@ -37,16 +45,21 @@ pub(crate) fn normalize_monitor_snapshot(mut monitors: Vec<String>) -> Vec<Strin
 }
 
 pub(crate) fn detect_monitor_names() -> Result<Vec<String>> {
-    if let Some(monitors) = detect_wayland_registry_monitors() {
-        return Ok(monitors);
+    let layouts = detect_monitor_layouts()?;
+    Ok(layouts.into_iter().map(|layout| layout.name).collect())
+}
+
+pub(crate) fn detect_monitor_layouts() -> Result<Vec<MonitorLayout>> {
+    if let Some(layouts) = detect_wayland_registry_layouts() {
+        return Ok(layouts);
     }
 
-    if let Some(monitors) = detect_hyprland_monitors() {
-        return Ok(monitors);
+    if let Some(layouts) = detect_hyprland_layouts() {
+        return Ok(layouts);
     }
 
-    if let Some(monitors) = detect_wlr_randr_monitors() {
-        return Ok(monitors);
+    if let Some(layouts) = detect_wlr_randr_layouts() {
+        return Ok(layouts);
     }
 
     anyhow::bail!("unable to detect monitors from wayland registry, hyprctl, or wlr-randr")
@@ -62,9 +75,12 @@ struct OutputMetadata {
     name: Option<String>,
     make: Option<String>,
     model: Option<String>,
+    width: Option<u32>,
+    height: Option<u32>,
+    scale_factor: Option<u32>,
 }
 
-fn detect_wayland_registry_monitors() -> Option<Vec<String>> {
+fn detect_wayland_registry_layouts() -> Option<Vec<MonitorLayout>> {
     let connection = Connection::connect_to_env().ok()?;
     let (globals, mut event_queue) =
         registry_queue_init::<WaylandOutputCollector>(&connection).ok()?;
@@ -86,15 +102,25 @@ fn detect_wayland_registry_monitors() -> Option<Vec<String>> {
     event_queue.roundtrip(&mut collector).ok()?;
     event_queue.roundtrip(&mut collector).ok()?;
 
-    let mut names = Vec::new();
+    let mut layouts = Vec::new();
     for (id, metadata) in collector.outputs {
-        names.push(extract_output_name(id, &metadata));
+        layouts.push(extract_output_layout(id, &metadata));
     }
 
-    if names.is_empty() {
+    if layouts.is_empty() {
         None
     } else {
-        Some(normalize_monitor_snapshot(names))
+        layouts.sort_by(|a, b| a.name.cmp(&b.name));
+        Some(layouts)
+    }
+}
+
+fn extract_output_layout(id: u32, metadata: &OutputMetadata) -> MonitorLayout {
+    MonitorLayout {
+        name: extract_output_name(id, metadata),
+        width: metadata.width.unwrap_or(1920).max(1),
+        height: metadata.height.unwrap_or(1080).max(1),
+        scale_factor: metadata.scale_factor.unwrap_or(1).max(1),
     }
 }
 
@@ -147,6 +173,17 @@ impl Dispatch<wl_output::WlOutput, u32> for WaylandOutputCollector {
                 entry.make = Some(make);
                 entry.model = Some(model);
             }
+            wl_output::Event::Mode { width, height, .. } => {
+                if width > 0 && height > 0 {
+                    entry.width = Some(width as u32);
+                    entry.height = Some(height as u32);
+                }
+            }
+            wl_output::Event::Scale { factor } => {
+                if factor > 0 {
+                    entry.scale_factor = Some(factor as u32);
+                }
+            }
             wl_output::Event::Name { name } => {
                 entry.name = Some(name);
             }
@@ -155,41 +192,96 @@ impl Dispatch<wl_output::WlOutput, u32> for WaylandOutputCollector {
     }
 }
 
-fn detect_hyprland_monitors() -> Option<Vec<String>> {
+fn detect_hyprland_layouts() -> Option<Vec<MonitorLayout>> {
     let value = run_json_command("hyprctl", &["monitors", "-j"])?;
     let items = value.as_array()?;
-    let mut names = Vec::new();
+    let mut layouts = Vec::new();
+
     for item in items {
-        if let Some(name) = item.get("name").and_then(Value::as_str) {
-            names.push(name.to_string());
-        }
+        let name = item.get("name").and_then(Value::as_str)?.to_string();
+        let width = item
+            .get("width")
+            .and_then(Value::as_u64)
+            .unwrap_or(1920)
+            .max(1) as u32;
+        let height = item
+            .get("height")
+            .and_then(Value::as_u64)
+            .unwrap_or(1080)
+            .max(1) as u32;
+        let scale_factor = item
+            .get("scale")
+            .and_then(Value::as_f64)
+            .map(|v| v.max(1.0).round() as u32)
+            .unwrap_or(1);
+
+        layouts.push(MonitorLayout {
+            name,
+            width,
+            height,
+            scale_factor,
+        });
     }
 
-    if names.is_empty() {
+    if layouts.is_empty() {
         None
     } else {
-        Some(names)
+        layouts.sort_by(|a, b| a.name.cmp(&b.name));
+        Some(layouts)
     }
 }
 
-fn detect_wlr_randr_monitors() -> Option<Vec<String>> {
+fn detect_wlr_randr_layouts() -> Option<Vec<MonitorLayout>> {
     let value = run_json_command("wlr-randr", &["--json"])?;
     let items = value.as_array()?;
-    let mut names = Vec::new();
+    let mut layouts = Vec::new();
+
     for item in items {
-        if let Some(name) = item
+        let name = item
             .get("name")
             .or_else(|| item.get("output"))
-            .and_then(Value::as_str)
-        {
-            names.push(name.to_string());
-        }
+            .and_then(Value::as_str)?
+            .to_string();
+
+        let width = item
+            .get("width")
+            .and_then(Value::as_u64)
+            .or_else(|| {
+                item.get("current_mode")
+                    .and_then(|mode| mode.get("width"))
+                    .and_then(Value::as_u64)
+            })
+            .unwrap_or(1920)
+            .max(1) as u32;
+        let height = item
+            .get("height")
+            .and_then(Value::as_u64)
+            .or_else(|| {
+                item.get("current_mode")
+                    .and_then(|mode| mode.get("height"))
+                    .and_then(Value::as_u64)
+            })
+            .unwrap_or(1080)
+            .max(1) as u32;
+        let scale_factor = item
+            .get("scale")
+            .and_then(Value::as_f64)
+            .map(|v| v.max(1.0).round() as u32)
+            .unwrap_or(1);
+
+        layouts.push(MonitorLayout {
+            name,
+            width,
+            height,
+            scale_factor,
+        });
     }
 
-    if names.is_empty() {
+    if layouts.is_empty() {
         None
     } else {
-        Some(names)
+        layouts.sort_by(|a, b| a.name.cmp(&b.name));
+        Some(layouts)
     }
 }
 
@@ -205,7 +297,10 @@ fn run_json_command(command: &str, args: &[&str]) -> Option<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_output_name, normalize_monitor_snapshot, MonitorSnapshot, OutputMetadata};
+    use super::{
+        extract_output_layout, extract_output_name, normalize_monitor_snapshot, MonitorLayout,
+        MonitorSnapshot, OutputMetadata,
+    };
 
     #[tokio::test]
     async fn snapshot_replace_if_changed_tracks_deltas() {
@@ -237,6 +332,7 @@ mod tests {
             name: Some("DP-1".to_string()),
             make: Some("Dell".to_string()),
             model: Some("U2720Q".to_string()),
+            ..Default::default()
         };
         assert_eq!(extract_output_name(4, &named), "DP-1".to_string());
 
@@ -244,6 +340,7 @@ mod tests {
             name: Some(" ".to_string()),
             make: Some("Dell".to_string()),
             model: Some("U2720Q".to_string()),
+            ..Default::default()
         };
         assert_eq!(
             extract_output_name(5, &make_model),
@@ -252,5 +349,34 @@ mod tests {
 
         let fallback = OutputMetadata::default();
         assert_eq!(extract_output_name(9, &fallback), "wl-output-9".to_string());
+    }
+
+    #[test]
+    fn extract_output_layout_applies_dimension_defaults() {
+        let unknown = OutputMetadata::default();
+        let fallback = extract_output_layout(4, &unknown);
+        assert_eq!(
+            fallback,
+            MonitorLayout {
+                name: "wl-output-4".to_string(),
+                width: 1920,
+                height: 1080,
+                scale_factor: 1,
+            }
+        );
+
+        let exact = OutputMetadata {
+            name: Some("DP-1".to_string()),
+            make: None,
+            model: None,
+            width: Some(3440),
+            height: Some(1440),
+            scale_factor: Some(2),
+        };
+        let layout = extract_output_layout(5, &exact);
+        assert_eq!(layout.name, "DP-1");
+        assert_eq!(layout.width, 3440);
+        assert_eq!(layout.height, 1440);
+        assert_eq!(layout.scale_factor, 2);
     }
 }

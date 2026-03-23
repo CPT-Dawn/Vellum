@@ -18,10 +18,24 @@ use vellum_ipc::ScaleMode;
 
 use crate::cli::Args;
 use crate::ipc::server::run_client_session;
-use crate::monitor::{detect_monitor_names, normalize_monitor_snapshot, MonitorSnapshot};
+use crate::monitor::{
+    detect_monitor_layouts, normalize_monitor_snapshot, MonitorLayout, MonitorSnapshot,
+};
 use crate::paths::{resolve_socket_path, resolve_state_path};
-use crate::renderer::RendererState;
+use crate::renderer::{OutputLayout, RendererState};
 use crate::state::{load_state, save_state, DaemonState};
+
+fn to_output_layouts(layouts: &[MonitorLayout]) -> Vec<OutputLayout> {
+    layouts
+        .iter()
+        .map(|layout| OutputLayout {
+            name: layout.name.clone(),
+            width: layout.width,
+            height: layout.height,
+            scale_factor: layout.scale_factor,
+        })
+        .collect()
+}
 
 fn replay_snapshot(state: &DaemonState) -> Vec<(Option<String>, PathBuf, ScaleMode)> {
     let mut snapshot: Vec<(Option<String>, PathBuf, ScaleMode)> = state
@@ -90,9 +104,9 @@ fn prune_failed_assignments(state: &mut DaemonState, failed: &[Option<String>]) 
     removed
 }
 
-fn monitor_detection_transition(
+fn monitor_detection_transition<E>(
     was_failed: bool,
-    detection_result: &Result<Vec<String>>,
+    detection_result: &std::result::Result<Vec<String>, E>,
 ) -> (bool, bool, bool) {
     match detection_result {
         Ok(_) => {
@@ -123,13 +137,16 @@ async fn monitor_refresh_loop(
     loop {
         select! {
             _ = ticker.tick() => {
-                let detection = detect_monitor_names();
+                let detection = detect_monitor_layouts();
+                let names_result = detection
+                    .as_ref()
+                    .map(|layouts| layouts.iter().map(|layout| layout.name.clone()).collect());
                 let (next_failed, log_failure, log_recovery) =
-                    monitor_detection_transition(monitor_detection_failed, &detection);
+                    monitor_detection_transition(monitor_detection_failed, &names_result);
                 monitor_detection_failed = next_failed;
 
                 if log_failure {
-                    if let Err(err) = &detection {
+                    if let Err(err) = &names_result {
                         warn!(error = %err, "monitor refresh detection failed; keeping last known snapshot");
                     }
                 }
@@ -137,15 +154,20 @@ async fn monitor_refresh_loop(
                     info!("monitor refresh detection recovered");
                 }
 
-                if let Ok(monitors) = detection {
-                    let normalized = normalize_monitor_snapshot(monitors);
+                if let Ok(layouts) = detection {
+                    let names: Vec<String> = layouts.iter().map(|layout| layout.name.clone()).collect();
+                    let normalized = normalize_monitor_snapshot(names);
                     if monitor_snapshot
                         .replace_if_changed(normalized.clone())
                         .await
                     {
                         let mut renderer = renderer_state.lock().await;
                         renderer.refresh_outputs(normalized.clone());
+                        renderer.refresh_output_layouts(to_output_layouts(&layouts));
                         info!(outputs = ?normalized, "monitor snapshot changed; renderer outputs refreshed");
+                    } else {
+                        let mut renderer = renderer_state.lock().await;
+                        renderer.refresh_output_layouts(to_output_layouts(&layouts));
                     }
                 }
             }
@@ -186,13 +208,15 @@ async fn main() -> Result<()> {
         .with_context(|| format!("failed to bind daemon socket at {}", socket_path.display()))?;
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
 
-    if let Ok(monitors) = detect_monitor_names() {
-        let normalized = normalize_monitor_snapshot(monitors);
+    if let Ok(layouts) = detect_monitor_layouts() {
+        let names: Vec<String> = layouts.iter().map(|layout| layout.name.clone()).collect();
+        let normalized = normalize_monitor_snapshot(names);
         let _ = monitor_snapshot
             .replace_if_changed(normalized.clone())
             .await;
         let mut renderer = renderer_state.lock().await;
         renderer.refresh_outputs(normalized.clone());
+        renderer.refresh_output_layouts(to_output_layouts(&layouts));
     }
 
     replay_persisted_assignments(Arc::clone(&state), Arc::clone(&renderer_state), &state_path)
