@@ -39,3 +39,31 @@ cargo build --workspace
 - The daemon crate package name is vellum-core.
 - The library crate name is vellum_core.
 - Protocol XML is kept in [protocols/wlr-layer-shell-unstable-v1.xml](protocols/wlr-layer-shell-unstable-v1.xml).
+
+## TUI Features
+
+Current integrated TUI capabilities in `vellum-tui` include:
+
+- Native backend control (integrated daemon runtime)
+- Filesystem image browser with fuzzy filtering
+- Transition controls (duration, fps, easing, effect)
+- Aspect ratio simulator (fit/fill/stretch) against selected monitor
+- Auto-cycling playlist controls
+- Profile save/load in JSON format
+
+Key controls:
+
+- `Tab`/`Shift+Tab`: move between panes
+- `Arrow keys`: navigate/edit
+- `Enter`: open folder or apply selected image
+- `F5`: toggle playlist auto-cycle
+- `F6`: add selected image to playlist
+- `F7`: clear playlist
+- `F8`: save default profile
+- `F9`: load default profile
+
+## AUR Packaging Outline
+
+A starter Arch packaging template for the combined binary is provided at:
+
+- [packaging/PKGBUILD.template](packaging/PKGBUILD.template)

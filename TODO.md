@@ -5,4 +5,4 @@
 3. [x] Phase 2 - Native backend integration
 4. [x] Phase 3 - TUI layout foundation
 5. [x] Phase 4 - Core logic integration
-6. [ ] Phase 5 - Advanced features and AUR prep
+6. [x] Phase 5 - Advanced features and AUR prep

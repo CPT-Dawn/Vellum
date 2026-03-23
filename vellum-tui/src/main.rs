@@ -14,7 +14,11 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use directories::ProjectDirs;
 use image::ImageReader;
+use image::imageops::FilterType;
+use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+use nucleo_matcher::{Config as NucleoConfig, Matcher as NucleoMatcher, Utf32Str};
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
@@ -23,7 +27,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{process::Command, task::JoinHandle};
 use vellum_core::{VellumServer, VellumServerConfig};
@@ -37,6 +41,40 @@ const MONITOR_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const EASING_PRESETS: [&str; 4] = ["linear", "ease-in", "ease-out", "ease-in-out"];
 /// Available transition effects shown in the transition pane.
 const TRANSITION_EFFECTS: [&str; 4] = ["simple", "fade", "wipe", "grow"];
+
+/// Profile filename used by the default save/load commands.
+const DEFAULT_PROFILE_NAME: &str = "default";
+
+/// Aspect-ratio simulation strategy for monitor preview.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+enum AspectMode {
+    /// Preserve aspect ratio and fit within monitor bounds.
+    Fit,
+    /// Preserve aspect ratio and fill monitor bounds via cropping.
+    Fill,
+    /// Stretch image to monitor bounds.
+    Stretch,
+}
+
+impl AspectMode {
+    /// Cycles to the next simulation mode.
+    fn next(self) -> Self {
+        match self {
+            Self::Fit => Self::Fill,
+            Self::Fill => Self::Stretch,
+            Self::Stretch => Self::Fit,
+        }
+    }
+
+    /// Returns a printable mode label.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Fit => "fit",
+            Self::Fill => "fill",
+            Self::Stretch => "stretch",
+        }
+    }
+}
 
 /// Active pane focus within the three-column layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +129,17 @@ struct BrowserEntry {
     is_parent: bool,
 }
 
+/// Cached metadata for selected browser image.
+#[derive(Debug, Clone)]
+struct ImagePreview {
+    /// Image path currently represented.
+    path: PathBuf,
+    /// Source image width in pixels.
+    width: u32,
+    /// Source image height in pixels.
+    height: u32,
+}
+
 /// Editable transition settings displayed in the right pane.
 #[derive(Debug, Clone)]
 struct TransitionState {
@@ -104,6 +153,50 @@ struct TransitionState {
     effect_idx: usize,
     /// Selected field index for keyboard editing.
     selected_field: usize,
+}
+
+/// Serializable transition section for profile persistence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TransitionProfile {
+    /// Current transition duration in milliseconds.
+    duration_ms: u32,
+    /// Current target frame rate.
+    fps: u16,
+    /// Selected easing preset index.
+    easing_idx: usize,
+    /// Selected effect preset index.
+    effect_idx: usize,
+}
+
+/// Serializable profile data persisted to disk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ProfileData {
+    /// Browser directory path.
+    browser_dir: String,
+    /// Browser fuzzy query.
+    browser_query: String,
+    /// Transition configuration.
+    transition: TransitionProfile,
+    /// Playlist file paths.
+    playlist: Vec<String>,
+    /// Playlist cycle interval in seconds.
+    playlist_interval_secs: u64,
+    /// Last selected monitor name.
+    selected_monitor: Option<String>,
+    /// Active aspect ratio simulator mode.
+    aspect_mode: AspectMode,
+}
+
+/// Daemon output target selected for an apply request.
+struct ApplyTarget {
+    /// Namespace used for the daemon socket.
+    namespace: String,
+    /// Output names targeted by this apply request.
+    outputs: Vec<String>,
+    /// Required image dimensions for the output buffer.
+    dim: (u32, u32),
+    /// Expected pixel format for the output buffer.
+    format: PixelFormat,
 }
 
 impl Default for TransitionState {
@@ -233,6 +326,20 @@ struct AppState {
     monitor_selected: usize,
     /// Editable transition controls.
     transition: TransitionState,
+    /// Active aspect-ratio simulation mode.
+    aspect_mode: AspectMode,
+    /// Selected image preview metadata for simulator.
+    selected_preview: Option<ImagePreview>,
+    /// Playlist of images for auto-cycling.
+    playlist: Vec<PathBuf>,
+    /// Current index in the playlist.
+    playlist_index: usize,
+    /// Whether playlist auto-cycle is enabled.
+    playlist_running: bool,
+    /// Interval used between playlist image switches.
+    playlist_interval: Duration,
+    /// Timestamp of the previous playlist switch.
+    last_playlist_tick: Instant,
 }
 
 impl Default for AppState {
@@ -255,6 +362,13 @@ impl Default for AppState {
             browser_selected: 0,
             monitor_selected: 0,
             transition: TransitionState::default(),
+            aspect_mode: AspectMode::Fit,
+            selected_preview: None,
+            playlist: Vec::new(),
+            playlist_index: 0,
+            playlist_running: false,
+            playlist_interval: Duration::from_secs(15),
+            last_playlist_tick: Instant::now(),
         }
     }
 }
@@ -301,6 +415,7 @@ async fn run_app() -> io::Result<()> {
         handle_input(&mut state).await?;
         refresh_monitors_if_due(&mut state).await;
         poll_backend_status(&mut state).await;
+        run_playlist_tick(&mut state).await;
         terminal.draw(|frame| draw_ui(frame, &state))?;
         state.frame_count = state.frame_count.saturating_add(1);
         state.last_frame = Instant::now();
@@ -332,6 +447,10 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
                         "Help: Tab pane switch, arrows navigate, Enter apply/open, / filter",
                     );
                 }
+                KeyCode::Char('x') => {
+                    state.aspect_mode = state.aspect_mode.next();
+                    state.status = format!("Aspect simulator mode: {}", state.aspect_mode.as_str());
+                }
                 KeyCode::Char('u') => {
                     if state.focus == PaneFocus::Browser {
                         if let Some(parent) = state.browser_dir.parent().map(Path::to_path_buf) {
@@ -353,6 +472,7 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
                 KeyCode::Up => match state.focus {
                     PaneFocus::Browser => {
                         state.browser_selected = state.browser_selected.saturating_sub(1);
+                        refresh_selected_preview(state);
                     }
                     PaneFocus::Monitor => {
                         state.monitor_selected = state.monitor_selected.saturating_sub(1);
@@ -365,6 +485,7 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
                     PaneFocus::Browser => {
                         let max_idx = state.browser_entries.len().saturating_sub(1);
                         state.browser_selected = (state.browser_selected + 1).min(max_idx);
+                        refresh_selected_preview(state);
                     }
                     PaneFocus::Monitor => {
                         let max_idx = state.monitors.len().saturating_sub(1);
@@ -395,6 +516,31 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
                         activate_browser_selection(state).await;
                     }
                 }
+                KeyCode::F(5) => {
+                    state.playlist_running = !state.playlist_running;
+                    state.last_playlist_tick = Instant::now();
+                    state.status = if state.playlist_running {
+                        String::from("Playlist auto-cycle enabled")
+                    } else {
+                        String::from("Playlist auto-cycle paused")
+                    };
+                }
+                KeyCode::F(6) => {
+                    add_selected_image_to_playlist(state);
+                }
+                KeyCode::F(7) => {
+                    state.playlist.clear();
+                    state.playlist_index = 0;
+                    state.status = String::from("Playlist cleared");
+                }
+                KeyCode::F(8) => match save_profile(state, DEFAULT_PROFILE_NAME) {
+                    Ok(path) => state.status = format!("Saved profile: {}", path.display()),
+                    Err(err) => state.status = format!("Save profile failed: {err}"),
+                },
+                KeyCode::F(9) => match load_profile(state, DEFAULT_PROFILE_NAME) {
+                    Ok(()) => state.status = String::from("Loaded profile: default"),
+                    Err(err) => state.status = format!("Load profile failed: {err}"),
+                },
                 KeyCode::Char(c) => {
                     if state.focus == PaneFocus::Browser && !c.is_control() {
                         state.browser_query.push(c);
@@ -708,12 +854,25 @@ fn apply_browser_filter(state: &mut AppState) {
     if state.browser_query.is_empty() {
         state.browser_entries = state.browser_all_entries.clone();
     } else {
+        let pattern = Pattern::parse(
+            &state.browser_query,
+            CaseMatching::Ignore,
+            Normalization::Smart,
+        );
+        let mut matcher = NucleoMatcher::new(NucleoConfig::DEFAULT.match_paths());
+        let mut utf32_buf = Vec::new();
+
         let mut scored = state
             .browser_all_entries
             .iter()
             .cloned()
             .filter_map(|entry| {
-                fuzzy_score(&state.browser_query, &entry.name).map(|score| (score, entry))
+                pattern
+                    .score(
+                        Utf32Str::new(entry.name.as_str(), &mut utf32_buf),
+                        &mut matcher,
+                    )
+                    .map(|score| (score, entry))
             })
             .collect::<Vec<_>>();
         scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
@@ -723,34 +882,183 @@ fn apply_browser_filter(state: &mut AppState) {
     state.browser_selected = state
         .browser_selected
         .min(state.browser_entries.len().saturating_sub(1));
+    refresh_selected_preview(state);
 }
 
-/// Computes a lightweight subsequence-based fuzzy match score.
-fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
-    let query = query.to_ascii_lowercase();
-    let candidate = candidate.to_ascii_lowercase();
+/// Refreshes the selected-image metadata used by aspect ratio simulation.
+fn refresh_selected_preview(state: &mut AppState) {
+    let Some(entry) = state.browser_entries.get(state.browser_selected) else {
+        state.selected_preview = None;
+        return;
+    };
 
-    let mut q_chars = query.chars();
-    let mut current = q_chars.next()?;
-    let mut score = 0_i32;
-    let mut run = 0_i32;
+    if entry.is_dir {
+        state.selected_preview = None;
+        return;
+    }
 
-    for (idx, ch) in candidate.chars().enumerate() {
-        if ch == current {
-            run += 1;
-            score += 10 + run * 3 - i32::try_from(idx).unwrap_or(i32::MAX / 8);
-            if let Some(next) = q_chars.next() {
-                current = next;
-            } else {
-                score += 40;
-                return Some(score);
-            }
-        } else {
-            run = 0;
+    match image::image_dimensions(&entry.path) {
+        Ok((width, height)) => {
+            state.selected_preview = Some(ImagePreview {
+                path: entry.path.clone(),
+                width,
+                height,
+            });
+        }
+        Err(_) => {
+            state.selected_preview = None;
+        }
+    }
+}
+
+/// Adds the currently selected browser image to the playlist.
+fn add_selected_image_to_playlist(state: &mut AppState) {
+    let Some(entry) = state.browser_entries.get(state.browser_selected) else {
+        state.status = String::from("No browser entry selected");
+        return;
+    };
+
+    if entry.is_dir {
+        state.status = String::from("Playlist accepts image files only");
+        return;
+    }
+
+    if state.playlist.iter().any(|path| path == &entry.path) {
+        state.status = String::from("Selected image already in playlist");
+        return;
+    }
+
+    state.playlist.push(entry.path.clone());
+    state.status = format!("Playlist size: {}", state.playlist.len());
+}
+
+/// Applies the next playlist image when auto-cycling is active.
+async fn run_playlist_tick(state: &mut AppState) {
+    if !state.playlist_running || state.playlist.is_empty() {
+        return;
+    }
+
+    if state.last_playlist_tick.elapsed() < state.playlist_interval {
+        return;
+    }
+
+    let index = state.playlist_index % state.playlist.len();
+    let file_path = state.playlist[index].clone();
+    state.playlist_index = (state.playlist_index + 1) % state.playlist.len();
+    state.last_playlist_tick = Instant::now();
+
+    let namespace = state.backend.namespace.clone();
+    let selected_output = state
+        .monitors
+        .get(state.monitor_selected)
+        .map(|m| m.name.clone());
+
+    let target = match query_apply_target(&namespace, selected_output) {
+        Ok(target) => target,
+        Err(err) => {
+            state.status = format!("Playlist target query failed: {err}");
+            return;
+        }
+    };
+
+    let transition = build_transition_from_state(&state.transition);
+
+    match apply_wallpaper_request(file_path.clone(), transition, target).await {
+        Ok(_) => {
+            state.status = format!("Playlist applied: {}", file_path.display());
+        }
+        Err(err) => {
+            state.status = format!("Playlist apply failed: {err}");
+        }
+    }
+}
+
+/// Resolves the profile storage path for a profile name.
+fn profile_path(profile_name: &str) -> Result<PathBuf, String> {
+    let Some(project_dirs) = ProjectDirs::from("com", "vellum", "vellum") else {
+        return Err(String::from("cannot resolve config directory"));
+    };
+
+    let config_dir = project_dirs.config_dir().join("profiles");
+    fs::create_dir_all(&config_dir).map_err(|err| {
+        format!(
+            "cannot create profile directory '{}': {err}",
+            config_dir.display()
+        )
+    })?;
+    Ok(config_dir.join(format!("{profile_name}.json")))
+}
+
+/// Saves current UI runtime configuration as a named profile.
+fn save_profile(state: &AppState, profile_name: &str) -> Result<PathBuf, String> {
+    let path = profile_path(profile_name)?;
+    let data = ProfileData {
+        browser_dir: state.browser_dir.to_string_lossy().to_string(),
+        browser_query: state.browser_query.clone(),
+        transition: TransitionProfile {
+            duration_ms: state.transition.duration_ms,
+            fps: state.transition.fps,
+            easing_idx: state.transition.easing_idx,
+            effect_idx: state.transition.effect_idx,
+        },
+        playlist: state
+            .playlist
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect(),
+        playlist_interval_secs: state.playlist_interval.as_secs(),
+        selected_monitor: state
+            .monitors
+            .get(state.monitor_selected)
+            .map(|m| m.name.clone()),
+        aspect_mode: state.aspect_mode,
+    };
+
+    let json = serde_json::to_string_pretty(&data)
+        .map_err(|err| format!("cannot serialize profile: {err}"))?;
+    fs::write(&path, json)
+        .map_err(|err| format!("cannot write profile '{}': {err}", path.display()))?;
+    Ok(path)
+}
+
+/// Loads a named profile and applies it to the current TUI state.
+fn load_profile(state: &mut AppState, profile_name: &str) -> Result<(), String> {
+    let path = profile_path(profile_name)?;
+    let bytes = fs::read(&path)
+        .map_err(|err| format!("cannot read profile '{}': {err}", path.display()))?;
+    let data: ProfileData =
+        serde_json::from_slice(&bytes).map_err(|err| format!("invalid profile JSON: {err}"))?;
+
+    state.browser_dir = PathBuf::from(&data.browser_dir);
+    if !state.browser_dir.exists() {
+        state.browser_dir = preferred_initial_browser_dir();
+    }
+    state.browser_query = data.browser_query;
+    state.transition.duration_ms = data.transition.duration_ms;
+    state.transition.fps = data.transition.fps;
+    state.transition.easing_idx = data.transition.easing_idx.min(EASING_PRESETS.len() - 1);
+    state.transition.effect_idx = data.transition.effect_idx.min(TRANSITION_EFFECTS.len() - 1);
+    state.aspect_mode = data.aspect_mode;
+
+    state.playlist = data.playlist.iter().map(PathBuf::from).collect();
+    state.playlist.retain(|path| path.is_file());
+    state.playlist_index = 0;
+    state.playlist_interval = Duration::from_secs(data.playlist_interval_secs.max(5));
+
+    reload_browser_directory(state)
+        .map_err(|err| format!("cannot reload browser after profile load: {err}"))?;
+
+    if let Some(selected_monitor_name) = data.selected_monitor {
+        if let Some(index) = state
+            .monitors
+            .iter()
+            .position(|monitor| monitor.name == selected_monitor_name)
+        {
+            state.monitor_selected = index;
         }
     }
 
-    None
+    Ok(())
 }
 
 /// Activates the selected browser row by opening directories or applying wallpaper files.
@@ -779,49 +1087,130 @@ async fn activate_browser_selection(state: &mut AppState) {
         return;
     }
 
-    let transition = build_transition_from_state(&state.transition);
     let namespace = state.backend.namespace.clone();
     let file_path = entry.path;
-    let outputs = if let Some(monitor) = state.monitors.get(state.monitor_selected) {
-        vec![monitor.name.clone()]
-    } else {
-        Vec::new()
+    let selected_output = state
+        .monitors
+        .get(state.monitor_selected)
+        .map(|m| m.name.clone());
+
+    let target = match query_apply_target(&namespace, selected_output) {
+        Ok(target) => target,
+        Err(err) => {
+            state.status = format!("Output target query failed: {err}");
+            return;
+        }
     };
 
-    match apply_wallpaper_request(file_path.clone(), transition, namespace, outputs).await {
+    let transition = build_transition_from_state(&state.transition);
+
+    match apply_wallpaper_request(file_path.clone(), transition, target).await {
         Ok(message) => state.status = message,
         Err(err) => state.status = format!("Wallpaper apply failed: {err}"),
     }
+}
+
+/// Queries daemon output metadata and resolves the exact target for an image apply request.
+fn query_apply_target(
+    namespace: &str,
+    preferred_output: Option<String>,
+) -> Result<ApplyTarget, String> {
+    let (resolved_namespace, socket) = connect_daemon_socket(namespace)?;
+    RequestSend::Query
+        .send(&socket)
+        .map_err(|err| err.to_string())?;
+
+    let answer = Answer::receive(socket.recv().map_err(|err| err.to_string())?);
+    let Answer::Info(outputs) = answer else {
+        return Err(String::from("unexpected daemon response to query request"));
+    };
+
+    let selected = if let Some(name) = preferred_output {
+        outputs.iter().find(|output| output.name.as_ref() == name)
+    } else {
+        outputs.first()
+    }
+    .ok_or_else(|| String::from("no output information available from daemon"))?;
+
+    Ok(ApplyTarget {
+        namespace: resolved_namespace,
+        outputs: vec![selected.name.to_string()],
+        dim: selected.real_dim(),
+        format: selected.pixel_format,
+    })
+}
+
+/// Connects to daemon socket with retry and namespace fallback.
+fn connect_daemon_socket(preferred_namespace: &str) -> Result<(String, IpcSocket), String> {
+    const RETRIES: usize = 12;
+    const RETRY_INTERVAL_MS: u64 = 100;
+
+    for _ in 0..RETRIES {
+        if let Ok(socket) = IpcSocket::client(preferred_namespace) {
+            return Ok((preferred_namespace.to_string(), socket));
+        }
+        std::thread::sleep(Duration::from_millis(RETRY_INTERVAL_MS));
+    }
+
+    if preferred_namespace.is_empty() {
+        return Err(String::from(
+            "daemon socket not available in default namespace",
+        ));
+    }
+
+    if let Ok(socket) = IpcSocket::client("") {
+        return Ok((String::new(), socket));
+    }
+
+    if let Ok(namespaces) = IpcSocket::all_namespaces() {
+        for namespace in namespaces {
+            if let Ok(socket) = IpcSocket::client(&namespace) {
+                return Ok((namespace, socket));
+            }
+        }
+    }
+
+    Err(format!(
+        "daemon socket not found for namespace '{preferred_namespace}' and no fallback namespace was reachable"
+    ))
 }
 
 /// Sends a native wallpaper image request through the daemon IPC channel.
 async fn apply_wallpaper_request(
     file_path: PathBuf,
     transition: Transition,
-    namespace: String,
-    outputs: Vec<String>,
+    target: ApplyTarget,
 ) -> Result<String, String> {
     let path_for_error = file_path.clone();
     tokio::task::spawn_blocking(move || {
         let decoded = ImageReader::open(&file_path)
             .map_err(|err| format!("cannot open image '{}': {err}", path_for_error.display()))?
             .decode()
-            .map_err(|err| format!("cannot decode image '{}': {err}", path_for_error.display()))?
-            .to_rgb8();
-        let (width, height) = decoded.dimensions();
+            .map_err(|err| format!("cannot decode image '{}': {err}", path_for_error.display()))?;
+
+        let resized = decoded.resize_exact(target.dim.0, target.dim.1, FilterType::Lanczos3);
+        let (img_bytes, pixel_format) =
+            convert_dynamic_image_for_pixel_format(resized, target.format);
 
         let img_send = ImgSend {
             path: file_path.to_string_lossy().to_string(),
-            dim: (width, height),
-            format: PixelFormat::Rgb,
-            img: decoded.into_raw().into_boxed_slice(),
+            dim: target.dim,
+            format: pixel_format,
+            img: img_bytes.into_boxed_slice(),
         };
 
         let mut builder = ImageRequestBuilder::new(transition)
             .map_err(|err| format!("request mmap failed: {err}"))?;
-        builder.push(img_send, &namespace, "fit", "lanczos3", &outputs, None);
+        builder.push(
+            img_send,
+            &target.namespace,
+            "fit",
+            "lanczos3",
+            &target.outputs,
+            None,
+        );
 
-        let socket = IpcSocket::client(&namespace).map_err(|err| err.to_string())?;
+        let socket = IpcSocket::client(&target.namespace).map_err(|err| err.to_string())?;
         RequestSend::Img(builder.build())
             .send(&socket)
             .map_err(|err| err.to_string())?;
@@ -835,6 +1224,37 @@ async fn apply_wallpaper_request(
     })
     .await
     .map_err(|err| format!("background task error: {err}"))?
+}
+
+/// Converts a decoded image into byte layout expected by daemon pixel format.
+fn convert_dynamic_image_for_pixel_format(
+    image: image::DynamicImage,
+    format: PixelFormat,
+) -> (Vec<u8>, PixelFormat) {
+    match format {
+        PixelFormat::Bgr => {
+            let rgb = image.to_rgb8();
+            (rgb.into_raw(), PixelFormat::Bgr)
+        }
+        PixelFormat::Rgb => {
+            let mut rgb = image.to_rgb8().into_raw();
+            for chunk in rgb.chunks_exact_mut(3) {
+                chunk.swap(0, 2);
+            }
+            (rgb, PixelFormat::Rgb)
+        }
+        PixelFormat::Abgr => {
+            let rgba = image.to_rgba8();
+            (rgba.into_raw(), PixelFormat::Abgr)
+        }
+        PixelFormat::Argb => {
+            let mut rgba = image.to_rgba8().into_raw();
+            for chunk in rgba.chunks_exact_mut(4) {
+                chunk.swap(0, 2);
+            }
+            (rgba, PixelFormat::Argb)
+        }
+    }
 }
 
 /// Builds a daemon transition configuration from current TUI controls.
@@ -1041,9 +1461,85 @@ fn render_monitor_lines(state: &AppState) -> String {
             selected.x, selected.y, selected.width, selected.height
         );
         lines.push_str(&detail);
+
+        let aspect_line = format!("\nAspect Simulator ({})", state.aspect_mode.as_str());
+        lines.push_str(&aspect_line);
+        if let Some(preview) = &state.selected_preview {
+            let sim = simulate_aspect(
+                (preview.width, preview.height),
+                (selected.width, selected.height),
+                state.aspect_mode,
+            );
+            let sim_details = format!(
+                "\n- image: {}\n- source: {}x{}\n- simulated: {}x{}\n- bars: {}x{}\n- crop: {}x{}",
+                preview.path.display(),
+                preview.width,
+                preview.height,
+                sim.target_width,
+                sim.target_height,
+                sim.bars_x,
+                sim.bars_y,
+                sim.crop_x,
+                sim.crop_y
+            );
+            lines.push_str(&sim_details);
+        } else {
+            lines.push_str("\n- select an image file in Browser to preview");
+        }
     }
 
     lines
+}
+
+/// Result of aspect-ratio simulation against a monitor target.
+struct AspectSimulation {
+    /// Simulated target width.
+    target_width: u32,
+    /// Simulated target height.
+    target_height: u32,
+    /// Horizontal letterbox/pillarbox size in pixels.
+    bars_x: u32,
+    /// Vertical letterbox/pillarbox size in pixels.
+    bars_y: u32,
+    /// Horizontal crop size in pixels.
+    crop_x: u32,
+    /// Vertical crop size in pixels.
+    crop_y: u32,
+}
+
+/// Simulates how an image maps to monitor dimensions for a selected aspect mode.
+fn simulate_aspect(image: (u32, u32), monitor: (u32, u32), mode: AspectMode) -> AspectSimulation {
+    let (iw, ih) = (image.0.max(1) as f64, image.1.max(1) as f64);
+    let (mw, mh) = (monitor.0.max(1) as f64, monitor.1.max(1) as f64);
+
+    let scale = match mode {
+        AspectMode::Fit => (mw / iw).min(mh / ih),
+        AspectMode::Fill => (mw / iw).max(mh / ih),
+        AspectMode::Stretch => 0.0,
+    };
+
+    let (tw, th) = if matches!(mode, AspectMode::Stretch) {
+        (monitor.0.max(1), monitor.1.max(1))
+    } else {
+        (
+            (iw * scale).round().max(1.0) as u32,
+            (ih * scale).round().max(1.0) as u32,
+        )
+    };
+
+    let bars_x = monitor.0.saturating_sub(tw) / 2;
+    let bars_y = monitor.1.saturating_sub(th) / 2;
+    let crop_x = tw.saturating_sub(monitor.0) / 2;
+    let crop_y = th.saturating_sub(monitor.1) / 2;
+
+    AspectSimulation {
+        target_width: tw,
+        target_height: th,
+        bars_x,
+        bars_y,
+        crop_x,
+        crop_y,
+    }
 }
 
 /// Builds transition settings pane content with editable fields.
@@ -1080,8 +1576,12 @@ fn render_transition_lines(state: &AppState) -> String {
         "stopped"
     };
     let backend_line = format!(
-        "\nBackend\n- status: {}\n- namespace: {}\n\nLeft/Right: tweak value, Enter in Browser: apply",
-        backend_state, state.backend.namespace
+        "\nBackend\n- status: {}\n- namespace: {}\n\nPlaylist\n- running: {}\n- size: {}\n- interval: {}s\n\nF5 toggle | F6 add selected | F7 clear | F8 save profile | F9 load profile",
+        backend_state,
+        state.backend.namespace,
+        state.playlist_running,
+        state.playlist.len(),
+        state.playlist_interval.as_secs()
     );
     lines.push_str(&backend_line);
     lines
@@ -1091,7 +1591,7 @@ fn render_transition_lines(state: &AppState) -> String {
 fn draw_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let frame_age_ms = state.last_frame.elapsed().as_millis();
     let diagnostics = format!(
-        "{} | frames={} | frame_age={}ms | q quit | Tab pane | arrows nav | Enter apply/open | type fuzzy | r refresh | b backend",
+        "{} | frames={} | frame_age={}ms | q quit | Tab pane | arrows nav | Enter apply/open | type fuzzy | x aspect mode | F5/F6/F7 playlist | F8/F9 profile",
         state.status, state.frame_count, frame_age_ms
     );
     let footer = Paragraph::new(diagnostics).block(

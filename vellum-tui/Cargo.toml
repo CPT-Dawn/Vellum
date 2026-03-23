@@ -34,3 +34,4 @@ image = { version = "0.25", default-features = false, features = [
     "webp",
 ] }
 nucleo-matcher = "0.3"
+directories = "6.0"

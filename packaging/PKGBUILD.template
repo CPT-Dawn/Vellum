@@ -1,0 +1,33 @@
+# Maintainer: Your Name <you@example.com>
+
+pkgname=vellum
+pkgver=0.12.0
+pkgrel=1
+pkgdesc="Native Wayland wallpaper engine with an integrated TUI"
+arch=('x86_64')
+url='https://github.com/your-user/vellum'
+license=('MIT')
+depends=('wayland' 'libxkbcommon' 'lz4')
+makedepends=('cargo' 'clang' 'pkgconf')
+source=("${pkgname}-${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo build --release --locked --package vellum-tui
+}
+
+check() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+  cargo test --workspace --locked
+}
+
+package() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+  install -Dm755 "target/release/vellum-tui" "${pkgdir}/usr/bin/vellum"
+
+  # Optional: add docs/licenses if desired by your packaging policy.
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+}
