@@ -19,10 +19,13 @@ pub struct WallpaperItem {
     pub dimensions: Option<(u32, u32)>,
 }
 
-/// Scans a directory recursively for supported image files.
-pub fn discover_wallpapers(root: &Path) -> io::Result<Vec<WallpaperItem>> {
+/// Scans a directory recursively for supported image files with an item cap.
+pub fn discover_wallpapers_limited(
+    root: &Path,
+    max_items: usize,
+) -> io::Result<Vec<WallpaperItem>> {
     let mut items = Vec::new();
-    walk_dir(root, &mut items)?;
+    walk_dir_limited(root, &mut items, max_items)?;
     items.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(items)
 }
@@ -47,28 +50,57 @@ pub fn fuzzy_filter_indices(items: &[WallpaperItem], query: &str) -> Vec<usize> 
     scored.into_iter().map(|entry| entry.0).collect()
 }
 
-/// Recursively traverses directories and appends supported wallpapers to output.
-fn walk_dir(root: &Path, out: &mut Vec<WallpaperItem>) -> io::Result<()> {
-    for entry in fs::read_dir(root)? {
-        let entry = entry?;
-        let path = entry.path();
+/// Traverses directories iteratively and appends supported wallpapers up to a cap.
+fn walk_dir_limited(root: &Path, out: &mut Vec<WallpaperItem>, max_items: usize) -> io::Result<()> {
+    let mut stack = vec![root.to_path_buf()];
 
-        if path.is_dir() {
-            walk_dir(&path, out)?;
-            continue;
-        }
+    while let Some(dir) = stack.pop() {
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(err)
+                if err.kind() == io::ErrorKind::PermissionDenied
+                    || err.kind() == io::ErrorKind::NotFound =>
+            {
+                continue;
+            }
+            Err(err) => return Err(err),
+        };
 
-        if !is_supported_image(&path) {
-            continue;
-        }
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err)
+                    if err.kind() == io::ErrorKind::PermissionDenied
+                        || err.kind() == io::ErrorKind::NotFound =>
+                {
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
 
-        if let Some(name) = path.file_name().and_then(OsStr::to_str) {
-            let dimensions = image::image_dimensions(&path).ok();
-            out.push(WallpaperItem {
-                name: name.to_owned(),
-                path,
-                dimensions,
-            });
+            let path = entry.path();
+
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+
+            if !is_supported_image(&path) {
+                continue;
+            }
+
+            if let Some(name) = path.file_name().and_then(OsStr::to_str) {
+                let dimensions = image::image_dimensions(&path).ok();
+                out.push(WallpaperItem {
+                    name: name.to_owned(),
+                    path,
+                    dimensions,
+                });
+            }
+
+            if out.len() >= max_items {
+                return Ok(());
+            }
         }
     }
 

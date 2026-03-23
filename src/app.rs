@@ -255,6 +255,20 @@ impl App {
         app
     }
 
+    /// Replaces wallpaper dataset after background indexing completes.
+    pub fn set_wallpapers(&mut self, wallpapers: Vec<WallpaperItem>) {
+        self.wallpapers = wallpapers;
+        self.selected_wallpaper_row = 0;
+        self.rebuild_filter();
+        self.ensure_default_playlist();
+    }
+
+    /// Replaces monitor dataset after background query completes.
+    pub fn set_monitors(&mut self, monitors: Vec<MonitorInfo>) {
+        self.monitors = monitors;
+        self.selected_monitor = clamp_index(self.selected_monitor, self.monitors.len());
+    }
+
     /// Handles a terminal key event and returns emitted runtime actions.
     pub fn on_key(&mut self, key: KeyEvent) -> Vec<AppAction> {
         let mut actions = Vec::new();
@@ -430,8 +444,36 @@ impl App {
     pub fn has_active_playlist_entries(&self) -> bool {
         self.active_playlist
             .and_then(|idx| self.stored_state.playlists.get(idx))
-            .map(|pl| !pl.entries.is_empty())
+            .map(|pl| {
+                pl.entries
+                    .iter()
+                    .any(|entry| PathBuf::from(entry).is_file())
+            })
             .unwrap_or(false)
+    }
+
+    /// Removes missing files from the active playlist and returns removed count.
+    #[must_use]
+    pub fn prune_missing_playlist_entries(&mut self) -> usize {
+        let Some(index) = self.active_playlist else {
+            return 0;
+        };
+
+        let Some(playlist) = self.stored_state.playlists.get_mut(index) else {
+            return 0;
+        };
+
+        let before = playlist.entries.len();
+        playlist
+            .entries
+            .retain(|entry| PathBuf::from(entry).is_file());
+        let removed = before.saturating_sub(playlist.entries.len());
+
+        if playlist.entries.is_empty() {
+            self.playlist_enabled = false;
+        }
+
+        removed
     }
 
     /// Toggles playlist enabled state when there is a valid active playlist.
@@ -461,9 +503,17 @@ impl App {
             return None;
         }
 
-        let index = self.playlist_cursor % playlist.entries.len();
-        self.playlist_cursor = self.playlist_cursor.wrapping_add(1);
-        Some(PathBuf::from(&playlist.entries[index]))
+        let len = playlist.entries.len();
+        for _ in 0..len {
+            let index = self.playlist_cursor % len;
+            self.playlist_cursor = self.playlist_cursor.wrapping_add(1);
+            let candidate = PathBuf::from(&playlist.entries[index]);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+
+        None
     }
 
     /// Saves the currently selected state into a profile named `quick-save`.

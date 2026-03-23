@@ -59,6 +59,17 @@ Phase 5 includes:
 	- `g` toggles automated cycling
 	- `]` applies next playlist entry immediately
 
+## Phase 5.1 Status
+
+Phase 5.1 includes:
+
+- Non-blocking startup refresh for wallpaper indexing and monitor probing
+- Bounded wallpaper discovery for large trees (safe cap to reduce memory spikes)
+- Permission-tolerant filesystem traversal (skips denied/missing branches)
+- Playlist hardening:
+	- missing files are pruned from active playlist automatically
+	- auto-cycle skips invalid paths safely and persists cleaned playlist state
+
 ## Run
 
 ```bash

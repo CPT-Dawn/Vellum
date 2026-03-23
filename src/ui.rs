@@ -251,7 +251,7 @@ fn render_transition_pane(
     let body = Paragraph::new(rows)
         .block(pane_block(
             "Transitions",
-            "phase 4 live controls",
+            "phase 5 live controls",
             border_color,
             theme,
         ))

@@ -17,7 +17,7 @@ use crossterm::{
 };
 use directories::UserDirs;
 use ratatui::{backend::CrosstermBackend, Terminal};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, mpsc::error::TryRecvError, watch};
 
 use crate::{
     app::{App, AppAction, PlaylistControl},
@@ -26,7 +26,7 @@ use crate::{
         monitors::{self, MonitorInfo},
     },
     persistence::{load_state, save_state, state_file_path},
-    wallpapers::discover_wallpapers,
+    wallpapers::{discover_wallpapers_limited, WallpaperItem},
 };
 
 /// Application-wide result type.
@@ -35,11 +35,11 @@ type AppResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 /// Program entrypoint.
 #[tokio::main]
 async fn main() -> AppResult<()> {
-    let wallpapers = discover_initial_wallpapers()?;
-    let monitors = discover_initial_monitors().await;
+    let wallpaper_root = resolve_wallpaper_root();
     let state_path = state_file_path()?;
     let stored_state = load_state(&state_path).unwrap_or_default();
-    let mut app = App::new(wallpapers, monitors, stored_state);
+    let mut app = App::new(Vec::new(), Vec::new(), stored_state);
+    app.set_status("indexing wallpapers and probing monitors in background...");
 
     let awww = AwwwClient::default();
     if let Err(err) = awww.start_daemon().await {
@@ -47,7 +47,7 @@ async fn main() -> AppResult<()> {
     }
 
     let mut terminal = init_terminal()?;
-    let result = run_app(&mut terminal, app, &awww, state_path).await;
+    let result = run_app(&mut terminal, app, &awww, state_path, wallpaper_root).await;
     restore_terminal(&mut terminal)?;
     result
 }
@@ -77,14 +77,58 @@ async fn run_app(
     mut app: App,
     awww: &AwwwClient,
     state_path: PathBuf,
+    wallpaper_root: PathBuf,
 ) -> AppResult<()> {
     const TICK_RATE: Duration = Duration::from_millis(120);
+    const WALLPAPER_SCAN_LIMIT: usize = 10_000;
 
     let (playlist_tick_tx, mut playlist_tick_rx) = mpsc::unbounded_channel::<()>();
     let (playlist_cfg_tx, playlist_cfg_rx) = watch::channel(app.playlist_control());
     let _playlist_worker = tokio::spawn(playlist_worker(playlist_cfg_rx, playlist_tick_tx));
 
+    let mut wallpaper_rx = spawn_wallpaper_refresh(wallpaper_root, WALLPAPER_SCAN_LIMIT);
+    let mut monitor_rx = spawn_monitor_refresh();
+    let mut wallpaper_ready = false;
+    let mut monitor_ready = false;
+
     loop {
+        match wallpaper_rx.try_recv() {
+            Ok(result) => {
+                wallpaper_ready = true;
+                match result {
+                    Ok(wallpapers) => {
+                        let count = wallpapers.len();
+                        app.set_wallpapers(wallpapers);
+                        app.set_status(format!("indexed {count} wallpapers"));
+                    }
+                    Err(err) => {
+                        app.set_status(format!("wallpaper indexing failed: {err}"));
+                    }
+                }
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                wallpaper_ready = true;
+            }
+        }
+
+        match monitor_rx.try_recv() {
+            Ok(monitors) => {
+                monitor_ready = true;
+                let count = monitors.len();
+                app.set_monitors(monitors);
+                app.set_status(format!("monitor probe complete: {count} outputs"));
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                monitor_ready = true;
+            }
+        }
+
+        if wallpaper_ready && monitor_ready && app.status.starts_with("indexing wallpapers") {
+            app.set_status("ready".to_owned());
+        }
+
         while playlist_tick_rx.try_recv().is_ok() {
             execute_action(&mut app, awww, AppAction::AutoCycleNext, &state_path).await;
             let _ = playlist_cfg_tx.send(app.playlist_control());
@@ -112,6 +156,33 @@ async fn run_app(
     }
 
     Ok(())
+}
+
+/// Spawns a blocking wallpaper discovery task and returns its result receiver.
+fn spawn_wallpaper_refresh(
+    root: PathBuf,
+    limit: usize,
+) -> mpsc::UnboundedReceiver<Result<Vec<WallpaperItem>, String>> {
+    let (tx, rx) = mpsc::unbounded_channel::<Result<Vec<WallpaperItem>, String>>();
+
+    tokio::task::spawn_blocking(move || {
+        let result = discover_wallpapers_limited(&root, limit).map_err(|err| err.to_string());
+        let _ = tx.send(result);
+    });
+
+    rx
+}
+
+/// Spawns an async monitor query task and returns its result receiver.
+fn spawn_monitor_refresh() -> mpsc::UnboundedReceiver<Vec<MonitorInfo>> {
+    let (tx, rx) = mpsc::unbounded_channel::<Vec<MonitorInfo>>();
+
+    tokio::spawn(async move {
+        let monitors = discover_initial_monitors().await;
+        let _ = tx.send(monitors);
+    });
+
+    rx
 }
 
 /// Tokio worker that emits periodic ticks when playlist auto-cycle is enabled.
@@ -221,6 +292,11 @@ async fn execute_action(app: &mut App, awww: &AwwwClient, action: AppAction, sta
             }
         }
         AppAction::AutoCycleNext => {
+            let removed = app.prune_missing_playlist_entries();
+            if removed > 0 {
+                let _ = save_state(state_path, &app.stored_state);
+            }
+
             if !app.has_active_playlist_entries() {
                 app.set_status("auto-cycle skipped: playlist empty");
                 return;
@@ -270,13 +346,6 @@ async fn apply_for_selection(app: &App, awww: &AwwwClient, path: &Path) -> AppRe
 /// Discovers monitor metadata with graceful fallback to an empty list.
 async fn discover_initial_monitors() -> Vec<MonitorInfo> {
     monitors::query_monitors().await.unwrap_or_default()
-}
-
-/// Discovers wallpapers from configured root and returns an owned list.
-fn discover_initial_wallpapers() -> AppResult<Vec<wallpapers::WallpaperItem>> {
-    let root = resolve_wallpaper_root();
-    let items = discover_wallpapers(&root)?;
-    Ok(items)
 }
 
 /// Resolves wallpaper root from environment variable, then user picture directory.
