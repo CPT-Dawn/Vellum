@@ -41,6 +41,7 @@
 - Set-wallpaper daemon state rollback now restores the previous assignment on renderer failure, preserving transactional correctness.
 - Daemon monitor refresh loop and IPC handlers now share a synchronized monitor snapshot for monitor queries and target validation.
 - Startup replay now self-heals persisted state by pruning assignments that fail to reapply and saving the corrected state file.
+- Monitor refresh loop now logs detector failures and recoveries on state transitions, avoiding repeated warning spam while preserving visibility.
 
 ## In Progress
 

@@ -90,30 +90,62 @@ fn prune_failed_assignments(state: &mut DaemonState, failed: &[Option<String>]) 
     removed
 }
 
+fn monitor_detection_transition(
+    was_failed: bool,
+    detection_result: &Result<Vec<String>>,
+) -> (bool, bool, bool) {
+    match detection_result {
+        Ok(_) => {
+            if was_failed {
+                (false, false, true)
+            } else {
+                (false, false, false)
+            }
+        }
+        Err(_) => {
+            if was_failed {
+                (true, false, false)
+            } else {
+                (true, true, false)
+            }
+        }
+    }
+}
+
 async fn monitor_refresh_loop(
     renderer_state: Arc<Mutex<RendererState>>,
     monitor_snapshot: MonitorSnapshot,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
     let mut ticker = time::interval(Duration::from_secs(2));
+    let mut monitor_detection_failed = false;
 
     loop {
         select! {
             _ = ticker.tick() => {
-                match detect_monitor_names() {
-                    Ok(monitors) => {
-                        let normalized = normalize_monitor_snapshot(monitors);
-                        if monitor_snapshot
-                            .replace_if_changed(normalized.clone())
-                            .await
-                        {
-                            let mut renderer = renderer_state.lock().await;
-                            renderer.refresh_outputs(normalized.clone());
-                            info!(outputs = ?normalized, "monitor snapshot changed; renderer outputs refreshed");
-                        }
+                let detection = detect_monitor_names();
+                let (next_failed, log_failure, log_recovery) =
+                    monitor_detection_transition(monitor_detection_failed, &detection);
+                monitor_detection_failed = next_failed;
+
+                if log_failure {
+                    if let Err(err) = &detection {
+                        warn!(error = %err, "monitor refresh detection failed; keeping last known snapshot");
                     }
-                    Err(err) => {
-                        warn!(error = %err, "monitor refresh tick failed");
+                }
+                if log_recovery {
+                    info!("monitor refresh detection recovered");
+                }
+
+                if let Ok(monitors) = detection {
+                    let normalized = normalize_monitor_snapshot(monitors);
+                    if monitor_snapshot
+                        .replace_if_changed(normalized.clone())
+                        .await
+                    {
+                        let mut renderer = renderer_state.lock().await;
+                        renderer.refresh_outputs(normalized.clone());
+                        info!(outputs = ?normalized, "monitor snapshot changed; renderer outputs refreshed");
                     }
                 }
             }
@@ -231,8 +263,9 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{prune_failed_assignments, replay_snapshot};
+    use super::{monitor_detection_transition, prune_failed_assignments, replay_snapshot};
     use crate::state::{DaemonState, WallpaperAssignment};
+    use anyhow::{anyhow, Result};
     use std::path::PathBuf;
     use vellum_ipc::ScaleMode;
 
@@ -284,5 +317,31 @@ mod tests {
         assert_eq!(removed, 1);
         assert_eq!(state.assignments.len(), 1);
         assert!(state.assignments.contains_key(&Some("DP-1".to_string())));
+    }
+
+    #[test]
+    fn monitor_detection_transition_logs_only_on_state_edges() {
+        let ok: Result<Vec<String>> = Ok(vec!["DP-1".to_string()]);
+        let err: Result<Vec<String>> = Err(anyhow!("boom"));
+
+        let (failed, log_failure, log_recovery) = monitor_detection_transition(false, &err);
+        assert!(failed);
+        assert!(log_failure);
+        assert!(!log_recovery);
+
+        let (failed, log_failure, log_recovery) = monitor_detection_transition(failed, &err);
+        assert!(failed);
+        assert!(!log_failure);
+        assert!(!log_recovery);
+
+        let (failed, log_failure, log_recovery) = monitor_detection_transition(failed, &ok);
+        assert!(!failed);
+        assert!(!log_failure);
+        assert!(log_recovery);
+
+        let (failed, log_failure, log_recovery) = monitor_detection_transition(failed, &ok);
+        assert!(!failed);
+        assert!(!log_failure);
+        assert!(!log_recovery);
     }
 }
