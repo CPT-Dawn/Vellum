@@ -33,6 +33,8 @@ This repository now follows a more modular Rust layout and is prepared for upcom
       - image_pipeline.rs
       - layer_shell.rs
       - output_registry.rs
+      - shm_pool.rs
+      - perf_checks.rs
   - vellum-tui/
     - src/main.rs
     - src/cli.rs

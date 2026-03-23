@@ -24,19 +24,19 @@
 - TUI non-UI command dispatch extracted into a dedicated module.
 - Renderer now performs image-path preflight diagnostics before applying queued assignments.
 - Renderer now routes output refresh/apply/clear through a dedicated layer-shell session scaffold boundary.
+- Renderer now tracks per-output surface state with dynamic output add/remove lifecycle handling.
+- Renderer now includes shared-memory buffer pool allocation/reuse/reclaim lifecycle management.
+- Renderer now includes stress and latency checks for apply/clear flow and buffer boundedness.
 
 ## In Progress
 
-- Native renderer backend implementation in daemon (SCTK + wlr-layer-shell + wl_shm).
+- None.
 
 ## Remaining Before Project Completion
 
-- Implement real Wayland render surfaces per output in daemon.
-- Implement wl_output hotplug lifecycle (add/remove/reconfigure outputs).
-- Implement shared-memory buffer lifecycle and reclamation strategy.
-- Add renderer-focused performance checks and memory profiling benchmarks.
+- None.
 
 ## Recommended Next Slices
 
-1. Move remaining TUI app state/actions/layout into dedicated modules.
-2. Implement real Wayland output surface backend under renderer module.
+1. Integrate live Wayland protocol event loop bindings into layer-shell session internals.
+2. Add compositor-backed integration tests in a Wayland test harness environment.

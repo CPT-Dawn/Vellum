@@ -3,6 +3,8 @@ mod command_queue;
 mod image_pipeline;
 mod layer_shell;
 mod output_registry;
+mod perf_checks;
+mod shm_pool;
 
 use std::path::PathBuf;
 use tracing::{info, warn};
@@ -109,6 +111,16 @@ impl RendererState {
     #[cfg(test)]
     pub(crate) fn backend_mode_for(&self, monitor: Option<&str>) -> Option<ScaleMode> {
         self.backend.assignment_mode_for(monitor)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn session_surface_count(&self) -> usize {
+        self.session.known_output_count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn session_buffer_count(&self) -> usize {
+        self.session.pool_entry_count()
     }
 }
 
