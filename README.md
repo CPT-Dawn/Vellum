@@ -41,6 +41,14 @@ cargo check --workspace
 cargo test --workspace
 ```
 
+## CI
+
+GitHub Actions runs these checks on pushes and pull requests:
+
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets -- -D warnings`
+- `cargo test --workspace`
+
 ### 2) Run daemon
 
 ```bash

@@ -10,6 +10,8 @@
 - Baseline protocol and persistence unit tests.
 - Daemon renderer scaffold with command queue and output registry.
 - TUI extracted CLI and daemon transport modules.
+- Daemon integration tests that spawn vellumd and verify IPC/persistence flows.
+- CI workflow for fmt, clippy, and workspace tests.
 
 ## In Progress
 
@@ -20,9 +22,8 @@
 - Implement real Wayland render surfaces per output in daemon.
 - Implement wl_output hotplug lifecycle (add/remove/reconfigure outputs).
 - Implement shared-memory buffer lifecycle and reclamation strategy.
-- Add integration tests for daemon/client socket interactions.
 - Add renderer-focused performance checks and memory profiling benchmarks.
-- Add packaging/CI pipeline for release artifacts and lint/test gates.
+- Add packaging/release pipeline for publishable artifacts.
 
 ## Recommended Next Slices
 
