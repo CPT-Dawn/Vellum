@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -10,6 +10,8 @@ use ratatui::layout::Rect;
 use ratatui_image::{picker::Picker, protocol::StatefulProtocol, StatefulImage};
 use serde_json::Value;
 use std::ffi::OsStr;
+use std::io::{BufRead, BufReader as StdBufReader, Write};
+use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
@@ -24,7 +26,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Terminal;
 
 #[derive(Debug, Parser)]
@@ -50,6 +52,14 @@ struct Args {
 enum Command {
     Ui,
     Ping,
+    Set {
+        #[arg(value_name = "PATH")]
+        path: PathBuf,
+
+        #[arg(long, value_name = "NAME")]
+        monitor: Option<String>,
+    },
+    Monitors,
     Kill,
 }
 
@@ -61,6 +71,13 @@ struct App {
     image_state: Option<StatefulProtocol>,
     preview_info: String,
     monitor_profile: MonitorProfile,
+    status: String,
+    pending_g: bool,
+    show_help: bool,
+    theme: UiTheme,
+    socket_path: Option<PathBuf>,
+    monitor_targets: Vec<String>,
+    target_index: usize,
 }
 
 #[derive(Clone)]
@@ -68,6 +85,17 @@ struct MonitorProfile {
     width: u32,
     height: u32,
     source: String,
+}
+
+#[derive(Clone)]
+struct UiTheme {
+    chrome: Color,
+    panel: Color,
+    accent: Color,
+    accent_alt: Color,
+    text: Color,
+    muted: Color,
+    warn: Color,
 }
 
 #[tokio::main]
@@ -82,7 +110,12 @@ async fn main() -> Result<()> {
     let command = args.command.unwrap_or(Command::Ui);
 
     match command {
-        Command::Ui => run_ui(args.images_dir, args.monitor_width, args.monitor_height),
+        Command::Ui => run_ui(
+            args.socket,
+            args.images_dir,
+            args.monitor_width,
+            args.monitor_height,
+        ),
         Command::Ping => {
             let socket_path = resolve_socket_path(args.socket)?;
             let response = send_request(&socket_path, Request::Ping).await?;
@@ -93,6 +126,45 @@ async fn main() -> Result<()> {
                     Ok(())
                 }
                 other => anyhow::bail!("unexpected ping response from daemon: {other:?}"),
+            }
+        }
+        Command::Set { path, monitor } => {
+            let socket_path = resolve_socket_path(args.socket)?;
+            let response = send_request(
+                &socket_path,
+                Request::SetWallpaper {
+                    path: path.display().to_string(),
+                    monitor,
+                },
+            )
+            .await?;
+
+            match response {
+                Response::Ok => {
+                    println!("wallpaper applied: {}", path.display());
+                    Ok(())
+                }
+                Response::Error { message } => anyhow::bail!("daemon error: {message}"),
+                other => anyhow::bail!("unexpected set response from daemon: {other:?}"),
+            }
+        }
+        Command::Monitors => {
+            let socket_path = resolve_socket_path(args.socket)?;
+            let response = send_request(&socket_path, Request::GetMonitors).await?;
+
+            match response {
+                Response::Monitors { names } => {
+                    if names.is_empty() {
+                        println!("no monitors detected");
+                    } else {
+                        for name in names {
+                            println!("{name}");
+                        }
+                    }
+                    Ok(())
+                }
+                Response::Error { message } => anyhow::bail!("daemon error: {message}"),
+                other => anyhow::bail!("unexpected monitors response from daemon: {other:?}"),
             }
         }
         Command::Kill => {
@@ -111,13 +183,15 @@ async fn main() -> Result<()> {
 }
 
 fn run_ui(
+    socket: Option<PathBuf>,
     images_dir: Option<PathBuf>,
     monitor_width: Option<u32>,
     monitor_height: Option<u32>,
 ) -> Result<()> {
     let image_root = images_dir.unwrap_or_else(default_image_root);
     let monitor_profile = MonitorProfile::resolve(monitor_width, monitor_height);
-    let mut app = App::discover_files(image_root, monitor_profile)?;
+    let socket_path = resolve_socket_path_optional(socket);
+    let mut app = App::discover_files(image_root, monitor_profile, socket_path)?;
 
     enable_raw_mode().context("failed to enable raw mode")?;
     let mut stdout = std::io::stdout();
@@ -143,6 +217,11 @@ fn run_ui_loop(
     loop {
         terminal
             .draw(|frame| {
+                let frame_chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Min(6), Constraint::Length(2)])
+                    .split(frame.area());
+
                 let chunks = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([
@@ -150,7 +229,7 @@ fn run_ui_loop(
                         Constraint::Percentage(30),
                         Constraint::Percentage(40),
                     ])
-                    .split(frame.area());
+                    .split(frame_chunks[0]);
 
                 let mut list_state = ListState::default();
                 if !app.files.is_empty() {
@@ -175,22 +254,22 @@ fn run_ui_loop(
                 let browser = List::new(browser_items)
                     .block(
                         Block::default()
-                            .title("Browser")
+                            .title("Browser [Vim Motion]")
                             .borders(Borders::ALL)
-                            .border_style(Style::default().fg(Color::Rgb(65, 72, 104))),
+                            .border_style(Style::default().fg(app.theme.panel)),
                     )
                     .highlight_style(
                         Style::default()
-                            .fg(Color::Rgb(122, 162, 247))
+                            .fg(app.theme.accent)
                             .add_modifier(Modifier::BOLD),
                     )
-                    .highlight_symbol("> ");
+                    .highlight_symbol(">>");
 
                 frame.render_stateful_widget(browser, chunks[0], &mut list_state);
 
                 let selected = app.selected_file_name().unwrap_or("None selected");
                 let metadata = Paragraph::new(format!(
-                    "Root: {}\nTotal images: {}\nSelected index: {}\nSelected: {}\nMonitor: {}x{} ({:.2}:1) [{}]\nPreview: {}\n\nKeys:\n- j/k or arrows: move\n- q: quit",
+                    "Root: {}\nTotal images: {}\nCursor: {}\nSelected: {}\nMonitor: {}x{} ({:.2}:1) [{}]\nTarget Output: {}\nPreview: {}\nDaemon: {}\n\nMode: Normal\nHint: press ? for full keymap",
                     app.image_root.display(),
                     app.files.len(),
                     app.selected,
@@ -199,22 +278,24 @@ fn run_ui_loop(
                     app.monitor_profile.height,
                     app.monitor_profile.aspect_ratio(),
                     app.monitor_profile.source,
+                    app.current_target_label(),
                     app.preview_info,
+                    app.daemon_status(),
                 ))
                 .block(
                     Block::default()
-                        .title("Metadata")
+                        .title("Inspector")
                         .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Rgb(65, 72, 104))),
+                        .border_style(Style::default().fg(app.theme.panel)),
                 )
-                .style(Style::default().fg(Color::Rgb(169, 177, 214)));
+                .style(Style::default().fg(app.theme.text));
 
                 frame.render_widget(metadata, chunks[1]);
 
                 let preview_block = Block::default()
-                    .title("Preview")
+                    .title("Preview Stage")
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Rgb(65, 72, 104)));
+                    .border_style(Style::default().fg(app.theme.panel));
                 let preview_inner = preview_block.inner(chunks[2]);
                 frame.render_widget(preview_block, chunks[2]);
 
@@ -226,11 +307,11 @@ fn run_ui_loop(
 
                 let monitor_block = Block::default()
                     .title(format!(
-                        "Monitor {}x{}",
+                        "Monitor Frame {}x{}",
                         app.monitor_profile.width, app.monitor_profile.height
                     ))
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Rgb(41, 46, 66)));
+                    .border_style(Style::default().fg(app.theme.accent_alt));
 
                 let monitor_inner = monitor_block.inner(monitor_rect);
                 frame.render_widget(monitor_block, monitor_rect);
@@ -239,9 +320,25 @@ fn run_ui_loop(
                     frame.render_stateful_widget(StatefulImage::default(), monitor_inner, state);
                 } else {
                     let empty = Paragraph::new("No preview available")
-                        .style(Style::default().fg(Color::Rgb(192, 202, 245)));
+                        .style(Style::default().fg(app.theme.warn));
                     frame.render_widget(empty, monitor_inner);
                 }
+
+                let status_line = if app.show_help {
+                    "h/j/k/l move  gg/G top/bottom  Ctrl-u/Ctrl-d page  Enter|Space apply  t cycle-target  m monitors  r reload  ? help  q quit"
+                        .to_string()
+                } else {
+                    app.status.clone()
+                };
+                let status = Paragraph::new(status_line)
+                    .style(
+                        Style::default()
+                            .bg(app.theme.chrome)
+                            .fg(app.theme.muted)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .wrap(Wrap { trim: true });
+                frame.render_widget(status, frame_chunks[1]);
             })
             .context("failed to draw UI frame")?;
 
@@ -256,17 +353,49 @@ fn run_ui_loop(
             }
 
             match key.code {
-                KeyCode::Char('q') => return Ok(()),
-                KeyCode::Down | KeyCode::Char('j') => app.select_next(),
-                KeyCode::Up | KeyCode::Char('k') => app.select_previous(),
+                KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('l') => app.select_next(),
+                KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('h') => app.select_previous(),
+                KeyCode::Home => app.select_first(),
+                KeyCode::End | KeyCode::Char('G') => app.select_last(),
+                KeyCode::PageDown => app.select_page_down(10),
+                KeyCode::PageUp => app.select_page_up(10),
+                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.select_page_down(10)
+                }
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.select_page_up(10)
+                }
+                KeyCode::Enter | KeyCode::Char(' ') => app.apply_selected_wallpaper(),
+                KeyCode::Char('t') => app.cycle_monitor_target(),
+                KeyCode::Char('m') => app.fetch_monitors(),
+                KeyCode::Char('r') => app.reload_files(),
+                KeyCode::Char('?') => app.toggle_help(),
+                KeyCode::Char('g') => {
+                    if app.pending_g {
+                        app.select_first();
+                        app.pending_g = false;
+                    } else {
+                        app.pending_g = true;
+                        app.status = "pending motion: g (press g again for top)".to_string();
+                    }
+                }
                 _ => {}
+            }
+
+            if !matches!(key.code, KeyCode::Char('g')) {
+                app.pending_g = false;
             }
         }
     }
 }
 
 impl App {
-    fn discover_files(image_root: PathBuf, monitor_profile: MonitorProfile) -> Result<Self> {
+    fn discover_files(
+        image_root: PathBuf,
+        monitor_profile: MonitorProfile,
+        socket_path: Option<PathBuf>,
+    ) -> Result<Self> {
         let mut files = Vec::new();
         for entry in std::fs::read_dir(&image_root)
             .with_context(|| format!("failed to read image directory {}", image_root.display()))?
@@ -291,8 +420,16 @@ impl App {
             image_state: None,
             preview_info: "No image selected".to_string(),
             monitor_profile,
+            status: "Normal | j/k move | gg/G edges | ? help | q quit".to_string(),
+            pending_g: false,
+            show_help: false,
+            theme: UiTheme::arch_punk(),
+            socket_path,
+            monitor_targets: Vec::new(),
+            target_index: 0,
         };
         app.refresh_preview();
+        app.refresh_monitor_targets();
         Ok(app)
     }
 
@@ -302,6 +439,7 @@ impl App {
         }
 
         self.selected = (self.selected + 1) % self.files.len();
+        self.status = format!("Normal | moved to {}", self.selected);
         self.refresh_preview();
     }
 
@@ -315,7 +453,65 @@ impl App {
         } else {
             self.selected.saturating_sub(1)
         };
+        self.status = format!("Normal | moved to {}", self.selected);
         self.refresh_preview();
+    }
+
+    fn select_first(&mut self) {
+        if self.files.is_empty() {
+            return;
+        }
+
+        self.selected = 0;
+        self.status = "Normal | jumped to first image".to_string();
+        self.refresh_preview();
+    }
+
+    fn select_last(&mut self) {
+        if self.files.is_empty() {
+            return;
+        }
+
+        self.selected = self.files.len().saturating_sub(1);
+        self.status = "Normal | jumped to last image".to_string();
+        self.refresh_preview();
+    }
+
+    fn select_page_down(&mut self, amount: usize) {
+        if self.files.is_empty() {
+            return;
+        }
+
+        self.selected = (self.selected + amount).min(self.files.len().saturating_sub(1));
+        self.status = format!("Normal | page down {}", amount);
+        self.refresh_preview();
+    }
+
+    fn select_page_up(&mut self, amount: usize) {
+        if self.files.is_empty() {
+            return;
+        }
+
+        self.selected = self.selected.saturating_sub(amount);
+        self.status = format!("Normal | page up {}", amount);
+        self.refresh_preview();
+    }
+
+    fn toggle_help(&mut self) {
+        self.show_help = !self.show_help;
+        self.status = if self.show_help {
+            "Help overlay enabled".to_string()
+        } else {
+            "Help overlay disabled".to_string()
+        };
+    }
+
+    fn daemon_status(&self) -> &'static str {
+        if self.socket_path.is_some() {
+            "online-configured"
+        } else {
+            "offline"
+        }
     }
 
     fn selected_file_name(&self) -> Option<&str> {
@@ -342,6 +538,150 @@ impl App {
                 self.image_state = None;
                 self.preview_info = format!("Failed to load: {err}");
             }
+        }
+    }
+
+    fn reload_files(&mut self) {
+        let mut files = Vec::new();
+        let entries = std::fs::read_dir(&self.image_root);
+        let Ok(entries) = entries else {
+            self.status = format!(
+                "Failed to reload: cannot read {}",
+                self.image_root.display()
+            );
+            return;
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && is_supported_image_path(&path) {
+                files.push(path);
+            }
+        }
+
+        files.sort();
+        self.files = files;
+        if self.selected >= self.files.len() {
+            self.selected = self.files.len().saturating_sub(1);
+        }
+        self.status = format!("Reloaded {} images", self.files.len());
+        self.refresh_preview();
+    }
+
+    fn apply_selected_wallpaper(&mut self) {
+        let Some(path) = self.files.get(self.selected).cloned() else {
+            self.status = "No selected image to apply".to_string();
+            return;
+        };
+
+        let monitor = self.current_target_name();
+
+        let response = self.send_daemon_request(Request::SetWallpaper {
+            path: path.display().to_string(),
+            monitor,
+        });
+
+        match response {
+            Ok(Response::Ok) => {
+                self.status = format!("Applied wallpaper: {}", path.display());
+            }
+            Ok(Response::Error { message }) => {
+                self.status = format!("Daemon rejected wallpaper: {message}");
+            }
+            Ok(other) => {
+                self.status = format!("Unexpected daemon response: {other:?}");
+            }
+            Err(err) => {
+                self.status = format!("Apply failed: {err:#}");
+            }
+        }
+    }
+
+    fn fetch_monitors(&mut self) {
+        let response = self.send_daemon_request(Request::GetMonitors);
+        match response {
+            Ok(Response::Monitors { names }) => {
+                if names.is_empty() {
+                    self.status = "Daemon reported no monitors".to_string();
+                } else {
+                    self.monitor_targets = names.clone();
+                    if self.target_index > self.monitor_targets.len() {
+                        self.target_index = 0;
+                    }
+                    self.status = format!("Monitors: {}", names.join(", "));
+                }
+            }
+            Ok(Response::Error { message }) => {
+                self.status = format!("Monitor query failed: {message}");
+            }
+            Ok(other) => {
+                self.status = format!("Unexpected monitor response: {other:?}");
+            }
+            Err(err) => {
+                self.status = format!("Monitor query failed: {err:#}");
+            }
+        }
+    }
+
+    fn refresh_monitor_targets(&mut self) {
+        let response = self.send_daemon_request(Request::GetMonitors);
+        if let Ok(Response::Monitors { names }) = response {
+            self.monitor_targets = names;
+            if self.target_index > self.monitor_targets.len() {
+                self.target_index = 0;
+            }
+        }
+    }
+
+    fn cycle_monitor_target(&mut self) {
+        if self.monitor_targets.is_empty() {
+            self.refresh_monitor_targets();
+        }
+
+        let total_slots = self.monitor_targets.len() + 1;
+        if total_slots == 0 {
+            self.target_index = 0;
+            self.status = "Target output: all".to_string();
+            return;
+        }
+
+        self.target_index = (self.target_index + 1) % total_slots;
+        self.status = format!("Target output: {}", self.current_target_label());
+    }
+
+    fn current_target_name(&self) -> Option<String> {
+        if self.target_index == 0 {
+            None
+        } else {
+            self.monitor_targets.get(self.target_index - 1).cloned()
+        }
+    }
+
+    fn current_target_label(&self) -> String {
+        self.current_target_name()
+            .unwrap_or_else(|| "all outputs".to_string())
+    }
+
+    fn send_daemon_request(&self, request: Request) -> Result<Response> {
+        let socket_path = self
+            .socket_path
+            .as_ref()
+            .context("daemon socket is not configured in this environment")?;
+
+        send_request_blocking(socket_path, request)
+    }
+}
+
+impl UiTheme {
+    fn arch_punk() -> Self {
+        Self {
+            chrome: Color::Rgb(14, 17, 23),
+            panel: Color::Rgb(58, 74, 112),
+            accent: Color::Rgb(129, 207, 255),
+            accent_alt: Color::Rgb(255, 92, 143),
+            text: Color::Rgb(196, 206, 240),
+            muted: Color::Rgb(156, 168, 198),
+            warn: Color::Rgb(255, 158, 100),
         }
     }
 }
@@ -526,6 +866,43 @@ fn resolve_socket_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
     let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
         .context("XDG_RUNTIME_DIR is not set; pass --socket explicitly")?;
     Ok(PathBuf::from(runtime_dir).join("vellum.sock"))
+}
+
+fn resolve_socket_path_optional(explicit: Option<PathBuf>) -> Option<PathBuf> {
+    if let Some(path) = explicit {
+        return Some(path);
+    }
+
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").ok()?;
+    Some(PathBuf::from(runtime_dir).join("vellum.sock"))
+}
+
+fn send_request_blocking(socket_path: &PathBuf, request: Request) -> Result<Response> {
+    let mut stream = StdUnixStream::connect(socket_path)
+        .with_context(|| format!("failed to connect to daemon at {}", socket_path.display()))?;
+
+    let payload = serde_json::to_string(&RequestEnvelope::new(request))
+        .context("failed to encode request")?;
+    stream
+        .write_all(payload.as_bytes())
+        .context("failed to write request")?;
+    stream
+        .write_all(b"\n")
+        .context("failed to terminate request")?;
+    stream.flush().context("failed to flush request")?;
+
+    let mut reader = StdBufReader::new(stream);
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .context("failed to read daemon response")?;
+
+    let envelope = serde_json::from_str::<ResponseEnvelope>(line.trim())
+        .context("daemon returned invalid response JSON")?;
+    envelope
+        .validate_version()
+        .context("daemon returned unsupported protocol version")?;
+    Ok(envelope.response)
 }
 
 async fn send_request(socket_path: &PathBuf, request: Request) -> Result<Response> {

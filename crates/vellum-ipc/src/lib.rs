@@ -7,7 +7,10 @@ pub const IPC_PROTOCOL_VERSION: u16 = 1;
 #[serde(tag = "type", content = "payload")]
 pub enum Request {
     Ping,
-    SetWallpaper { path: String },
+    SetWallpaper {
+        path: String,
+        monitor: Option<String>,
+    },
     GetMonitors,
     KillDaemon,
 }
