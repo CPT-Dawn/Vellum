@@ -1,7 +1,7 @@
 # Vellum
 
-Vellum is a native Wayland wallpaper runtime in active migration from its
-predecessor codebase.
+Vellum is a native Wayland wallpaper runtime with a foreground TUI and a
+background daemon that owns the wallpaper surfaces.
 
 This repository has been simplified to keep only the core runtime crates used
 by the migration:
@@ -9,14 +9,15 @@ by the migration:
 - common
 - daemon (published as vellum-core)
 
-Legacy packaging, shell completion, docs generation, script examples, and
-standalone client/test folders were removed to keep the workspace focused.
+The TUI starts a daemon subprocess on demand for manual use, and the package
+also ships session-start integration so the daemon can start automatically in a
+Wayland desktop session.
 
 ## Requirements
 
-- A compositor that supports wlr-layer-shell
+- A Wayland compositor that supports wlr-layer-shell
 - lz4 development headers
-- Rust 1.89.0 or newer
+- Rust 1.94.0 or newer
 
 ## Build
 
@@ -62,8 +63,14 @@ Key controls:
 - `F8`: save default profile
 - `F9`: load default profile
 
-## AUR Packaging Outline
+## Session Startup
 
-A starter Arch packaging template for the combined binary is provided at:
+The packaged daemon is intended to run only inside a Wayland session.
+It should not be launched from a plain TTY.
 
-- Install target: `vellum`
+For automatic startup, install the session autostart entry or enable the
+user service shipped in packaging.
+
+The foreground app binary is `vellum`.
+The background daemon process is `vellum-daemon`.
+The internal IPC namespace defaults to `vellum`.

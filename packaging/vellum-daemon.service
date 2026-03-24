@@ -1,0 +1,16 @@
+[Unit]
+Description=Vellum wallpaper daemon
+Documentation=man:systemd.user(5)
+PartOf=graphical-session.target
+After=graphical-session.target
+BindsTo=graphical-session.target
+ConditionEnvironment=WAYLAND_DISPLAY
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/vellum --daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

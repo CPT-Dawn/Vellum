@@ -127,7 +127,7 @@ impl Wallpaper {
             wl_surface,
             Some(output),
             *layer,
-            &format!("vellum-daemon{}", daemon.namespace),
+            &wallpaper_surface_name(&daemon.namespace),
         )
         .inspect_err(|e| error!("failed to create layer surface: {e}"))
         .ok();
@@ -515,6 +515,14 @@ impl Wallpaper {
         }
         self.frame_callback_handler
             .request_frame_callback(backend, objman, surface);
+    }
+}
+
+fn wallpaper_surface_name(namespace: &str) -> String {
+    if namespace.is_empty() || namespace == "vellum" {
+        String::from("vellum-wallpaper")
+    } else {
+        format!("vellum-wallpaper-{namespace}")
     }
 }
 

@@ -959,6 +959,7 @@ dependencies = [
  "common",
  "crossterm",
  "image",
+ "libc",
  "nucleo-matcher",
  "ratatui",
  "serde",

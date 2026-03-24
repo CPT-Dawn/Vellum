@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Vellum Wallpaper Daemon
+Comment=Start the Vellum wallpaper daemon for the current Wayland session
+Exec=vellum --daemon
+TryExec=vellum
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

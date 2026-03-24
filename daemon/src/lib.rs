@@ -115,7 +115,7 @@ pub enum VellumServerError {
 
 #[derive(Debug, Error)]
 pub enum SocketInitError {
-    #[error("there is already a vellum-daemon instance running on this socket")]
+    #[error("there is already a vellum daemon instance running on this socket")]
     AlreadyRunning,
     #[error("failed to probe existing daemon state")]
     DaemonProbe(IpcError),

@@ -4,6 +4,7 @@ mod ui;
 
 use std::{
     collections::{HashMap, VecDeque},
+    ffi::CString,
     io,
     path::PathBuf,
     time::{Duration, Instant},
@@ -32,23 +33,31 @@ const DAEMON_PROBE_INTERVAL: Duration = Duration::from_secs(2);
 const NOTIFICATION_TTL: Duration = Duration::from_secs(5);
 
 pub async fn run_entrypoint() -> io::Result<()> {
-    if let Some(namespace) = daemon_launch_namespace_from_args() {
-        let config = VellumServerConfig {
-            namespace,
-            quiet: true,
-            ..VellumServerConfig::default()
-        };
-        let server = VellumServer::new(config);
-        return server.run().map_err(io::Error::other);
+    if let Some(namespace) = daemon_mode_namespace_from_args() {
+        set_process_name("vellum-daemon");
+        ensure_wayland_session()?;
+        return run_daemon(namespace);
     }
 
+    set_process_name("vellum");
+    ensure_wayland_session()?;
     run_app().await
 }
 
-fn daemon_launch_namespace_from_args() -> Option<String> {
+fn run_daemon(namespace: String) -> io::Result<()> {
+    let config = VellumServerConfig {
+        namespace,
+        quiet: true,
+        ..VellumServerConfig::default()
+    };
+    let server = VellumServer::new(config);
+    server.run().map_err(io::Error::other)
+}
+
+fn daemon_mode_namespace_from_args() -> Option<String> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
-        if arg != "--daemon-subprocess" {
+        if arg != "--daemon" && arg != "--daemon-subprocess" {
             continue;
         }
 
@@ -64,6 +73,29 @@ fn daemon_launch_namespace_from_args() -> Option<String> {
     }
 
     None
+}
+
+fn ensure_wayland_session() -> io::Result<()> {
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("WAYLAND_SOCKET").is_some()
+    {
+        return Ok(());
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "vellum requires a Wayland session (WAYLAND_DISPLAY or WAYLAND_SOCKET must be set)",
+    ))
+}
+
+fn set_process_name(name: &str) {
+    let Ok(name) = CString::new(name) else {
+        return;
+    };
+
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let _ = libc::prctl(libc::PR_SET_NAME, name.as_ptr() as usize, 0, 0, 0);
+    }
 }
 
 struct TerminalGuard;
@@ -158,7 +190,7 @@ impl App {
             transition: TransitionState::default(),
             notifications: VecDeque::new(),
             status: String::from("Welcome to Vellum"),
-            daemon_namespace: String::from("vellum-tui"),
+            daemon_namespace: String::from("vellum"),
             backend_child: None,
             daemon_online: false,
             last_daemon_probe: Instant::now() - DAEMON_PROBE_INTERVAL,
