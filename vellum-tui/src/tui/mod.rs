@@ -768,13 +768,23 @@ pub(crate) fn preview_ascii(app: &App, width: usize, height: usize) -> Vec<Strin
     let frame_h = ((mh * frame_scale).round() as usize).clamp(4, height.max(4));
 
     let mut grid = vec![vec![' '; frame_w]; frame_h];
-    for x in 0..frame_w {
-        grid[0][x] = '█';
-        grid[frame_h - 1][x] = '█';
+    if let Some(top) = grid.first_mut() {
+        for cell in top.iter_mut() {
+            *cell = '█';
+        }
+    }
+    if let Some(bottom) = grid.last_mut() {
+        for cell in bottom.iter_mut() {
+            *cell = '█';
+        }
     }
     for row in &mut grid {
-        row[0] = '█';
-        row[frame_w - 1] = '█';
+        if let Some(first) = row.first_mut() {
+            *first = '█';
+        }
+        if let Some(last) = row.last_mut() {
+            *last = '█';
+        }
     }
 
     if let Some(preview) = preview {
@@ -795,9 +805,19 @@ pub(crate) fn preview_ascii(app: &App, width: usize, height: usize) -> Vec<Strin
         let start_x = (frame_w.saturating_sub(fill_w + 2)) / 2 + 1;
         let start_y = (frame_h.saturating_sub(fill_h + 2)) / 2 + 1;
 
-        for y in start_y..(start_y + fill_h).min(frame_h - 1) {
-            for x in start_x..(start_x + fill_w).min(frame_w - 1) {
-                grid[y][x] = if matches!(app.scale_mode, ScaleMode::Fill) {
+        let y_end = (start_y + fill_h).min(frame_h - 1);
+        let x_end = (start_x + fill_w).min(frame_w - 1);
+        for row in grid
+            .iter_mut()
+            .skip(start_y)
+            .take(y_end.saturating_sub(start_y))
+        {
+            for cell in row
+                .iter_mut()
+                .skip(start_x)
+                .take(x_end.saturating_sub(start_x))
+            {
+                *cell = if matches!(app.scale_mode, ScaleMode::Fill) {
                     '▓'
                 } else {
                     '▒'

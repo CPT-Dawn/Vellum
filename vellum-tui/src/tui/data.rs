@@ -560,13 +560,25 @@ pub fn make_monitor_layout_ascii(
 
         let fill = if idx == selected { '▓' } else { '▒' };
 
-        for y in y0.min(rows - 1)..=y1.min(rows - 1) {
-            for x in x0.min(cols - 1)..=x1.min(cols - 1) {
-                let is_border = y == y0.min(rows - 1)
-                    || y == y1.min(rows - 1)
-                    || x == x0.min(cols - 1)
-                    || x == x1.min(cols - 1);
-                grid[y][x] = if is_border { '█' } else { fill };
+        let y_start = y0.min(rows - 1);
+        let y_end = y1.min(rows - 1);
+        let x_start = x0.min(cols - 1);
+        let x_end = x1.min(cols - 1);
+
+        for (y, row) in grid
+            .iter_mut()
+            .enumerate()
+            .skip(y_start)
+            .take(y_end.saturating_sub(y_start) + 1)
+        {
+            for (x, cell) in row
+                .iter_mut()
+                .enumerate()
+                .skip(x_start)
+                .take(x_end.saturating_sub(x_start) + 1)
+            {
+                let is_border = y == y_start || y == y_end || x == x_start || x == x_end;
+                *cell = if is_border { '█' } else { fill };
             }
         }
     }
