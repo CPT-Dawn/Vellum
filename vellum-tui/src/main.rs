@@ -46,6 +46,8 @@ const TICK_RATE_MS: u64 = 33;
 const BROWSER_FILTER_DEBOUNCE_MS: u64 = 70;
 const IPC_QUERY_TIMEOUT: Duration = Duration::from_millis(1600);
 const IPC_APPLY_TIMEOUT: Duration = Duration::from_secs(8);
+const IPC_QUERY_RETRY_INTERVAL: Duration = Duration::from_millis(120);
+const IPC_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(1800);
 const MONITOR_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const DEFAULT_PROFILE_NAME: &str = "default";
 const NAV_HALF_PAGE_STEP: isize = 4;
@@ -469,7 +471,41 @@ async fn run_app() -> io::Result<()> {
         }
     }
 
+    shutdown_backend(&mut state).await;
+
     Ok(())
+}
+
+async fn shutdown_backend(state: &mut AppState) {
+    let running = state
+        .backend
+        .task
+        .as_ref()
+        .is_some_and(|task| !task.is_finished());
+    if !running {
+        return;
+    }
+
+    let namespace = state.backend.namespace.clone();
+    let _ = run_blocking_with_timeout(IPC_SHUTDOWN_TIMEOUT, move || {
+        let (_, socket) = connect_daemon_socket(&namespace)?;
+        RequestSend::Kill
+            .send(&socket)
+            .map_err(anyhow::Error::new)
+            .context("failed to send daemon kill request")?;
+        let _ = Answer::receive(
+            socket
+                .recv()
+                .map_err(anyhow::Error::new)
+                .context("failed to receive daemon kill response")?,
+        );
+        Ok(())
+    })
+    .await;
+
+    if let Some(task) = state.backend.task.take() {
+        let _ = time::timeout(IPC_SHUTDOWN_TIMEOUT, task).await;
+    }
 }
 
 async fn handle_app_event(state: &mut AppState, event: AppEvent) {
@@ -496,6 +532,12 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
         if let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {
+            if matches!(key.code, KeyCode::Char('q')) {
+                state.should_quit = true;
+                state.set_status(StatusLevel::Info, "Exiting Vellum");
+                continue;
+            }
+
             if state.show_help {
                 state.show_help = false;
                 state.set_status(StatusLevel::Info, "Help overlay closed");
@@ -513,10 +555,6 @@ async fn handle_input(state: &mut AppState) -> io::Result<()> {
             }
 
             match key.code {
-                KeyCode::Char('q') => {
-                    state.should_quit = true;
-                    state.set_status(StatusLevel::Info, "Exiting Vellum");
-                }
                 KeyCode::Esc => {
                     state.input_mode = InputMode::Normal;
                     state.pending_g = false;
@@ -1326,41 +1364,75 @@ async fn query_apply_target(
     namespace: &str,
     preferred_output: Option<String>,
 ) -> Result<ApplyTarget> {
-    let namespace = namespace.to_owned();
-
-    run_blocking_with_timeout(IPC_QUERY_TIMEOUT, move || {
-        let (resolved_namespace, socket) = connect_daemon_socket(&namespace)?;
-        RequestSend::Query
-            .send(&socket)
-            .map_err(anyhow::Error::new)
-            .context("failed to send query request")?;
-
-        let answer = Answer::receive(
-            socket
-                .recv()
+    let deadline = Instant::now() + IPC_QUERY_TIMEOUT;
+    loop {
+        let attempt_namespace = namespace.to_owned();
+        let attempt_preferred = preferred_output.clone();
+        let attempt = run_blocking_with_timeout(IPC_QUERY_TIMEOUT, move || {
+            let (resolved_namespace, socket) = connect_daemon_socket(&attempt_namespace)?;
+            RequestSend::Query
+                .send(&socket)
                 .map_err(anyhow::Error::new)
-                .context("failed to receive daemon query response")?,
-        );
+                .context("failed to send query request")?;
 
-        let Answer::Info(outputs) = answer else {
-            bail!("unexpected daemon response to query request");
-        };
+            let answer = Answer::receive(
+                socket
+                    .recv()
+                    .map_err(anyhow::Error::new)
+                    .context("failed to receive daemon query response")?,
+            );
 
-        let selected = if let Some(name) = preferred_output {
-            outputs.iter().find(|output| output.name.as_ref() == name)
-        } else {
-            outputs.first()
-        }
-        .ok_or_else(|| anyhow!("no output information available from daemon"))?;
+            let Answer::Info(outputs) = answer else {
+                bail!("unexpected daemon response to query request");
+            };
 
-        Ok(ApplyTarget {
-            namespace: resolved_namespace,
-            outputs: vec![selected.name.to_string()],
-            dim: selected.real_dim(),
-            format: selected.pixel_format,
+            if outputs.is_empty() {
+                bail!("no output information available from daemon");
+            }
+
+            let selected = if let Some(name) = attempt_preferred {
+                outputs
+                    .iter()
+                    .find(|output| output.name.as_ref() == name)
+                    .ok_or_else(|| {
+                        let available = outputs
+                            .iter()
+                            .map(|o| o.name.as_ref())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        anyhow!(
+                            "selected monitor '{name}' not ready in daemon yet (available: {available})"
+                        )
+                    })?
+            } else {
+                outputs
+                    .first()
+                    .ok_or_else(|| anyhow!("no output information available from daemon"))?
+            };
+
+            Ok(ApplyTarget {
+                namespace: resolved_namespace,
+                outputs: vec![selected.name.to_string()],
+                dim: selected.real_dim(),
+                format: selected.pixel_format,
+            })
         })
-    })
-    .await
+        .await;
+
+        match attempt {
+            Ok(target) => return Ok(target),
+            Err(err) => {
+                let timed_out = Instant::now() >= deadline;
+                let waiting_on_selected = preferred_output.is_some()
+                    && err.to_string().contains("selected monitor '")
+                    && err.to_string().contains("not ready in daemon yet");
+                if timed_out || !waiting_on_selected {
+                    return Err(err);
+                }
+                time::sleep(IPC_QUERY_RETRY_INTERVAL).await;
+            }
+        }
+    }
 }
 
 fn connect_daemon_socket(preferred_namespace: &str) -> Result<(String, IpcSocket)> {
