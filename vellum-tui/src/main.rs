@@ -4,6 +4,7 @@ use std::{
     fs, io,
     num::NonZeroU8,
     path::{Path, PathBuf},
+    process::Stdio,
     time::{Duration, Instant},
 };
 
@@ -34,20 +35,18 @@ use ratatui::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{
-    process::Command,
+    process::{Child, Command},
     sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
-    task::JoinHandle,
     time,
 };
 use tokio_util::sync::CancellationToken;
-use vellum_core::{VellumServer, VellumServerConfig};
+use vellum_core::{VellumServer, VellumServerConfig, is_daemon_running};
 
 const TICK_RATE_MS: u64 = 33;
 const BROWSER_FILTER_DEBOUNCE_MS: u64 = 70;
 const IPC_QUERY_TIMEOUT: Duration = Duration::from_millis(1600);
 const IPC_APPLY_TIMEOUT: Duration = Duration::from_secs(8);
 const IPC_QUERY_RETRY_INTERVAL: Duration = Duration::from_millis(120);
-const IPC_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(1800);
 const MONITOR_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const DEFAULT_PROFILE_NAME: &str = "default";
 const NAV_HALF_PAGE_STEP: isize = 4;
@@ -253,7 +252,7 @@ struct ApplyTarget {
 
 #[derive(Debug)]
 struct BackendRuntime {
-    task: Option<JoinHandle<Result<()>>>,
+    child: Option<Child>,
     namespace: String,
     last_error: Option<String>,
 }
@@ -261,7 +260,7 @@ struct BackendRuntime {
 impl Default for BackendRuntime {
     fn default() -> Self {
         Self {
-            task: None,
+            child: None,
             namespace: String::from("vellum-tui"),
             last_error: None,
         }
@@ -424,7 +423,38 @@ struct AspectSimulation {
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> io::Result<()> {
+    if let Some(namespace) = daemon_launch_namespace_from_args() {
+        let config = VellumServerConfig {
+            namespace,
+            quiet: true,
+            ..VellumServerConfig::default()
+        };
+        let server = VellumServer::new(config);
+        return server.run().map_err(io::Error::other);
+    }
+
     run_app().await
+}
+
+fn daemon_launch_namespace_from_args() -> Option<String> {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg != "--daemon-subprocess" {
+            continue;
+        }
+
+        let mut namespace = String::new();
+        while let Some(flag) = args.next() {
+            if flag == "--namespace" {
+                namespace = args.next().unwrap_or_default();
+                break;
+            }
+        }
+
+        return Some(namespace);
+    }
+
+    None
 }
 
 async fn run_app() -> io::Result<()> {
@@ -477,35 +507,7 @@ async fn run_app() -> io::Result<()> {
 }
 
 async fn shutdown_backend(state: &mut AppState) {
-    let running = state
-        .backend
-        .task
-        .as_ref()
-        .is_some_and(|task| !task.is_finished());
-    if !running {
-        return;
-    }
-
-    let namespace = state.backend.namespace.clone();
-    let _ = run_blocking_with_timeout(IPC_SHUTDOWN_TIMEOUT, move || {
-        let (_, socket) = connect_daemon_socket(&namespace)?;
-        RequestSend::Kill
-            .send(&socket)
-            .map_err(anyhow::Error::new)
-            .context("failed to send daemon kill request")?;
-        let _ = Answer::receive(
-            socket
-                .recv()
-                .map_err(anyhow::Error::new)
-                .context("failed to receive daemon kill response")?,
-        );
-        Ok(())
-    })
-    .await;
-
-    if let Some(task) = state.backend.task.take() {
-        let _ = time::timeout(IPC_SHUTDOWN_TIMEOUT, task).await;
-    }
+    state.backend.child = None;
 }
 
 async fn handle_app_event(state: &mut AppState, event: AppEvent) {
@@ -884,58 +886,74 @@ fn schedule_browser_filter(state: &mut AppState) {
 }
 
 fn start_native_backend(state: &mut AppState) {
-    if state
-        .backend
-        .task
-        .as_ref()
-        .is_some_and(|task| !task.is_finished())
-    {
+    if state.backend.child.is_some() {
+        state.set_status(StatusLevel::Warn, "Backend already running");
+        return;
+    }
+
+    if is_daemon_running(&state.backend.namespace).ok() == Some(true) {
         state.set_status(StatusLevel::Warn, "Backend already running");
         return;
     }
 
     let namespace = state.backend.namespace.clone();
     state.backend.last_error = None;
-    state.set_status(
-        StatusLevel::Info,
-        format!("Starting backend in namespace '{namespace}'"),
-    );
+    let exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(err) => {
+            let message = format!("Cannot resolve executable path: {err}");
+            state.backend.last_error = Some(message.clone());
+            state.set_status(StatusLevel::Error, message);
+            return;
+        }
+    };
 
-    state.backend.task = Some(tokio::task::spawn_blocking(move || {
-        let config = VellumServerConfig {
-            namespace,
-            quiet: true,
-            ..VellumServerConfig::default()
-        };
-        let server = VellumServer::new(config);
-        server.run().map_err(anyhow::Error::new)
-    }));
+    match Command::new(exe)
+        .arg("--daemon-subprocess")
+        .arg("--namespace")
+        .arg(&namespace)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => {
+            state.backend.child = Some(child);
+            state.set_status(
+                StatusLevel::Info,
+                format!("Starting backend in namespace '{namespace}'"),
+            );
+        }
+        Err(err) => {
+            let message = format!("Failed to launch backend process: {err}");
+            state.backend.last_error = Some(message.clone());
+            state.set_status(StatusLevel::Error, message);
+        }
+    }
 }
 
 async fn poll_backend_status(state: &mut AppState) {
-    if state
-        .backend
-        .task
-        .as_ref()
-        .is_none_or(|task| !task.is_finished())
-    {
-        return;
-    }
-
-    let Some(task) = state.backend.task.take() else {
+    let Some(child) = state.backend.child.as_mut() else {
         return;
     };
-    match task.await {
-        Ok(Ok(())) => state.set_status(StatusLevel::Warn, "Backend exited"),
-        Ok(Err(err)) => {
-            let message = err.to_string();
-            state.backend.last_error = Some(message.clone());
-            state.set_status(StatusLevel::Error, format!("Backend error: {message}"));
+
+    match child.try_wait() {
+        Ok(Some(status)) => {
+            state.backend.child = None;
+            if status.success() {
+                state.set_status(StatusLevel::Warn, "Backend exited");
+            } else {
+                let message = format!("Backend exited with status: {status}");
+                state.backend.last_error = Some(message.clone());
+                state.set_status(StatusLevel::Error, message);
+            }
         }
+        Ok(None) => {}
         Err(err) => {
-            let message = err.to_string();
+            state.backend.child = None;
+            let message = format!("Backend process error: {err}");
             state.backend.last_error = Some(message.clone());
-            state.set_status(StatusLevel::Error, format!("Backend join error: {message}"));
+            state.set_status(StatusLevel::Error, message);
         }
     }
 }
@@ -1702,11 +1720,7 @@ fn draw_ui(frame: &mut Frame<'_>, state: &mut AppState) {
 }
 
 fn draw_header(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let backend_running = state
-        .backend
-        .task
-        .as_ref()
-        .is_some_and(|task| !task.is_finished());
+    let backend_running = state.backend.child.is_some();
 
     let columns = Layout::default()
         .direction(Direction::Horizontal)
@@ -2090,11 +2104,7 @@ fn draw_transition_pane(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 
     frame.render_widget(table, rows[0]);
 
-    let backend_running = state
-        .backend
-        .task
-        .as_ref()
-        .is_some_and(|task| !task.is_finished());
+    let backend_running = state.backend.child.is_some();
 
     let runtime = Paragraph::new(Line::from(vec![
         Span::styled("Backend: ", Style::default().fg(COLOR_MUTED)),
