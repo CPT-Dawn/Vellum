@@ -129,13 +129,6 @@ pub enum SocketInitError {
     BindSocket(#[source] IpcError),
 }
 
-/// Backward-compatible aliases retained during migration.
-pub type AwwwServerConfig = VellumServerConfig;
-/// Backward-compatible aliases retained during migration.
-pub type AwwwServer = VellumServer;
-/// Backward-compatible aliases retained during migration.
-pub type AwwwServerError = VellumServerError;
-
 fn exit_daemon() {
     EXIT.store(true, Ordering::Relaxed);
 }

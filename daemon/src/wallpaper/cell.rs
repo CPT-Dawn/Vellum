@@ -1,5 +1,6 @@
 use super::Wallpaper;
 use crate::output_info::OutputInfo;
+use core::ptr::{self, NonNull};
 
 /// [Wallpaper] contains `clones` and `is_borrowed` fields to allow us to reimplement the semantics
 /// of `Rc<RefCell<Wallpaper>>`. We do this because the normal implementation incurs 24 bytes of
@@ -9,7 +10,7 @@ use crate::output_info::OutputInfo;
 /// only allow exactly one borrow to be active at any time.
 #[repr(transparent)]
 #[derive(PartialEq)]
-pub struct WallpaperCell(*mut Wallpaper);
+pub struct WallpaperCell(NonNull<Wallpaper>);
 
 #[repr(transparent)]
 /// this needs to be a mutable reference because we need to overwrite the `is_borrowed` field on
@@ -26,36 +27,37 @@ impl WallpaperCell {
         if ptr.is_null() {
             std::alloc::handle_alloc_error(Self::LAYOUT);
         }
-        let inner = ptr.cast::<Wallpaper>();
-        unsafe { inner.write(Wallpaper::new(daemon, output_info)) };
+        let inner = NonNull::new(ptr.cast::<Wallpaper>()).expect("allocation returned null");
+        unsafe { inner.as_ptr().write(Wallpaper::new(daemon, output_info)) };
         Self(inner)
     }
 
     pub fn borrow(&self) -> WallpaperBorrow<'_> {
         // use pointers for this because we disobey Rust's borrowing rules
         // (we are mutating things behind an immutable reference)
-        let is_borrowed_ptr = unsafe { &raw mut ((*self.0).is_borrowed) };
+        let is_borrowed_ptr = unsafe { &raw mut ((*self.0.as_ptr()).is_borrowed) };
         let is_borrowed = unsafe { is_borrowed_ptr.read() };
-        assert!(!is_borrowed);
+        assert!(!is_borrowed, "wallpaper already borrowed");
         unsafe { is_borrowed_ptr.write(true) };
-        WallpaperBorrow(unsafe { self.0.as_mut().unwrap_unchecked() })
+        WallpaperBorrow(unsafe { &mut *self.0.as_ptr() })
     }
 
     pub fn borrow_mut(&self) -> WallpaperBorrowMut<'_> {
         // use pointers for this because we disobey Rust's borrowing rules
         // (we are mutating things behind an immutable reference)
-        let is_borrowed_ptr = unsafe { &raw mut ((*self.0).is_borrowed) };
+        let is_borrowed_ptr = unsafe { &raw mut ((*self.0.as_ptr()).is_borrowed) };
         let is_borrowed = unsafe { is_borrowed_ptr.read() };
-        assert!(!is_borrowed);
+        assert!(!is_borrowed, "wallpaper already borrowed");
         unsafe { is_borrowed_ptr.write(true) };
-        WallpaperBorrowMut(unsafe { self.0.as_mut().unwrap_unchecked() })
+        WallpaperBorrowMut(unsafe { &mut *self.0.as_ptr() })
     }
 
     pub fn clone(&self) -> Self {
         // use pointers for this because we disobey Rust's borrowing rules
         // (we are mutating things behind an immutable reference)
-        let clones_ptr = unsafe { &raw mut ((*self.0).clones) };
+        let clones_ptr = unsafe { &raw mut ((*self.0.as_ptr()).clones) };
         let clones = unsafe { clones_ptr.read() };
+        assert!(clones < 3, "wallpaper cell clone limit exceeded");
         unsafe { clones_ptr.write(clones + 1) };
         Self(self.0)
     }
@@ -97,12 +99,15 @@ impl<'a> Drop for WallpaperBorrowMut<'a> {
 
 impl Drop for WallpaperCell {
     fn drop(&mut self) {
-        let clones_ptr = unsafe { &raw mut ((*self.0).clones) };
+        let clones_ptr = unsafe { &raw mut ((*self.0.as_ptr()).clones) };
         let clones = unsafe { clones_ptr.read() };
         if clones > 0 {
             unsafe { clones_ptr.write(clones - 1) };
         } else {
-            unsafe { std::alloc::dealloc(self.0.cast(), Self::LAYOUT) };
+            unsafe {
+                ptr::drop_in_place(self.0.as_ptr());
+                std::alloc::dealloc(self.0.as_ptr().cast(), Self::LAYOUT);
+            }
         }
     }
 }

@@ -434,7 +434,7 @@ impl IpcSocket {
                 })
                 .ok_or(Errno::BADMSG)
                 .context(IpcErrorKind::MalformedMsg)?;
-            Some(Mmap::from_fd(file, len))
+            Some(Mmap::from_fd(file, len).context(IpcErrorKind::MemoryMapCreation)?)
         };
         Ok(RawMsg { code, shm })
     }

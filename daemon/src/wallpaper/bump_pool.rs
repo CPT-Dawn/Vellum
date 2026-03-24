@@ -250,6 +250,7 @@ impl BumpPool {
         }
 
         wl_shm_pool::req::destroy(backend, self.pool_id).unwrap();
+        self.mmap.unmap();
     }
 
     pub fn width(&self) -> i32 {

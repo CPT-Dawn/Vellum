@@ -33,12 +33,8 @@ impl Mmap {
         let fd = Self::mmap_fd()?;
         rustix::io::retry_on_intr(|| rustix::fs::ftruncate(&fd, len as u64))?;
 
-        let ptr = unsafe {
-            let ptr = mmap(core::ptr::null_mut(), len, Self::PROT, Self::FLAGS, &fd, 0)?;
-            // SAFETY: the function above will never return a null pointer if it succeeds
-            // POSIX says that the implementation will never select an address at 0
-            NonNull::new_unchecked(ptr)
-        };
+        let ptr = unsafe { mmap(core::ptr::null_mut(), len, Self::PROT, Self::FLAGS, &fd, 0)? };
+        let ptr = NonNull::new(ptr).expect("mmap returned a null pointer");
         Ok(Self {
             fd,
             ptr,
@@ -142,8 +138,7 @@ impl Mmap {
             match mapped {
                 Ok(ptr) => {
                     self.mmapped = true;
-                    // SAFETY: mmap does not return a null pointer on success.
-                    self.ptr = unsafe { NonNull::new_unchecked(ptr) };
+                    self.ptr = NonNull::new(ptr).expect("mmap returned a null pointer");
                 }
                 Err(e) => {
                     log::error!("failed to map memory: {e}");
@@ -167,8 +162,7 @@ impl Mmap {
                 unsafe { mm::mremap(self.ptr.as_ptr(), self.len, new, mm::MremapFlags::MAYMOVE) };
 
             if let Ok(ptr) = result {
-                // SAFETY: the mremap above will never return a null pointer if it succeeds
-                let ptr = unsafe { NonNull::new_unchecked(ptr) };
+                let ptr = NonNull::new(ptr).expect("mremap returned a null pointer");
                 self.ptr = ptr;
                 self.len = new;
                 return;
@@ -195,14 +189,12 @@ impl Mmap {
 
         self.unmap();
         self.len = new;
-        // SAFETY: mmap does not return a null pointer on success.
-        self.ptr = unsafe { NonNull::new_unchecked(ptr) };
+        self.ptr = NonNull::new(ptr).expect("mmap returned a null pointer");
         self.mmapped = true;
     }
 
-    #[must_use]
-    pub(crate) fn from_fd(fd: OwnedFd, len: usize) -> Self {
-        let ptr = match unsafe {
+    pub(crate) fn from_fd(fd: OwnedFd, len: usize) -> io::Result<Self> {
+        let ptr = unsafe {
             mmap(
                 core::ptr::null_mut(),
                 len,
@@ -211,19 +203,14 @@ impl Mmap {
                 &fd,
                 0,
             )
-        } {
-            Ok(ptr) => {
-                // SAFETY: mmap does not return a null pointer on success.
-                unsafe { NonNull::new_unchecked(ptr) }
-            }
-            Err(e) => panic!("failed to map fd-backed shared memory: {e}"),
-        };
-        Self {
+        }?;
+        let ptr = NonNull::new(ptr).expect("mmap returned a null pointer");
+        Ok(Self {
             fd,
             ptr,
             len,
             mmapped: true,
-        }
+        })
     }
 
     #[inline]
@@ -301,14 +288,11 @@ impl<const UTF8: bool> Mmapped<UTF8> {
                 page_offset as u64,
             )
         } {
-            Ok(ptr) => {
-                // SAFETY: mmap does not return a null pointer on success.
-                unsafe { NonNull::new_unchecked(ptr) }
-            }
+            Ok(ptr) => NonNull::new(ptr).expect("mmap returned a null pointer"),
             Err(e) => panic!("failed to map mmapped view: {e}"),
         };
-        let ptr =
-            unsafe { NonNull::new_unchecked(base_ptr.as_ptr().byte_add(offset - page_offset)) };
+        let ptr = NonNull::new(unsafe { base_ptr.as_ptr().byte_add(offset - page_offset) })
+            .expect("derived mmap view pointer was null");
 
         let mut len = len;
         if UTF8 {
