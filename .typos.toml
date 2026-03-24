@@ -1,8 +1,0 @@
-[default.extend-identifiers]
-# this is an actual function that exists in rust
-numer_denom_ms = "numer_denom_ms"
-# cpy is just copy. Everyone knows this
-cpy = "cpy"
-to_cpy = "to_cpy"
-# this is Write Only. Once again, pretty much everyone knows this
-WRONLY = "WRONLY"

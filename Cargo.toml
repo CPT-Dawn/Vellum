@@ -5,10 +5,14 @@ default-members = ["vellum-tui"]
 
 [workspace.package]
 version = "0.12.0"
-authors = ["Leonardo Gibrowski Faé <leonardo.fae44@gmail.com>"]
+authors = ["CPTDawn"]
 edition = "2024"
+description = "Vellum is a native Wayland wallpaper runtime with a shared daemon core and integrated TUI client."
 license-file = "LICENSE"
 rust-version = "1.89.0"
+readme = "README.md"
+categories = ["command-line-utilities", "gui"]
+keywords = ["wayland", "wallpaper", "tui", "daemon"]
 
 [workspace.dependencies]
 common = { path = "common" }
@@ -19,18 +23,19 @@ correctness = { level = "deny", priority = -1 }
 suspicious = { level = "deny", priority = -1 }
 perf = { level = "deny", priority = -1 }
 style = { level = "deny", priority = -1 }
-complexity = { level = "warn", priority = -1 }
-#pedantic = { level = "warn", priority = -1 }
+complexity = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+module_name_repetitions = "deny"
+missing_errors_doc = "deny"
+missing_panics_doc = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
 
-module-name-repetitions = "allow"
-missing-errors-doc = "allow"
-missing-panics-doc = "allow"
-
-# Enable some optimizations in debug mode. Otherwise, it is a pain to test it
 [profile.dev]
 opt-level = 1
 
-# Enable high optimizations for dependencies, but not for our code:
 [profile.dev.package."*"]
 opt-level = 3
 

@@ -4,6 +4,9 @@ use waybackend_scanner::WaylandProtocol;
 
 fn main() {
     let out_dir = std::env::var_os("OUT_DIR").expect("missing OUT_DIR environment variable");
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=../protocols/wlr-layer-shell-unstable-v1.xml");
+    println!("cargo:rerun-if-changed=../protocols");
 
     let mut filepath = PathBuf::from(out_dir);
     filepath.push("wayland_protocols.rs");
