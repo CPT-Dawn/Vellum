@@ -261,23 +261,20 @@ impl Decompressor {
             unsafe fn(&mut [u8], &[u8]),
         ) = 'brk: {
             // use the most efficient implementation available:
-            #[cfg(not(test))] // when testing, we want to use the specific implementation
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             {
-                #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-                {
-                    cpufeatures::new!(avx512, "avx512vbmi2", "avx512bw");
-                    cpufeatures::new!(ssse3, "ssse3");
-                    if avx512::get() {
-                        break 'brk (
-                            decomp::avx512::unpack_bytes_4channels,
-                            decomp::avx512::unpack_unsafe_bytes_4channels,
-                        );
-                    } else if ssse3::get() {
-                        break 'brk (
-                            decomp::ssse3::unpack_bytes_4channels,
-                            decomp::ssse3::unpack_unsafe_bytes_4channels,
-                        );
-                    }
+                cpufeatures::new!(avx512, "avx512vbmi2", "avx512bw");
+                cpufeatures::new!(ssse3, "ssse3");
+                if avx512::get() {
+                    break 'brk (
+                        decomp::avx512::unpack_bytes_4channels,
+                        decomp::avx512::unpack_unsafe_bytes_4channels,
+                    );
+                } else if ssse3::get() {
+                    break 'brk (
+                        decomp::ssse3::unpack_bytes_4channels,
+                        decomp::ssse3::unpack_unsafe_bytes_4channels,
+                    );
                 }
             }
 
