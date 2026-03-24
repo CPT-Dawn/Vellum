@@ -248,7 +248,7 @@ fn draw_library_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
         )
         .style(Style::default().bg(C_PANEL));
 
-    let mut state = app.browser_state.clone();
+    let mut state = app.browser_state;
     frame.render_stateful_widget(list, chunks[2], &mut state);
 
     let playlist_lines = if app.playlist.is_empty() {

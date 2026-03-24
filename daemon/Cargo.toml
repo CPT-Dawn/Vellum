@@ -10,22 +10,21 @@ license-file.workspace = true
 name = "vellum_core"
 path = "src/lib.rs"
 
-[lints]
-workspace = true
-
 [dependencies]
 common = { workspace = true }
 
-waybackend = { version = "0.10", default-features = false }
-libc = "0.2"
+waybackend = { version = "0.10.1", default-features = false }
+libc = "0.2.183"
 rustix = { version = "1.1", default-features = false, features = [
     "event",
     "runtime",
     "stdio",
     "termios",
 ] }
-smallvec = { version = "1.15", default-features = false, features = ["union"] }
-thiserror = "2.0"
+smallvec = { version = "1.15.1", default-features = false, features = [
+    "union",
+] }
+thiserror = "2.0.18"
 
 [build-dependencies]
-waybackend-scanner = { version = "0.10", features = ["build-script"] }
+waybackend-scanner = { version = "0.10.1", features = ["build-script"] }

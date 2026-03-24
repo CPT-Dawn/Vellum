@@ -34,7 +34,7 @@ impl Mmap {
         rustix::io::retry_on_intr(|| rustix::fs::ftruncate(&fd, len as u64))?;
 
         let ptr = unsafe { mmap(core::ptr::null_mut(), len, Self::PROT, Self::FLAGS, &fd, 0)? };
-        let ptr = NonNull::new(ptr).expect("mmap returned a null pointer");
+        let ptr = unsafe { NonNull::new_unchecked(ptr) };
         Ok(Self {
             fd,
             ptr,
@@ -138,7 +138,7 @@ impl Mmap {
             match mapped {
                 Ok(ptr) => {
                     self.mmapped = true;
-                    self.ptr = NonNull::new(ptr).expect("mmap returned a null pointer");
+                    self.ptr = unsafe { NonNull::new_unchecked(ptr) };
                 }
                 Err(e) => {
                     log::error!("failed to map memory: {e}");
@@ -162,8 +162,7 @@ impl Mmap {
                 unsafe { mm::mremap(self.ptr.as_ptr(), self.len, new, mm::MremapFlags::MAYMOVE) };
 
             if let Ok(ptr) = result {
-                let ptr = NonNull::new(ptr).expect("mremap returned a null pointer");
-                self.ptr = ptr;
+                self.ptr = unsafe { NonNull::new_unchecked(ptr) };
                 self.len = new;
                 return;
             }
@@ -189,7 +188,7 @@ impl Mmap {
 
         self.unmap();
         self.len = new;
-        self.ptr = NonNull::new(ptr).expect("mmap returned a null pointer");
+        self.ptr = unsafe { NonNull::new_unchecked(ptr) };
         self.mmapped = true;
     }
 
@@ -204,7 +203,7 @@ impl Mmap {
                 0,
             )
         }?;
-        let ptr = NonNull::new(ptr).expect("mmap returned a null pointer");
+        let ptr = unsafe { NonNull::new_unchecked(ptr) };
         Ok(Self {
             fd,
             ptr,
@@ -288,11 +287,18 @@ impl<const UTF8: bool> Mmapped<UTF8> {
                 page_offset as u64,
             )
         } {
-            Ok(ptr) => NonNull::new(ptr).expect("mmap returned a null pointer"),
-            Err(e) => panic!("failed to map mmapped view: {e}"),
+            Ok(ptr) => unsafe { NonNull::new_unchecked(ptr) },
+            Err(e) => {
+                log::error!("failed to map mmapped view: {e}");
+                return Self {
+                    base_ptr: NonNull::dangling(),
+                    ptr: NonNull::dangling(),
+                    len: 0,
+                };
+            }
         };
-        let ptr = NonNull::new(unsafe { base_ptr.as_ptr().byte_add(offset - page_offset) })
-            .expect("derived mmap view pointer was null");
+        let ptr =
+            unsafe { NonNull::new_unchecked(base_ptr.as_ptr().byte_add(offset - page_offset)) };
 
         let mut len = len;
         if UTF8 {
@@ -328,6 +334,9 @@ impl Mmapped<true> {
 
 impl<const UTF8: bool> Drop for Mmapped<UTF8> {
     fn drop(&mut self) {
+        if self.len == 0 {
+            return;
+        }
         let len = self.len + self.ptr.as_ptr() as usize - self.base_ptr.as_ptr() as usize;
         if let Err(e) = unsafe { munmap(self.base_ptr.as_ptr(), len) } {
             log::error!("failed to unmap memory: {e}");

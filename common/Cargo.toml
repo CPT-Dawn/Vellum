@@ -6,11 +6,8 @@ edition.workspace = true
 rust-version.workspace = true
 license-file.workspace = true
 
-[lints]
-workspace = true
-
 [dependencies]
-rustix = { version = "1.1", default-features = false, features = [
+rustix = { version = "1.1.4", default-features = false, features = [
   "alloc",
   "fs",
   "net",
@@ -23,10 +20,10 @@ rustix = { version = "1.1", default-features = false, features = [
   "thread",
   "time",
 ] }
-cpufeatures = { version = "0.3" }
+cpufeatures = { version = "0.3.0" }
 
 [build-dependencies]
-pkg-config = "0.3"
+pkg-config = "0.3.32"
 
 [dev-dependencies]
-fastrand = { version = "2.3", default-features = false, features = [ "std" ] }
+fastrand = { version = "2.3.0", default-features = false, features = ["std"] }

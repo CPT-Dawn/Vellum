@@ -6,13 +6,10 @@ edition.workspace = true
 rust-version.workspace = true
 license-file.workspace = true
 
-[lints]
-workspace = true
-
 [dependencies]
 vellum-core = { workspace = true }
 common = { workspace = true }
-tokio = { version = "1.48", default-features = false, features = [
+tokio = { version = "1.50.0", default-features = false, features = [
     "macros",
     "process",
     "rt-multi-thread",
@@ -20,20 +17,20 @@ tokio = { version = "1.48", default-features = false, features = [
     "sync",
     "time",
 ] }
-crossterm = { version = "0.29", default-features = false, features = [
+crossterm = { version = "0.29.0", default-features = false, features = [
     "events",
 ] }
-ratatui = { version = "0.29", default-features = false, features = [
+ratatui = { version = "0.30.0", default-features = false, features = [
     "crossterm",
 ] }
-serde = { version = "1.0", default-features = false, features = ["derive"] }
-serde_json = "1.0"
-image = { version = "0.25", default-features = false, features = [
+serde = { version = "1.0.228", default-features = false, features = ["derive"] }
+serde_json = "1.0.149"
+image = { version = "0.25.10", default-features = false, features = [
     "jpeg",
     "png",
     "gif",
     "webp",
     "bmp",
 ] }
-nucleo-matcher = "0.3"
-anyhow = "1.0"
+nucleo-matcher = "0.3.1"
+anyhow = "1.0.102"

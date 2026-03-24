@@ -209,9 +209,9 @@ impl Scale {
     #[must_use]
     pub fn priority(&self) -> u32 {
         match self {
-            Scale::Output(_) => 0,
-            Scale::Preferred(_) => 1,
-            Scale::Fractional(_) => 2,
+            Self::Output(_) => 0,
+            Self::Preferred(_) => 1,
+            Self::Fractional(_) => 2,
         }
     }
 
@@ -219,8 +219,8 @@ impl Scale {
     #[must_use]
     pub fn mul_dim(&self, width: i32, height: i32) -> (i32, i32) {
         match self {
-            Scale::Output(i) | Scale::Preferred(i) => (width * i.get(), height * i.get()),
-            Scale::Fractional(f) => {
+            Self::Output(i) | Self::Preferred(i) => (width * i.get(), height * i.get()),
+            Self::Fractional(f) => {
                 let width = (width * f.get() + 60) / 120;
                 let height = (height * f.get() + 60) / 120;
                 (width, height)
@@ -229,10 +229,11 @@ impl Scale {
     }
 
     #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     pub fn to_f32(&self) -> f32 {
         match self {
-            Scale::Output(i) | Scale::Preferred(i) => i.get() as f32,
-            Scale::Fractional(f) => f.get() as f32 / 120.0,
+            Self::Output(i) | Self::Preferred(i) => i.get() as f32,
+            Self::Fractional(f) => f.get() as f32 / 120.0,
         }
     }
 }
@@ -268,10 +269,13 @@ impl BgInfo {
     #[inline]
     #[must_use]
     pub fn real_dim(&self) -> (u32, u32) {
-        let dim = self
-            .scale_factor
-            .mul_dim(self.dim.0 as i32, self.dim.1 as i32);
-        (dim.0 as u32, dim.1 as u32)
+        let width = i32::try_from(self.dim.0).unwrap_or(i32::MAX);
+        let height = i32::try_from(self.dim.1).unwrap_or(i32::MAX);
+        let dim = self.scale_factor.mul_dim(width, height);
+        (
+            u32::try_from(dim.0).unwrap_or(0),
+            u32::try_from(dim.1).unwrap_or(0),
+        )
     }
 
     pub(super) fn serialized_size(&self) -> usize {
@@ -292,10 +296,11 @@ impl BgInfo {
             pixel_format,
         } = self;
 
-        let len = name.len();
-        buf[0..4].copy_from_slice(&(len as u32).to_ne_bytes());
-        buf[4..4 + len].copy_from_slice(name.as_bytes());
-        let mut i = 4 + len;
+        let name_len = name.len();
+        let name_len_u32 = u32::try_from(name_len).unwrap_or(u32::MAX);
+        buf[0..4].copy_from_slice(&name_len_u32.to_ne_bytes());
+        buf[4..4 + name_len].copy_from_slice(name.as_bytes());
+        let mut i = 4 + name_len;
         buf[i..i + 4].copy_from_slice(&dim.0.to_ne_bytes());
         buf[i + 4..i + 8].copy_from_slice(&dim.1.to_ne_bytes());
         i += 8;
@@ -325,10 +330,11 @@ impl BgInfo {
             BgImg::Img(path) => {
                 buf[i] = 1;
                 i += 1;
-                let len = path.len();
-                buf[i..i + 4].copy_from_slice(&(len as u32).to_ne_bytes());
-                buf[i + 4..i + 4 + len].copy_from_slice(path.as_bytes());
-                i += 4 + len;
+                let path_len = path.len();
+                let path_len_u32 = u32::try_from(path_len).unwrap_or(u32::MAX);
+                buf[i..i + 4].copy_from_slice(&path_len_u32.to_ne_bytes());
+                buf[i + 4..i + 4 + path_len].copy_from_slice(path.as_bytes());
+                i += 4 + path_len;
             }
         }
 
@@ -486,7 +492,7 @@ impl Transition {
         buf.extend(&bezier.3.to_ne_bytes());
         buf.extend(&wave.0.to_ne_bytes());
         buf.extend(&wave.1.to_ne_bytes());
-        buf.push_byte(*invert_y as u8);
+        buf.push_byte(u8::from(*invert_y));
     }
 
     pub(super) fn deserialize(bytes: &[u8]) -> Self {

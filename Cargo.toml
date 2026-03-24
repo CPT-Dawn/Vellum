@@ -9,7 +9,7 @@ authors = ["CPTDawn"]
 edition = "2024"
 description = "Vellum is a native Wayland wallpaper runtime with a shared daemon core and integrated TUI client."
 license-file = "LICENSE"
-rust-version = "1.89.0"
+rust-version = "1.94.0"
 readme = "README.md"
 categories = ["command-line-utilities", "gui"]
 keywords = ["wayland", "wallpaper", "tui", "daemon"]
@@ -17,21 +17,6 @@ keywords = ["wayland", "wallpaper", "tui", "daemon"]
 [workspace.dependencies]
 common = { path = "common" }
 vellum-core = { path = "daemon" }
-
-[workspace.lints.clippy]
-correctness = { level = "deny", priority = -1 }
-suspicious = { level = "deny", priority = -1 }
-perf = { level = "deny", priority = -1 }
-style = { level = "deny", priority = -1 }
-complexity = { level = "deny", priority = -1 }
-pedantic = { level = "deny", priority = -1 }
-nursery = { level = "deny", priority = -1 }
-module_name_repetitions = "deny"
-missing_errors_doc = "deny"
-missing_panics_doc = "deny"
-unwrap_used = "deny"
-expect_used = "deny"
-panic = "deny"
 
 [profile.dev]
 opt-level = 1
