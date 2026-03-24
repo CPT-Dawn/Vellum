@@ -108,7 +108,7 @@ pub enum VellumServerError {
     #[error("socket initialization failed: {0}")]
     SocketInit(#[from] SocketInitError),
     #[error("daemon runtime failure: {0}")]
-    Runtime(#[from] rustix::io::Errno),
+    Runtime(rustix::io::Errno),
     #[error("daemon runtime failure: {0}")]
     RuntimeMessage(String),
 }
@@ -118,15 +118,15 @@ pub enum SocketInitError {
     #[error("there is already a vellum-daemon instance running on this socket")]
     AlreadyRunning,
     #[error("failed to probe existing daemon state")]
-    DaemonProbe(#[source] IpcError),
+    DaemonProbe(IpcError),
     #[error("socket path has no runtime directory parent")]
     InvalidRuntimeDirectory,
     #[error("failed to delete stale socket file")]
-    RemoveStaleSocket(#[source] rustix::io::Errno),
+    RemoveStaleSocket(rustix::io::Errno),
     #[error("failed to create runtime directory")]
-    CreateRuntimeDirectory(#[source] rustix::io::Errno),
+    CreateRuntimeDirectory(rustix::io::Errno),
     #[error("failed to bind daemon ipc socket")]
-    BindSocket(#[source] IpcError),
+    BindSocket(IpcError),
 }
 
 fn exit_daemon() {
