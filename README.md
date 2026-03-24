@@ -74,3 +74,5 @@ user service shipped in packaging.
 The foreground app binary is `vellum`.
 The background daemon process is `vellum-daemon`.
 The internal IPC namespace defaults to `vellum`.
+
+The AUR packaging file is [packaging/PKGBUILD](packaging/PKGBUILD).

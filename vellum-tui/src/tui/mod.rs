@@ -69,6 +69,10 @@ fn daemon_mode_namespace_from_args() -> Option<String> {
             }
         }
 
+        if namespace.is_empty() {
+            namespace = String::from("vellum");
+        }
+
         return Some(namespace);
     }
 

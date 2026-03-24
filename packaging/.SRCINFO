@@ -1,0 +1,21 @@
+pkgbase = vellum
+	pkgdesc = Native Wayland wallpaper runtime with foreground TUI and background daemon
+	pkgver = 1.0.0
+	pkgrel = 1
+	url = https://github.com/CPT-Dawn/Vellum
+	arch = x86_64
+	license = MIT
+	depends = wayland
+	depends = lz4
+	makedepends = cargo
+	makedepends = rust
+	makedepends = pkgconf
+	makedepends = wayland-protocols
+	source = Vellum-1.0.0.tar.gz::https://github.com/CPT-Dawn/Vellum/archive/refs/tags/v1.0.0.tar.gz
+	source = vellum.desktop
+	source = vellum-daemon.service
+	sha256sums = SKIP
+	sha256sums = aa1a234369f784b31b8b8133f3acad5bb7e0e9b41a32379313ea2f7214ed66fb
+	sha256sums = 409c216c274d0196c77a59a6a873f6eaa24d50e8c7325b6a19d3332f43a25b9c
+
+pkgname = vellum
