@@ -4,7 +4,7 @@ members = ["daemon", "common", "vellum-tui"]
 default-members = ["vellum-tui"]
 
 [workspace.package]
-version = "0.12.0"
+version = "1.0.0"
 authors = ["CPTDawn"]
 edition = "2024"
 description = "Vellum is a native Wayland wallpaper runtime with a shared daemon core and integrated TUI client."

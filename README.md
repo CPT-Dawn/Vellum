@@ -42,7 +42,7 @@ cargo build --workspace
 
 ## TUI Features
 
-Current integrated TUI capabilities in `vellum-tui` include:
+Current integrated TUI capabilities in `vellum` include:
 
 - Native backend control (integrated daemon runtime)
 - Filesystem image browser with fuzzy filtering
@@ -66,4 +66,4 @@ Key controls:
 
 A starter Arch packaging template for the combined binary is provided at:
 
-- [packaging/PKGBUILD.template](packaging/PKGBUILD.template)
+- Install target: `vellum`

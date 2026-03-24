@@ -73,7 +73,7 @@ checksum = "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b"
 
 [[package]]
 name = "common"
-version = "0.12.0"
+version = "1.0.0"
 dependencies = [
  "cpufeatures",
  "fastrand",
@@ -952,21 +952,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 
 [[package]]
-name = "vellum-core"
-version = "0.12.0"
-dependencies = [
- "common",
- "libc",
- "rustix",
- "smallvec",
- "thiserror",
- "waybackend",
- "waybackend-scanner",
-]
-
-[[package]]
-name = "vellum-tui"
-version = "0.12.0"
+name = "vellum"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "common",
@@ -978,6 +965,19 @@ dependencies = [
  "serde_json",
  "tokio",
  "vellum-core",
+]
+
+[[package]]
+name = "vellum-core"
+version = "1.0.0"
+dependencies = [
+ "common",
+ "libc",
+ "rustix",
+ "smallvec",
+ "thiserror",
+ "waybackend",
+ "waybackend-scanner",
 ]
 
 [[package]]

@@ -1,5 +1,5 @@
 [package]
-name = "vellum-tui"
+name = "vellum"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
