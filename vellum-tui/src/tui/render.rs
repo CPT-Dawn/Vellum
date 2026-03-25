@@ -18,7 +18,6 @@ use crate::tui::model::{
 const C_BG: Color = Color::Rgb(10, 14, 22);
 const C_PANEL: Color = Color::Rgb(20, 26, 38);
 const C_PANEL_ALT: Color = Color::Rgb(15, 20, 30);
-const C_PANEL_SOFT: Color = Color::Rgb(24, 31, 44);
 const C_TEXT: Color = Color::Rgb(225, 231, 239);
 const C_MUTED: Color = Color::Rgb(133, 149, 173);
 const C_ACCENT: Color = Color::Rgb(74, 189, 255);
@@ -49,8 +48,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
     if app.help_open {
         draw_help_overlay(frame, app);
     }
-
-    draw_toast(frame, app);
 }
 
 fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -685,39 +682,6 @@ fn draw_help_overlay(frame: &mut Frame<'_>, app: &App) {
     );
 }
 
-fn draw_toast(frame: &mut Frame<'_>, app: &App) {
-    let Some(note) = app.notifications.back() else {
-        return;
-    };
-    if note.created_at.elapsed().as_secs_f32() > 4.0 {
-        return;
-    }
-
-    let area = toast_rect(frame.area(), 42, 4);
-    frame.render_widget(Clear, area);
-
-    let color = match note.level {
-        NotificationLevel::Info => C_ACCENT,
-        NotificationLevel::Success => C_GREEN,
-        NotificationLevel::Warn => C_YELLOW,
-        NotificationLevel::Error => C_RED,
-    };
-
-    frame.render_widget(
-        Paragraph::new(note.text.as_str())
-            .block(
-                Block::default()
-                    .title(" Notification ")
-                    .borders(Borders::ALL)
-                    .border_set(border::ROUNDED)
-                    .border_style(Style::default().fg(color)),
-            )
-            .style(Style::default().bg(C_PANEL_SOFT).fg(C_TEXT))
-            .wrap(Wrap { trim: true }),
-        area,
-    );
-}
-
 fn preview_ascii(app: &App, width: usize, height: usize) -> Vec<String> {
     let Some(monitor) = app.selected_monitor() else {
         return vec![String::from("No monitor selected")];
@@ -1090,19 +1054,4 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(v[1])[1]
-}
-
-fn toast_rect(area: Rect, width_percent: u16, height: u16) -> Rect {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(height), Constraint::Min(1)])
-        .split(area);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(100 - width_percent),
-            Constraint::Percentage(width_percent),
-        ])
-        .split(rows[0])[1]
 }

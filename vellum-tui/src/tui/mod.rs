@@ -28,7 +28,6 @@ use tokio::{
 use vellum_core::{VellumServer, VellumServerConfig};
 
 const TICK_RATE_MS: u64 = 33;
-const MONITOR_REFRESH_INTERVAL: Duration = Duration::from_secs(8);
 const DAEMON_PROBE_INTERVAL: Duration = Duration::from_secs(2);
 const NOTIFICATION_TTL: Duration = Duration::from_secs(5);
 
@@ -157,7 +156,6 @@ pub(crate) struct App {
     backend_child: Option<tokio::process::Child>,
     pub(crate) daemon_online: bool,
     last_daemon_probe: Instant,
-    last_monitor_refresh: Option<Instant>,
     refresh_monitors: bool,
     ipc_in_flight: bool,
 
@@ -208,11 +206,14 @@ impl App {
             backend_child: None,
             daemon_online: false,
             last_daemon_probe: Instant::now() - DAEMON_PROBE_INTERVAL,
-            last_monitor_refresh: None,
-            refresh_monitors: true,
+            refresh_monitors: false,
             ipc_in_flight: false,
             event_tx,
         }
+    }
+
+    fn request_monitor_refresh(&mut self) {
+        self.refresh_monitors = true;
     }
 
     fn notify(&mut self, level: NotificationLevel, text: impl Into<String>) {
@@ -746,7 +747,7 @@ impl App {
             KeyCode::Char('x') => self.clear_targets(),
             KeyCode::Enter | KeyCode::Char('a') => self.apply_current_browser_selection(),
             KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.refresh_monitors = true
+                self.request_monitor_refresh()
             }
             _ => {}
         }
@@ -814,7 +815,7 @@ impl App {
             KeyCode::Esc => {}
             KeyCode::Char('b') => ensure_backend_running(self),
             KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.refresh_monitors = true
+                self.request_monitor_refresh()
             }
             KeyCode::Char('r') => self.cycle_rotation(),
             KeyCode::Char('f') => self.cycle_scale_mode(),
@@ -957,13 +958,14 @@ async fn run_app() -> io::Result<()> {
     }
 
     ensure_backend_running(&mut app);
+    app.request_monitor_refresh();
 
     let mut tick = time::interval(Duration::from_millis(TICK_RATE_MS));
     while !app.should_quit {
         tokio::select! {
             _ = tick.tick() => {
                 handle_input(&mut app).await?;
-                refresh_monitors_if_due(&mut app).await;
+                refresh_monitors_if_requested(&mut app).await;
                 probe_daemon_if_due(&mut app);
                 poll_backend_child(&mut app).await;
                 run_playlist_tick(&mut app);
@@ -985,6 +987,7 @@ fn ensure_backend_running(app: &mut App) {
     if backend::daemon_alive(&app.daemon_namespace) {
         app.daemon_online = true;
         app.notify(NotificationLevel::Success, "Connected to running daemon");
+        app.request_monitor_refresh();
         return;
     }
 
@@ -993,6 +996,7 @@ fn ensure_backend_running(app: &mut App) {
             app.backend_child = Some(child);
             app.daemon_online = true;
             app.notify(NotificationLevel::Success, "Daemon started");
+            app.request_monitor_refresh();
         }
         Err(err) => {
             app.daemon_online = false;
@@ -1055,13 +1059,12 @@ fn handle_app_event(app: &mut App, event: AppEvent) {
     }
 }
 
-async fn refresh_monitors_if_due(app: &mut App) {
-    let timed_due = app
-        .last_monitor_refresh
-        .is_none_or(|at| at.elapsed() >= MONITOR_REFRESH_INTERVAL);
-    if !app.refresh_monitors && !timed_due {
+async fn refresh_monitors_if_requested(app: &mut App) {
+    if !app.refresh_monitors {
         return;
     }
+
+    app.refresh_monitors = false;
 
     match model::discover_monitors().await {
         Ok(monitors) => {
@@ -1081,15 +1084,12 @@ async fn refresh_monitors_if_due(app: &mut App) {
                 app.select_all_targets();
                 app.targets_initialized = true;
             }
-            app.last_monitor_refresh = Some(Instant::now());
-            app.refresh_monitors = false;
             app.notify(
                 NotificationLevel::Success,
                 format!("Detected {count} monitor(s)"),
             );
         }
         Err(err) => {
-            app.refresh_monitors = false;
             app.notify(
                 NotificationLevel::Error,
                 format!("Monitor discovery failed: {err:#}"),
