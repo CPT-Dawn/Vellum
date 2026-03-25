@@ -367,10 +367,16 @@ impl App {
         self.sync_playlist_state();
     }
 
-    fn select_all_targets(&mut self) {
+    fn select_active_target(&mut self) {
         self.selected_targets.clear();
-        for monitor in &self.monitors {
-            self.selected_targets.insert(monitor.name.clone());
+
+        let target_name = self
+            .active_monitor_name
+            .clone()
+            .or_else(|| self.selected_monitor().map(|monitor| monitor.name.clone()));
+
+        if let Some(name) = target_name {
+            self.selected_targets.insert(name);
         }
     }
 
@@ -383,9 +389,8 @@ impl App {
             return;
         };
 
-        if !self.selected_targets.insert(name.clone()) {
-            let _ = self.selected_targets.remove(&name);
-        }
+        self.selected_targets.clear();
+        self.selected_targets.insert(name.clone());
 
         self.monitor_selected = index;
         self.active_monitor_name = Some(name);
@@ -778,7 +783,6 @@ impl App {
                     self.toggle_target_for_monitor(index);
                 }
             }
-            KeyCode::Char('A') => self.select_all_targets(),
             KeyCode::Char('x') => {
                 if matches!(self.focus, model::FocusRegion::Playlist) {
                     self.clear_playlist();
@@ -1014,7 +1018,7 @@ async fn refresh_monitors_if_requested(app: &mut App) {
             }
             app.sync_monitor_state();
             if !app.targets_initialized {
-                app.select_all_targets();
+                app.select_active_target();
                 app.targets_initialized = true;
             }
             app.notify(
