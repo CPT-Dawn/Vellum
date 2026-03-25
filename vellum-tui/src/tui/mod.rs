@@ -1,9 +1,9 @@
 mod backend;
-mod data;
-mod ui;
+mod model;
+mod render;
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
     ffi::CString,
     io,
     path::PathBuf,
@@ -16,9 +16,9 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use data::{
-    BrowserEntry, ImagePreview, InputMode, MonitorEntry, Notification, NotificationLevel, Panel,
-    Rotation, ScaleMode, TransitionState,
+use model::{
+    BrowserEntry, ImagePreview, InputMode, MonitorEntry, Notification, NotificationLevel,
+    PlaylistEntry, Rotation, ScaleMode, TransitionState,
 };
 use ratatui::{Terminal, backend::CrosstermBackend, widgets::ListState};
 use tokio::{
@@ -118,7 +118,7 @@ enum AppEvent {
 
 pub(crate) struct App {
     pub(crate) should_quit: bool,
-    pub(crate) panel: Panel,
+    pub(crate) focus: model::FocusRegion,
     pub(crate) input_mode: InputMode,
     pub(crate) help_open: bool,
 
@@ -131,15 +131,19 @@ pub(crate) struct App {
 
     pub(crate) monitors: Vec<MonitorEntry>,
     pub(crate) monitor_selected: usize,
+    active_monitor_name: Option<String>,
     pub(crate) monitor_state: ListState,
+    pub(crate) selected_targets: BTreeSet<String>,
+    targets_initialized: bool,
 
     pub(crate) selected_preview: Option<ImagePreview>,
     image_dim_cache: HashMap<PathBuf, Option<(u32, u32)>>,
 
-    pub(crate) playlist: Vec<PathBuf>,
+    pub(crate) playlist: Vec<PlaylistEntry>,
     pub(crate) playlist_running: bool,
     pub(crate) playlist_interval: Duration,
-    playlist_index: usize,
+    pub(crate) playlist_selected: usize,
+    pub(crate) playlist_state: ListState,
     last_playlist_tick: Instant,
 
     pub(crate) scale_mode: ScaleMode,
@@ -168,12 +172,14 @@ impl App {
         let mut monitor_state = ListState::default();
         monitor_state.select(Some(0));
 
+        let playlist_state = ListState::default();
+
         Self {
             should_quit: false,
-            panel: Panel::Library,
+            focus: model::FocusRegion::Library,
             input_mode: InputMode::Normal,
             help_open: false,
-            browser_dir: data::preferred_initial_browser_dir(),
+            browser_dir: model::preferred_initial_browser_dir(),
             search_query: String::new(),
             browser_entries: Vec::new(),
             browser_filtered: Vec::new(),
@@ -181,13 +187,17 @@ impl App {
             browser_state,
             monitors: Vec::new(),
             monitor_selected: 0,
+            active_monitor_name: None,
             monitor_state,
+            selected_targets: BTreeSet::new(),
+            targets_initialized: false,
             selected_preview: None,
             image_dim_cache: HashMap::new(),
             playlist: Vec::new(),
             playlist_running: false,
             playlist_interval: Duration::from_secs(20),
-            playlist_index: 0,
+            playlist_selected: 0,
+            playlist_state,
             last_playlist_tick: Instant::now(),
             scale_mode: ScaleMode::Fit,
             rotation: Rotation::Deg0,
@@ -222,19 +232,23 @@ impl App {
         while self
             .notifications
             .front()
-            .is_some_and(|n| n.created_at.elapsed() > NOTIFICATION_TTL)
+            .is_some_and(|note| note.created_at.elapsed() > NOTIFICATION_TTL)
         {
             let _ = self.notifications.pop_front();
         }
     }
 
     fn selected_browser_entry(&self) -> Option<&BrowserEntry> {
-        let idx = *self.browser_filtered.get(self.browser_selected)?;
-        self.browser_entries.get(idx)
+        let index = *self.browser_filtered.get(self.browser_selected)?;
+        self.browser_entries.get(index)
     }
 
     fn selected_monitor(&self) -> Option<&MonitorEntry> {
         self.monitors.get(self.monitor_selected)
+    }
+
+    fn selected_playlist_entry(&self) -> Option<&PlaylistEntry> {
+        self.playlist.get(self.playlist_selected)
     }
 
     fn sync_browser_state(&mut self) {
@@ -253,20 +267,52 @@ impl App {
     fn sync_monitor_state(&mut self) {
         if self.monitors.is_empty() {
             self.monitor_selected = 0;
+            self.active_monitor_name = None;
             self.monitor_state.select(None);
             return;
         }
 
-        self.monitor_selected = self
-            .monitor_selected
-            .min(self.monitors.len().saturating_sub(1));
+        if let Some(name) = self.active_monitor_name.as_ref()
+            && let Some(index) = self
+                .monitors
+                .iter()
+                .position(|monitor| &monitor.name == name)
+        {
+            self.monitor_selected = index;
+        } else if let Some(index) = self.monitors.iter().position(|monitor| monitor.focused) {
+            self.monitor_selected = index;
+            self.active_monitor_name = Some(self.monitors[index].name.clone());
+        } else {
+            self.monitor_selected = self
+                .monitor_selected
+                .min(self.monitors.len().saturating_sub(1));
+            self.active_monitor_name = self
+                .monitors
+                .get(self.monitor_selected)
+                .map(|monitor| monitor.name.clone());
+        }
+
         self.monitor_state.select(Some(self.monitor_selected));
+    }
+
+    fn sync_playlist_state(&mut self) {
+        if self.playlist.is_empty() {
+            self.playlist_selected = 0;
+            self.playlist_state.select(None);
+            return;
+        }
+
+        self.playlist_selected = self
+            .playlist_selected
+            .min(self.playlist.len().saturating_sub(1));
+        self.playlist_state.select(Some(self.playlist_selected));
     }
 
     fn move_browser(&mut self, delta: isize) {
         if self.browser_filtered.is_empty() {
             return;
         }
+
         let max = self.browser_filtered.len().saturating_sub(1) as isize;
         self.browser_selected = (self.browser_selected as isize + delta).clamp(0, max) as usize;
         self.sync_browser_state();
@@ -277,13 +323,67 @@ impl App {
         if self.monitors.is_empty() {
             return;
         }
+
         let max = self.monitors.len().saturating_sub(1) as isize;
         self.monitor_selected = (self.monitor_selected as isize + delta).clamp(0, max) as usize;
+        self.active_monitor_name = self
+            .monitors
+            .get(self.monitor_selected)
+            .map(|monitor| monitor.name.clone());
         self.sync_monitor_state();
     }
 
+    fn move_playlist(&mut self, delta: isize) {
+        if self.playlist.is_empty() {
+            return;
+        }
+
+        let max = self.playlist.len().saturating_sub(1) as isize;
+        self.playlist_selected = (self.playlist_selected as isize + delta).clamp(0, max) as usize;
+        self.sync_playlist_state();
+    }
+
+    fn select_all_targets(&mut self) {
+        self.selected_targets.clear();
+        for monitor in &self.monitors {
+            self.selected_targets.insert(monitor.name.clone());
+        }
+    }
+
+    fn clear_targets(&mut self) {
+        self.selected_targets.clear();
+    }
+
+    fn toggle_target_for_monitor(&mut self, index: usize) {
+        let Some(name) = self.monitors.get(index).map(|monitor| monitor.name.clone()) else {
+            return;
+        };
+
+        if !self.selected_targets.insert(name.clone()) {
+            let _ = self.selected_targets.remove(&name);
+        }
+
+        self.monitor_selected = index;
+        self.active_monitor_name = Some(name);
+        self.sync_monitor_state();
+    }
+
+    fn selected_output_names(&self) -> Vec<String> {
+        if !self.selected_targets.is_empty() {
+            return self.selected_targets.iter().cloned().collect();
+        }
+
+        if let Some(name) = self.active_monitor_name.as_ref() {
+            return vec![name.clone()];
+        }
+
+        self.selected_monitor()
+            .map(|monitor| vec![monitor.name.clone()])
+            .unwrap_or_default()
+    }
+
     fn apply_filter(&mut self) {
-        self.browser_filtered = data::fuzzy_filter(&self.browser_entries, &self.search_query);
+        self.browser_filtered = model::fuzzy_filter(&self.browser_entries, &self.search_query);
         self.sync_browser_state();
         self.refresh_preview();
     }
@@ -293,7 +393,8 @@ impl App {
             self.selected_preview = None;
             return;
         };
-        if entry.is_dir {
+
+        if entry.is_dir() {
             self.selected_preview = None;
             return;
         }
@@ -319,29 +420,60 @@ impl App {
             self.notify(NotificationLevel::Warn, "No selected image");
             return;
         };
-        if entry.is_dir {
+
+        if entry.is_dir() {
             self.notify(NotificationLevel::Warn, "Playlist only accepts images");
             return;
         }
 
-        if let Some(pos) = self.playlist.iter().position(|p| p == &entry.path) {
-            self.playlist.remove(pos);
+        if let Some(index) = self
+            .playlist
+            .iter()
+            .position(|playlist_entry| playlist_entry.path == entry.path)
+        {
+            self.playlist.remove(index);
+            self.sync_playlist_state();
             self.notify(NotificationLevel::Info, "Removed from playlist");
             return;
         }
 
-        self.playlist.push(entry.path);
+        self.playlist.push(PlaylistEntry {
+            path: entry.path,
+            transition: self.transition.clone(),
+        });
+        self.playlist_selected = self.playlist.len().saturating_sub(1);
+        self.sync_playlist_state();
         self.notify(NotificationLevel::Success, "Added to playlist");
     }
 
-    fn selected_monitor_name(&self) -> Option<String> {
-        self.selected_monitor().map(|m| m.name.clone())
+    fn move_playlist_item(&mut self, delta: isize) {
+        if self.playlist.is_empty() {
+            return;
+        }
+
+        let next = (self.playlist_selected as isize + delta)
+            .clamp(0, self.playlist.len().saturating_sub(1) as isize) as usize;
+        if next == self.playlist_selected {
+            return;
+        }
+
+        self.playlist.swap(self.playlist_selected, next);
+        self.playlist_selected = next;
+        self.sync_playlist_state();
     }
 
-    fn selected_image_path(&self) -> Option<PathBuf> {
-        self.selected_browser_entry()
-            .filter(|entry| !entry.is_dir)
-            .map(|entry| entry.path.clone())
+    fn remove_selected_playlist_item(&mut self) {
+        if self.playlist.is_empty() {
+            return;
+        }
+
+        self.playlist.remove(self.playlist_selected);
+        self.sync_playlist_state();
+    }
+
+    fn clear_playlist(&mut self) {
+        self.playlist.clear();
+        self.sync_playlist_state();
     }
 
     fn open_selected_path(&mut self) -> Result<Option<PathBuf>> {
@@ -349,11 +481,11 @@ impl App {
             return Ok(None);
         };
 
-        if entry.is_dir {
+        if entry.is_dir() {
             self.browser_dir = entry.path;
             self.search_query.clear();
             self.reload_browser_dir()?;
-            if entry.is_parent {
+            if matches!(entry.kind, model::BrowserEntryKind::Parent) {
                 self.notify(NotificationLevel::Info, "Moved to parent directory");
             } else {
                 self.notify(NotificationLevel::Info, "Opened directory");
@@ -365,10 +497,441 @@ impl App {
     }
 
     fn reload_browser_dir(&mut self) -> Result<()> {
-        self.browser_entries = data::load_browser_entries(&self.browser_dir)?;
+        self.browser_entries = model::load_browser_entries(&self.browser_dir)?;
         self.apply_filter();
         Ok(())
     }
+
+    fn preview_title(&self) -> String {
+        if let Some(entry) = self.selected_browser_entry() {
+            let name = entry.name.clone();
+            if let Some(monitor) = self.selected_monitor() {
+                return format!(" {} -> {} ", name, monitor.name);
+            }
+            return format!(" {} ", name);
+        }
+
+        String::from(" no image selected ")
+    }
+
+    fn current_apply_transition(&self) -> TransitionState {
+        self.transition.clone()
+    }
+
+    fn adjust_playlist_interval(&mut self, delta_secs: i64) {
+        let current = i64::try_from(self.playlist_interval.as_secs()).unwrap_or(20);
+        let next = (current + delta_secs).clamp(5, 600) as u64;
+        self.playlist_interval = Duration::from_secs(next);
+    }
+
+    fn cycle_scale_mode(&mut self) {
+        self.scale_mode = self.scale_mode.next();
+        let label = self.scale_mode.label();
+        if self.scale_mode.is_staged() {
+            self.notify(
+                NotificationLevel::Info,
+                format!("Placement: {label} (preview stage)"),
+            );
+        } else {
+            self.notify(NotificationLevel::Info, format!("Placement: {label}"));
+        }
+    }
+
+    fn cycle_rotation(&mut self) {
+        self.rotation = self.rotation.next();
+        self.notify(
+            NotificationLevel::Info,
+            format!("Rotation: {}", self.rotation.label()),
+        );
+    }
+
+    fn cycle_focus(&mut self, forward: bool) {
+        self.focus = if forward {
+            self.focus.next()
+        } else {
+            self.focus.prev()
+        };
+    }
+
+    fn toggle_playlist_running(&mut self) {
+        self.playlist_running = !self.playlist_running;
+        self.last_playlist_tick = Instant::now();
+        self.notify(
+            NotificationLevel::Info,
+            if self.playlist_running {
+                "Playlist running"
+            } else {
+                "Playlist paused"
+            },
+        );
+    }
+
+    fn apply_current_browser_selection(&mut self) {
+        let Some(path) = self.selected_image_path() else {
+            self.notify(NotificationLevel::Warn, "No image selected");
+            return;
+        };
+
+        request_apply(self, path, self.current_apply_transition());
+    }
+
+    fn apply_selected_playlist_item(&mut self) {
+        let Some(entry) = self.selected_playlist_entry().cloned() else {
+            self.notify(NotificationLevel::Warn, "No queue item selected");
+            return;
+        };
+
+        request_apply(self, entry.path, entry.transition);
+    }
+
+    fn selected_image_path(&self) -> Option<PathBuf> {
+        self.selected_browser_entry()
+            .filter(|entry| !entry.is_dir())
+            .map(|entry| entry.path.clone())
+    }
+
+    fn capture_profile(&self) -> model::WallpaperProfile {
+        model::WallpaperProfile {
+            browser_dir: self.browser_dir.clone(),
+            browser_selected: self.browser_selected,
+            search_query: self.search_query.clone(),
+            selected_targets: self.selected_targets.iter().cloned().collect(),
+            monitor_selected: self.monitor_selected,
+            playlist_selected: self.playlist_selected,
+            playlist_running: self.playlist_running,
+            playlist_interval_secs: self.playlist_interval.as_secs(),
+            playlist: self.playlist.clone(),
+            scale_mode: self.scale_mode,
+            rotation: self.rotation,
+            transition: self.transition.clone(),
+        }
+    }
+
+    fn apply_profile(&mut self, profile: model::WallpaperProfile) -> Result<()> {
+        self.browser_dir = profile.browser_dir;
+        self.browser_selected = profile.browser_selected;
+        self.search_query = profile.search_query;
+        self.selected_targets = profile.selected_targets.into_iter().collect();
+        if !self.monitors.is_empty() {
+            let available_names = self
+                .monitors
+                .iter()
+                .map(|monitor| monitor.name.clone())
+                .collect::<HashSet<_>>();
+            self.selected_targets
+                .retain(|name| available_names.contains(name));
+        }
+        self.active_monitor_name = self.selected_targets.iter().next().cloned();
+        self.monitor_selected = profile.monitor_selected;
+        self.playlist_selected = profile.playlist_selected;
+        self.playlist_running = profile.playlist_running;
+        self.playlist_interval = Duration::from_secs(profile.playlist_interval_secs.max(5));
+        self.playlist = profile.playlist;
+        self.scale_mode = profile.scale_mode;
+        self.rotation = profile.rotation;
+        self.transition = profile.transition;
+        self.targets_initialized = true;
+
+        self.reload_browser_dir()?;
+        self.sync_monitor_state();
+        self.sync_playlist_state();
+        self.refresh_preview();
+        self.notify(NotificationLevel::Success, "Loaded default profile");
+        Ok(())
+    }
+
+    fn save_default_profile(&mut self) {
+        let profile = self.capture_profile();
+        let path = model::default_profile_path();
+
+        match model::save_profile(&path, &profile) {
+            Ok(()) => self.notify(
+                NotificationLevel::Success,
+                format!("Saved default profile to {}", path.display()),
+            ),
+            Err(err) => self.notify(
+                NotificationLevel::Error,
+                format!("Profile save failed: {err:#}"),
+            ),
+        }
+    }
+
+    fn load_default_profile(&mut self) {
+        let path = model::default_profile_path();
+
+        match model::load_profile(&path).and_then(|profile| self.apply_profile(profile)) {
+            Ok(()) => {}
+            Err(err) => self.notify(
+                NotificationLevel::Error,
+                format!("Profile load failed: {err:#}"),
+            ),
+        }
+    }
+
+    fn handle_transition_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.transition.selected_field = self.transition.selected_field.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.transition.selected_field = (self.transition.selected_field + 1).min(3);
+            }
+            KeyCode::Left | KeyCode::Char('h') => self.transition.change_selected(-1),
+            KeyCode::Right | KeyCode::Char('l') => self.transition.change_selected(1),
+            KeyCode::Char('+') | KeyCode::Char('=') => self.adjust_playlist_interval(5),
+            KeyCode::Char('-') => self.adjust_playlist_interval(-5),
+            KeyCode::Enter => self.apply_current_browser_selection(),
+            _ => {}
+        }
+    }
+
+    fn handle_library_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('/') => self.input_mode = InputMode::Search,
+            KeyCode::Up | KeyCode::Char('k') => self.move_browser(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.move_browser(1),
+            KeyCode::Char('g') => {
+                self.browser_selected = 0;
+                self.sync_browser_state();
+                self.refresh_preview();
+            }
+            KeyCode::Char('G') => {
+                self.browser_selected = self.browser_filtered.len().saturating_sub(1);
+                self.sync_browser_state();
+                self.refresh_preview();
+            }
+            KeyCode::Char('p') => self.toggle_playlist_for_selected(),
+            KeyCode::Enter => match self.open_selected_path() {
+                Ok(Some(path)) => request_apply(self, path, self.current_apply_transition()),
+                Ok(None) => {}
+                Err(err) => self.notify(NotificationLevel::Error, format!("Open failed: {err:#}")),
+            },
+            _ => {}
+        }
+    }
+
+    fn handle_preview_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('f') => self.cycle_scale_mode(),
+            KeyCode::Char('r') => self.cycle_rotation(),
+            KeyCode::Char('m') => {
+                if let Some(name) = self.selected_monitor().map(|monitor| monitor.name.clone())
+                    && let Some(index) = self
+                        .monitors
+                        .iter()
+                        .position(|monitor| monitor.name == name)
+                {
+                    self.toggle_target_for_monitor(index);
+                }
+            }
+            KeyCode::Enter | KeyCode::Char('a') => self.apply_current_browser_selection(),
+            _ => {}
+        }
+    }
+
+    fn handle_monitor_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        if let KeyCode::Char(ch) = code
+            && ('1'..='9').contains(&ch)
+        {
+            let index = (ch as u8 - b'1') as usize;
+            self.toggle_target_for_monitor(index);
+            return;
+        }
+
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => self.move_monitor(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.move_monitor(1),
+            KeyCode::Char('m') => self.toggle_target_for_monitor(self.monitor_selected),
+            KeyCode::Char('A') => self.select_all_targets(),
+            KeyCode::Char('x') => self.clear_targets(),
+            KeyCode::Enter | KeyCode::Char('a') => self.apply_current_browser_selection(),
+            KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.refresh_monitors = true
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_playlist_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => self.move_playlist(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.move_playlist(1),
+            KeyCode::Char('u') => self.move_playlist_item(-1),
+            KeyCode::Char('n') => self.move_playlist_item(1),
+            KeyCode::Char('d') => self.remove_selected_playlist_item(),
+            KeyCode::Char('x') => self.clear_playlist(),
+            KeyCode::Char(' ') => self.toggle_playlist_running(),
+            KeyCode::Enter => self.apply_selected_playlist_item(),
+            _ => {}
+        }
+    }
+
+    fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        if self.help_open {
+            if matches!(code, KeyCode::Esc | KeyCode::Char('?')) {
+                self.help_open = false;
+            }
+            return;
+        }
+
+        if self.input_mode == InputMode::Search {
+            self.handle_search_key(code, modifiers);
+            return;
+        }
+
+        if let KeyCode::Char(ch) = code
+            && ('1'..='9').contains(&ch)
+        {
+            let index = (ch as u8 - b'1') as usize;
+            self.toggle_target_for_monitor(index);
+            return;
+        }
+
+        match code {
+            KeyCode::Char('f') if modifiers.contains(KeyModifiers::SHIFT) => {
+                self.scale_mode = self.scale_mode.prev();
+                self.notify(
+                    NotificationLevel::Info,
+                    format!("Placement: {}", self.scale_mode.label()),
+                );
+            }
+            KeyCode::Char('r') if modifiers.contains(KeyModifiers::SHIFT) => {
+                self.rotation = self.rotation.prev();
+                self.notify(
+                    NotificationLevel::Info,
+                    format!("Rotation: {}", self.rotation.label()),
+                );
+            }
+            KeyCode::Char('q') => {
+                self.should_quit = true;
+                self.notify(NotificationLevel::Info, "Exiting TUI");
+            }
+            KeyCode::Char('?') => self.help_open = true,
+            KeyCode::F(8) => self.save_default_profile(),
+            KeyCode::F(9) => self.load_default_profile(),
+            KeyCode::Tab => self.cycle_focus(true),
+            KeyCode::BackTab => self.cycle_focus(false),
+            KeyCode::Esc => {}
+            KeyCode::Char('b') => ensure_backend_running(self),
+            KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.refresh_monitors = true
+            }
+            KeyCode::Char('r') => self.cycle_rotation(),
+            KeyCode::Char('f') => self.cycle_scale_mode(),
+            KeyCode::Char('a') => self.apply_current_browser_selection(),
+            KeyCode::Char('m') => {
+                if let Some(name) = self.active_monitor_name.clone()
+                    && let Some(index) = self
+                        .monitors
+                        .iter()
+                        .position(|monitor| monitor.name == name)
+                {
+                    self.toggle_target_for_monitor(index);
+                }
+            }
+            KeyCode::Char('A') => self.select_all_targets(),
+            KeyCode::Char('x') => {
+                if matches!(self.focus, model::FocusRegion::Playlist) {
+                    self.clear_playlist();
+                } else {
+                    self.clear_targets();
+                }
+            }
+            KeyCode::Char(' ') => self.toggle_playlist_running(),
+            KeyCode::Enter => match self.focus {
+                model::FocusRegion::Library => self.handle_library_key(KeyCode::Enter),
+                model::FocusRegion::Preview => self.apply_current_browser_selection(),
+                model::FocusRegion::Monitors => self.apply_current_browser_selection(),
+                model::FocusRegion::Playlist => self.apply_selected_playlist_item(),
+                model::FocusRegion::Transitions => self.apply_current_browser_selection(),
+            },
+            _ => match self.focus {
+                model::FocusRegion::Library => self.handle_library_key(code),
+                model::FocusRegion::Preview => self.handle_preview_key(code),
+                model::FocusRegion::Monitors => self.handle_monitor_key(code, modifiers),
+                model::FocusRegion::Playlist => self.handle_playlist_key(code),
+                model::FocusRegion::Transitions => self.handle_transition_key(code),
+            },
+        }
+    }
+
+    fn handle_search_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        match code {
+            KeyCode::Esc | KeyCode::Enter => {
+                self.input_mode = InputMode::Normal;
+            }
+            KeyCode::Backspace => {
+                self.search_query.pop();
+                self.apply_filter();
+            }
+            KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.search_query.clear();
+                self.apply_filter();
+            }
+            KeyCode::Char(ch) => {
+                if !ch.is_control() {
+                    self.search_query.push(ch);
+                    self.apply_filter();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+pub(crate) fn selected_preview_simulation(app: &App) -> Option<model::AspectSimulation> {
+    let preview = app.selected_preview.as_ref()?;
+    let monitor = app.selected_monitor()?;
+    Some(model::simulate_aspect(
+        (preview.width, preview.height),
+        (monitor.width, monitor.height),
+        app.scale_mode,
+        app.rotation,
+    ))
+}
+
+pub(crate) fn daemon_status_text(app: &App) -> &'static str {
+    if app.daemon_online {
+        "online"
+    } else {
+        "offline"
+    }
+}
+
+pub(crate) fn daemon_status_color(app: &App) -> ratatui::style::Color {
+    if app.daemon_online {
+        ratatui::style::Color::Rgb(120, 210, 151)
+    } else {
+        ratatui::style::Color::Rgb(245, 193, 96)
+    }
+}
+
+pub(crate) fn app_key_hints(app: &App) -> String {
+    if app.input_mode == InputMode::Search {
+        return String::from("Search: type | Backspace delete | Ctrl+u clear | Enter/Esc done");
+    }
+
+    match app.focus {
+        model::FocusRegion::Library => {
+            String::from("j/k browse | Enter open/apply | p queue | / search | g/G jump | Tab next")
+        }
+        model::FocusRegion::Preview => {
+            String::from("f fit mode | r rotate | Enter apply | m toggle active target | Tab next")
+        }
+        model::FocusRegion::Monitors => String::from(
+            "j/k select | 1..9 toggle target | m toggle | A all | x clear | Enter apply",
+        ),
+        model::FocusRegion::Playlist => {
+            String::from("j/k select | u/n reorder | d delete | x clear | Space play | Enter apply")
+        }
+        model::FocusRegion::Transitions => {
+            String::from("j/k field | h/l change | +/- interval | Enter apply | Tab next")
+        }
+    }
+}
+
+pub(crate) fn global_key_hints() -> &'static str {
+    "q quit | ? help | F8 save profile | F9 load profile | Ctrl+r refresh monitors | b launch daemon"
 }
 
 async fn run_app() -> io::Result<()> {
@@ -405,7 +968,7 @@ async fn run_app() -> io::Result<()> {
                 poll_backend_child(&mut app).await;
                 run_playlist_tick(&mut app);
                 app.prune_notifications();
-                terminal.draw(|frame| ui::draw(frame, &app))?;
+                terminal.draw(|frame| render::draw(frame, &app))?;
             }
             Some(event) = event_rx.recv() => {
                 handle_app_event(&mut app, event);
@@ -413,7 +976,6 @@ async fn run_app() -> io::Result<()> {
         }
     }
 
-    // Detach from daemon process. Wallpapers should stay visible after TUI exit.
     app.backend_child = None;
 
     Ok(())
@@ -446,6 +1008,7 @@ fn probe_daemon_if_due(app: &mut App) {
     if app.last_daemon_probe.elapsed() < DAEMON_PROBE_INTERVAL {
         return;
     }
+
     app.last_daemon_probe = Instant::now();
     app.daemon_online = backend::daemon_alive(&app.daemon_namespace);
 }
@@ -500,11 +1063,24 @@ async fn refresh_monitors_if_due(app: &mut App) {
         return;
     }
 
-    match data::discover_monitors().await {
+    match model::discover_monitors().await {
         Ok(monitors) => {
             let count = monitors.len();
             app.monitors = monitors;
+            if !app.selected_targets.is_empty() {
+                let available_names = app
+                    .monitors
+                    .iter()
+                    .map(|monitor| monitor.name.clone())
+                    .collect::<HashSet<_>>();
+                app.selected_targets
+                    .retain(|name| available_names.contains(name));
+            }
             app.sync_monitor_state();
+            if !app.targets_initialized {
+                app.select_all_targets();
+                app.targets_initialized = true;
+            }
             app.last_monitor_refresh = Some(Instant::now());
             app.refresh_monitors = false;
             app.notify(
@@ -526,19 +1102,22 @@ fn run_playlist_tick(app: &mut App) {
     if app.ipc_in_flight || !app.playlist_running || app.playlist.is_empty() {
         return;
     }
+
     if app.last_playlist_tick.elapsed() < app.playlist_interval {
         return;
     }
 
-    let idx = app.playlist_index % app.playlist.len();
-    app.playlist_index = (app.playlist_index + 1) % app.playlist.len();
+    let index = app
+        .playlist_selected
+        .min(app.playlist.len().saturating_sub(1));
+    let entry = app.playlist[index].clone();
+    app.playlist_selected = (index + 1) % app.playlist.len();
+    app.sync_playlist_state();
     app.last_playlist_tick = Instant::now();
-
-    let path = app.playlist[idx].clone();
-    request_apply(app, path);
+    request_apply(app, entry.path, entry.transition);
 }
 
-fn request_apply(app: &mut App, path: PathBuf) {
+fn request_apply(app: &mut App, path: PathBuf, transition: TransitionState) {
     if app.ipc_in_flight {
         app.notify(NotificationLevel::Warn, "Apply already in flight");
         return;
@@ -554,13 +1133,14 @@ fn request_apply(app: &mut App, path: PathBuf) {
         NotificationLevel::Info,
         format!(
             "Applying {}",
-            path.file_name().and_then(|s| s.to_str()).unwrap_or("image")
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("image")
         ),
     );
 
     let namespace = app.daemon_namespace.clone();
-    let preferred_output = app.selected_monitor_name();
-    let transition = app.transition.clone();
+    let selected_outputs = app.selected_output_names();
     let scale_mode = app.scale_mode;
     let rotation = app.rotation;
     let tx = app.event_tx.clone();
@@ -570,7 +1150,7 @@ fn request_apply(app: &mut App, path: PathBuf) {
             path,
             transition,
             namespace,
-            preferred_output,
+            selected_outputs,
             scale_mode,
             rotation,
         )
@@ -585,318 +1165,9 @@ async fn handle_input(app: &mut App) -> io::Result<()> {
         if let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {
-            if matches!(key.code, KeyCode::Char('q')) {
-                app.should_quit = true;
-                app.notify(NotificationLevel::Info, "Exiting TUI");
-                continue;
-            }
-
-            if app.help_open {
-                app.help_open = false;
-                continue;
-            }
-
-            if app.input_mode == InputMode::Search {
-                handle_search_input(app, key.code, key.modifiers);
-                continue;
-            }
-
-            if let KeyCode::Char(ch) = key.code
-                && ('1'..='9').contains(&ch)
-            {
-                let idx = (ch as u8 - b'1') as usize;
-                if idx < app.monitors.len() {
-                    app.monitor_selected = idx;
-                    app.sync_monitor_state();
-                    app.notify(
-                        NotificationLevel::Info,
-                        format!("Active monitor: {}", app.monitors[idx].name),
-                    );
-                }
-                continue;
-            }
-
-            match key.code {
-                KeyCode::Char('?') => app.help_open = true,
-                KeyCode::Char('b') => ensure_backend_running(app),
-                KeyCode::Char('r') => app.refresh_monitors = true,
-                KeyCode::Tab => app.panel = app.panel.next(),
-                KeyCode::BackTab => app.panel = app.panel.prev(),
-                _ => handle_panel_input(app, key.code),
-            }
+            app.handle_key(key.code, key.modifiers);
         }
     }
 
     Ok(())
-}
-
-fn handle_search_input(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
-    match code {
-        KeyCode::Esc | KeyCode::Enter => {
-            app.input_mode = InputMode::Normal;
-        }
-        KeyCode::Backspace => {
-            app.search_query.pop();
-            app.apply_filter();
-        }
-        KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
-            app.search_query.clear();
-            app.apply_filter();
-        }
-        KeyCode::Char(ch) => {
-            if !ch.is_control() {
-                app.search_query.push(ch);
-                app.apply_filter();
-            }
-        }
-        _ => {}
-    }
-}
-
-fn handle_panel_input(app: &mut App, code: KeyCode) {
-    match app.panel {
-        Panel::Library => handle_library_panel_input(app, code),
-        Panel::Monitor => handle_monitor_panel_input(app, code),
-        Panel::Playback => handle_playback_panel_input(app, code),
-    }
-}
-
-fn handle_library_panel_input(app: &mut App, code: KeyCode) {
-    match code {
-        KeyCode::Char('/') => app.input_mode = InputMode::Search,
-        KeyCode::Up | KeyCode::Char('k') => app.move_browser(-1),
-        KeyCode::Down | KeyCode::Char('j') => app.move_browser(1),
-        KeyCode::Char('g') => {
-            app.browser_selected = 0;
-            app.sync_browser_state();
-            app.refresh_preview();
-        }
-        KeyCode::Char('G') => {
-            app.browser_selected = app.browser_filtered.len().saturating_sub(1);
-            app.sync_browser_state();
-            app.refresh_preview();
-        }
-        KeyCode::Char('p') => app.toggle_playlist_for_selected(),
-        KeyCode::Char(' ') => {
-            app.playlist_running = !app.playlist_running;
-            app.last_playlist_tick = Instant::now();
-            app.notify(
-                NotificationLevel::Info,
-                if app.playlist_running {
-                    "Playlist running"
-                } else {
-                    "Playlist paused"
-                },
-            );
-        }
-        KeyCode::Enter => match app.open_selected_path() {
-            Ok(Some(path)) => request_apply(app, path),
-            Ok(None) => {}
-            Err(err) => app.notify(NotificationLevel::Error, format!("Open failed: {err:#}")),
-        },
-        _ => {}
-    }
-}
-
-fn handle_monitor_panel_input(app: &mut App, code: KeyCode) {
-    match code {
-        KeyCode::Up | KeyCode::Char('k') => app.move_monitor(-1),
-        KeyCode::Down | KeyCode::Char('j') => app.move_monitor(1),
-        KeyCode::Char('f') => {
-            app.scale_mode = app.scale_mode.next();
-            app.notify(
-                NotificationLevel::Info,
-                format!("Scale mode: {}", app.scale_mode.as_str()),
-            );
-        }
-        KeyCode::Char('o') => {
-            app.rotation = app.rotation.next();
-            app.notify(
-                NotificationLevel::Info,
-                format!("Rotation: {}deg", app.rotation.degrees()),
-            );
-        }
-        KeyCode::Char('a') | KeyCode::Enter => {
-            if let Some(path) = app.selected_image_path() {
-                request_apply(app, path);
-            } else {
-                app.notify(NotificationLevel::Warn, "No selected image to apply");
-            }
-        }
-        _ => {}
-    }
-}
-
-fn handle_playback_panel_input(app: &mut App, code: KeyCode) {
-    match code {
-        KeyCode::Up | KeyCode::Char('k') => {
-            app.transition.selected_field = app.transition.selected_field.saturating_sub(1);
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            app.transition.selected_field = (app.transition.selected_field + 1).min(3);
-        }
-        KeyCode::Left | KeyCode::Char('h') => app.transition.change_selected(-1),
-        KeyCode::Right | KeyCode::Char('l') => app.transition.change_selected(1),
-        KeyCode::Char('+') | KeyCode::Char('=') => {
-            let secs = app.playlist_interval.as_secs();
-            app.playlist_interval = Duration::from_secs((secs + 5).min(600));
-        }
-        KeyCode::Char('-') => {
-            let secs = app.playlist_interval.as_secs();
-            app.playlist_interval = Duration::from_secs(secs.saturating_sub(5).max(5));
-        }
-        KeyCode::Char(' ') => {
-            app.playlist_running = !app.playlist_running;
-            app.last_playlist_tick = Instant::now();
-        }
-        KeyCode::Enter => {
-            if let Some(path) = app.selected_image_path() {
-                request_apply(app, path);
-            } else if let Some(path) = app.playlist.first() {
-                request_apply(app, path.clone());
-            } else {
-                app.notify(NotificationLevel::Warn, "No image available for apply");
-            }
-        }
-        _ => {}
-    }
-}
-
-pub(crate) fn monitor_slot_labels(monitors: &[MonitorEntry]) -> String {
-    if monitors.is_empty() {
-        return String::from("No monitors");
-    }
-
-    monitors
-        .iter()
-        .take(9)
-        .enumerate()
-        .map(|(i, m)| format!("{}:{}", i + 1, m.name))
-        .collect::<Vec<_>>()
-        .join("  ")
-}
-
-pub(crate) fn selected_preview_simulation(app: &App) -> Option<data::AspectSimulation> {
-    let preview = app.selected_preview.as_ref()?;
-    let monitor = app.selected_monitor()?;
-    Some(data::simulate_aspect(
-        (preview.width, preview.height),
-        (monitor.width, monitor.height),
-        app.scale_mode,
-        app.rotation,
-    ))
-}
-
-pub(crate) fn preview_ascii(app: &App, width: usize, height: usize) -> Vec<String> {
-    let Some(monitor) = app.selected_monitor() else {
-        return vec![String::from("Select a monitor")];
-    };
-
-    let preview = app.selected_preview.as_ref();
-    let mw = monitor.width.max(1) as f32;
-    let mh = monitor.height.max(1) as f32;
-
-    let available_w = width.max(8) as f32;
-    let available_h = height.max(4) as f32;
-    let frame_scale = (available_w / mw).min(available_h / mh);
-
-    let frame_w = ((mw * frame_scale).round() as usize).clamp(8, width.max(8));
-    let frame_h = ((mh * frame_scale).round() as usize).clamp(4, height.max(4));
-
-    let mut grid = vec![vec![' '; frame_w]; frame_h];
-    if let Some(top) = grid.first_mut() {
-        for cell in top.iter_mut() {
-            *cell = '█';
-        }
-    }
-    if let Some(bottom) = grid.last_mut() {
-        for cell in bottom.iter_mut() {
-            *cell = '█';
-        }
-    }
-    for row in &mut grid {
-        if let Some(first) = row.first_mut() {
-            *first = '█';
-        }
-        if let Some(last) = row.last_mut() {
-            *last = '█';
-        }
-    }
-
-    if let Some(preview) = preview {
-        let sim = data::simulate_aspect(
-            (preview.width, preview.height),
-            (monitor.width, monitor.height),
-            app.scale_mode,
-            app.rotation,
-        );
-
-        let fill_w = ((sim.target_width as f32 / monitor.width as f32) * (frame_w as f32 - 2.0))
-            .round()
-            .clamp(1.0, frame_w as f32 - 2.0) as usize;
-        let fill_h = ((sim.target_height as f32 / monitor.height as f32) * (frame_h as f32 - 2.0))
-            .round()
-            .clamp(1.0, frame_h as f32 - 2.0) as usize;
-
-        let start_x = (frame_w.saturating_sub(fill_w + 2)) / 2 + 1;
-        let start_y = (frame_h.saturating_sub(fill_h + 2)) / 2 + 1;
-
-        let y_end = (start_y + fill_h).min(frame_h - 1);
-        let x_end = (start_x + fill_w).min(frame_w - 1);
-        for row in grid
-            .iter_mut()
-            .skip(start_y)
-            .take(y_end.saturating_sub(start_y))
-        {
-            for cell in row
-                .iter_mut()
-                .skip(start_x)
-                .take(x_end.saturating_sub(start_x))
-            {
-                *cell = if matches!(app.scale_mode, ScaleMode::Fill) {
-                    '▓'
-                } else {
-                    '▒'
-                };
-            }
-        }
-    }
-
-    grid.into_iter()
-        .map(|row| row.into_iter().collect::<String>())
-        .collect()
-}
-
-pub(crate) fn daemon_status_text(app: &App) -> &'static str {
-    if app.daemon_online {
-        "online"
-    } else {
-        "offline"
-    }
-}
-
-pub(crate) fn daemon_status_color_online(app: &App) -> bool {
-    app.daemon_online
-}
-
-pub(crate) fn panel_key_hints(app: &App) -> &'static str {
-    if app.input_mode == InputMode::Search {
-        return "Search: type | Backspace | Ctrl+u clear | Enter/Esc done";
-    }
-
-    match app.panel {
-        Panel::Library => {
-            "Tab switch panel | j/k move | Enter open/apply | p add/remove playlist | / search | Space play"
-        }
-        Panel::Monitor => {
-            "Tab switch panel | j/k monitor | 1..9 quick monitor | f scale | o rotate | a/Enter apply"
-        }
-        Panel::Playback => {
-            "Tab switch panel | j/k field | h/l change | +/- playlist interval | Space play | Enter apply"
-        }
-    }
-}
-
-pub(crate) fn global_key_hints() -> &'static str {
-    "q quit | ? help | r refresh monitors | b start daemon"
 }

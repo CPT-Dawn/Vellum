@@ -1,4 +1,5 @@
 use std::{
+    collections::{BTreeMap, HashMap},
     num::NonZeroU8,
     path::PathBuf,
     process::Stdio,
@@ -17,20 +18,25 @@ use tokio::{
 };
 use vellum_core::is_daemon_running;
 
-use super::data::{
-    EASING_PRESETS, Rotation, ScaleMode, TRANSITION_EFFECTS, TransitionState, apply_rotation,
-    render_to_monitor_canvas,
+use super::model::{
+    Rotation, ScaleMode, TransitionState, apply_rotation, render_to_monitor_canvas,
 };
 
 const IPC_QUERY_TIMEOUT: Duration = Duration::from_millis(1800);
 const IPC_APPLY_TIMEOUT: Duration = Duration::from_secs(10);
 const IPC_QUERY_RETRY_INTERVAL: Duration = Duration::from_millis(120);
 
-pub struct ApplyTarget {
-    pub namespace: String,
-    pub outputs: Vec<String>,
-    pub dim: (u32, u32),
-    pub format: PixelFormat,
+#[derive(Debug, Clone)]
+struct ApplyGroup {
+    outputs: Vec<String>,
+    dim: (u32, u32),
+    format: PixelFormat,
+}
+
+#[derive(Debug, Clone)]
+struct ApplyPlan {
+    namespace: String,
+    groups: Vec<ApplyGroup>,
 }
 
 pub fn launch_daemon_subprocess(namespace: &str) -> Result<Child> {
@@ -56,24 +62,21 @@ pub async fn perform_apply_request(
     file_path: PathBuf,
     transition: TransitionState,
     namespace: String,
-    preferred_output: Option<String>,
+    selected_outputs: Vec<String>,
     scale_mode: ScaleMode,
     rotation: Rotation,
 ) -> Result<String> {
-    let target = query_apply_target(&namespace, preferred_output).await?;
-    apply_wallpaper_request(file_path.clone(), transition, target, scale_mode, rotation).await?;
+    let plan = query_apply_plan(&namespace, &selected_outputs).await?;
+    apply_wallpaper_request(file_path.clone(), transition, plan, scale_mode, rotation).await?;
     Ok(format!("Applied {}", file_path.display()))
 }
 
-async fn query_apply_target(
-    namespace: &str,
-    preferred_output: Option<String>,
-) -> Result<ApplyTarget> {
+async fn query_apply_plan(namespace: &str, selected_outputs: &[String]) -> Result<ApplyPlan> {
     let deadline = Instant::now() + IPC_QUERY_TIMEOUT;
 
     loop {
         let attempt_namespace = namespace.to_owned();
-        let attempt_preferred = preferred_output.clone();
+        let attempt_outputs = selected_outputs.to_vec();
 
         let attempt = run_blocking_with_timeout(IPC_QUERY_TIMEOUT, move || {
             let (resolved_namespace, socket) = connect_daemon_socket(&attempt_namespace)?;
@@ -97,43 +100,72 @@ async fn query_apply_target(
                 bail!("no output information available from daemon");
             }
 
-            let selected = if let Some(name) = attempt_preferred {
-                outputs
-                    .iter()
-                    .find(|output| output.name.as_ref() == name)
-                    .ok_or_else(|| {
-                        let available = outputs
-                            .iter()
-                            .map(|o| o.name.as_ref())
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        anyhow!("selected monitor '{name}' not ready in daemon yet (available: {available})")
-                    })?
+            let available = outputs
+                .iter()
+                .map(|output| (output.name.to_string(), output.clone()))
+                .collect::<HashMap<_, _>>();
+
+            let desired_names = if attempt_outputs.is_empty() {
+                vec![outputs[0].name.to_string()]
             } else {
-                outputs
-                    .first()
-                    .ok_or_else(|| anyhow!("no output information available from daemon"))?
+                attempt_outputs.clone()
             };
 
-            Ok(ApplyTarget {
+            let missing = desired_names
+                .iter()
+                .filter(|name| !available.contains_key((*name).as_str()))
+                .cloned()
+                .collect::<Vec<_>>();
+
+            if !missing.is_empty() {
+                let available_names = outputs
+                    .iter()
+                    .map(|output| output.name.as_ref())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                bail!(
+                    "selected monitor(s) not ready in daemon yet (missing: {}; available: {available_names})",
+                    missing.join(", ")
+                );
+            }
+
+            let mut groups: BTreeMap<(u32, u32, u8), ApplyGroup> = BTreeMap::new();
+            for name in desired_names {
+                let output = available
+                    .get(name.as_str())
+                    .ok_or_else(|| anyhow!("missing selected output '{name}'"))?;
+                let dim = output.real_dim();
+                let key = (dim.0, dim.1, output.pixel_format as u8);
+                groups
+                    .entry(key)
+                    .and_modify(|group| group.outputs.push(name.clone()))
+                    .or_insert_with(|| ApplyGroup {
+                        outputs: vec![name.clone()],
+                        dim,
+                        format: output.pixel_format,
+                    });
+            }
+
+            Ok(ApplyPlan {
                 namespace: resolved_namespace,
-                outputs: vec![selected.name.to_string()],
-                dim: selected.real_dim(),
-                format: selected.pixel_format,
+                groups: groups.into_values().collect(),
             })
         })
         .await;
 
         match attempt {
-            Ok(target) => return Ok(target),
+            Ok(plan) => return Ok(plan),
             Err(err) => {
                 let timed_out = Instant::now() >= deadline;
-                let waiting_on_selected = preferred_output.is_some()
-                    && err.to_string().contains("selected monitor '")
-                    && err.to_string().contains("not ready in daemon yet");
+                let waiting_on_selected = !selected_outputs.is_empty()
+                    && err
+                        .to_string()
+                        .contains("selected monitor(s) not ready in daemon yet");
+
                 if timed_out || !waiting_on_selected {
                     return Err(err);
                 }
+
                 time::sleep(IPC_QUERY_RETRY_INTERVAL).await;
             }
         }
@@ -169,7 +201,7 @@ fn connect_daemon_socket(preferred_namespace: &str) -> Result<(String, IpcSocket
 async fn apply_wallpaper_request(
     file_path: PathBuf,
     transition: TransitionState,
-    target: ApplyTarget,
+    plan: ApplyPlan,
     scale_mode: ScaleMode,
     rotation: Rotation,
 ) -> Result<()> {
@@ -184,31 +216,33 @@ async fn apply_wallpaper_request(
             .with_context(|| format!("cannot decode image '{}'", display_path))?;
 
         let transformed = apply_rotation(decoded, rotation);
-        let fitted = render_to_monitor_canvas(transformed, target.dim, scale_mode);
-        let (img_bytes, pixel_format) =
-            convert_dynamic_image_for_pixel_format(fitted, target.format);
-
-        let img_send = ImgSend {
-            path: file_path.to_string_lossy().to_string(),
-            dim: target.dim,
-            format: pixel_format,
-            img: img_bytes.into_boxed_slice(),
-        };
 
         let mut builder = ImageRequestBuilder::new(build_transition_from_state(&transition))
             .map_err(anyhow::Error::new)
             .context("request mmap failed")?;
 
-        builder.push(
-            img_send,
-            &target.namespace,
-            scale_mode.as_resize(),
-            "lanczos3",
-            &target.outputs,
-            None,
-        );
+        for group in plan.groups {
+            let fitted = render_to_monitor_canvas(transformed.clone(), group.dim, scale_mode);
+            let (img_bytes, pixel_format) =
+                convert_dynamic_image_for_pixel_format(fitted, group.format);
+            let img_send = ImgSend {
+                path: file_path.to_string_lossy().to_string(),
+                dim: group.dim,
+                format: pixel_format,
+                img: img_bytes.into_boxed_slice(),
+            };
 
-        let socket = IpcSocket::client(&target.namespace)
+            builder.push(
+                img_send,
+                &plan.namespace,
+                scale_mode.backend_resize(),
+                "lanczos3",
+                &group.outputs,
+                None,
+            );
+        }
+
+        let socket = IpcSocket::client(&plan.namespace)
             .map_err(anyhow::Error::new)
             .context("failed to connect to daemon IPC socket")?;
 
@@ -260,14 +294,14 @@ fn convert_dynamic_image_for_pixel_format(
 }
 
 fn build_transition_from_state(state: &TransitionState) -> Transition {
-    let transition_type = match TRANSITION_EFFECTS[state.effect_idx] {
+    let transition_type = match super::model::TRANSITION_EFFECTS[state.effect_idx] {
         "fade" => TransitionType::Fade,
         "wipe" => TransitionType::Wipe,
         "grow" => TransitionType::Grow,
         _ => TransitionType::Simple,
     };
 
-    let bezier = match EASING_PRESETS[state.easing_idx] {
+    let bezier = match super::model::EASING_PRESETS[state.easing_idx] {
         "linear" => (0.0, 0.0, 1.0, 1.0),
         "ease-in" => (0.42, 0.0, 1.0, 1.0),
         "ease-out" => (0.0, 0.0, 0.58, 1.0),
@@ -277,7 +311,6 @@ fn build_transition_from_state(state: &TransitionState) -> Transition {
     Transition {
         transition_type,
         duration: state.duration_ms as f32 / 1000.0,
-        // SAFETY: literal 2 is always non-zero.
         step: unsafe { NonZeroU8::new_unchecked(2) },
         fps: state.fps,
         angle: 0.0,
