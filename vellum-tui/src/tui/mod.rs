@@ -130,6 +130,7 @@ pub(crate) struct App {
     pub(crate) help_open: bool,
 
     pub(crate) browser_dir: PathBuf,
+    browser_root: PathBuf,
     pub(crate) search_query: String,
     pub(crate) browser_entries: Vec<BrowserEntry>,
     pub(crate) browser_filtered: Vec<usize>,
@@ -190,6 +191,7 @@ impl App {
             input_mode: InputMode::Normal,
             help_open: false,
             browser_dir: model::preferred_initial_browser_dir(),
+            browser_root: model::preferred_initial_browser_dir(),
             search_query: String::new(),
             browser_entries: Vec::new(),
             browser_filtered: Vec::new(),
@@ -534,6 +536,11 @@ impl App {
         };
 
         if entry.is_dir() {
+            if !model::path_within_root(&self.browser_root, &entry.path) {
+                self.notify(NotificationLevel::Warn, "Navigation is limited to Pictures");
+                return Ok(None);
+            }
+
             self.browser_dir = entry.path;
             self.search_query.clear();
             self.reload_browser_dir()?;
@@ -549,7 +556,7 @@ impl App {
     }
 
     fn reload_browser_dir(&mut self) -> Result<()> {
-        self.browser_entries = model::load_browser_entries(&self.browser_dir)?;
+        self.browser_entries = model::load_browser_entries(&self.browser_dir, &self.browser_root)?;
         self.apply_filter();
         Ok(())
     }

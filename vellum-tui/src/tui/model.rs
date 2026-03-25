@@ -287,15 +287,27 @@ pub struct PlaylistEntry {
     pub target_monitor: String,
 }
 
-pub fn preferred_initial_browser_dir() -> PathBuf {
+fn home_dir() -> Option<PathBuf> {
     if let Some(home) = std::env::var_os("HOME") {
-        let pictures = PathBuf::from(home).join("Pictures");
-        if pictures.is_dir() {
-            return pictures;
-        }
+        return Some(PathBuf::from(home));
     }
 
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    if let Some(profile) = std::env::var_os("USERPROFILE") {
+        return Some(PathBuf::from(profile));
+    }
+
+    let drive = std::env::var_os("HOMEDRIVE");
+    let path = std::env::var_os("HOMEPATH");
+    match (drive, path) {
+        (Some(drive), Some(path)) => Some(PathBuf::from(drive).join(path)),
+        _ => None,
+    }
+}
+
+pub fn preferred_initial_browser_dir() -> PathBuf {
+    home_dir()
+        .map(|home| home.join("Pictures"))
+        .unwrap_or_else(|| PathBuf::from("Pictures"))
 }
 
 pub fn is_supported_image_path(path: &Path) -> bool {
@@ -310,10 +322,14 @@ pub fn is_supported_image_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-pub fn load_browser_entries(dir: &Path) -> Result<Vec<BrowserEntry>> {
+pub fn load_browser_entries(dir: &Path, root: &Path) -> Result<Vec<BrowserEntry>> {
+    if !dir.starts_with(root) {
+        bail!("browser path must stay within '{}'", root.display());
+    }
+
     let mut entries = Vec::new();
 
-    if let Some(parent) = dir.parent() {
+    if let Some(parent) = dir.parent().filter(|parent| parent.starts_with(root)) {
         entries.push(BrowserEntry {
             name: String::from(".."),
             path: parent.to_path_buf(),
@@ -330,13 +346,13 @@ pub fn load_browser_entries(dir: &Path) -> Result<Vec<BrowserEntry>> {
         let name = entry.file_name().to_string_lossy().to_string();
         let meta = entry.metadata()?;
 
-        if meta.is_dir() {
+        if meta.is_dir() && path.starts_with(root) {
             directories.push(BrowserEntry {
                 name: format!("{name}/"),
                 path,
                 kind: BrowserEntryKind::Directory,
             });
-        } else if meta.is_file() && is_supported_image_path(&path) {
+        } else if meta.is_file() && path.starts_with(root) && is_supported_image_path(&path) {
             images.push(BrowserEntry {
                 name,
                 path,
@@ -378,6 +394,10 @@ pub fn fuzzy_filter(entries: &[BrowserEntry], query: &str) -> Vec<usize> {
 
     scored.sort_by(|a, b| b.0.cmp(&a.0));
     scored.into_iter().map(|(_, idx)| idx).collect()
+}
+
+pub fn path_within_root(root: &Path, path: &Path) -> bool {
+    path.starts_with(root)
 }
 
 #[derive(Debug, Deserialize)]
