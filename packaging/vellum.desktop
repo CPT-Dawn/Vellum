@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Vellum
-Comment=Launch the Vellum wallpaper runtime
-Exec=/usr/bin/vellum
-TryExec=/usr/bin/vellum
-Terminal=false
-Categories=Graphics;Utility;
