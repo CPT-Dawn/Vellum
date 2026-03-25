@@ -13,7 +13,7 @@ use ratatui::DefaultTerminal;
 
 use crate::app::App;
 use crate::backend::Backend;
-use crate::events::{spawn_event_thread, AppEvent};
+use crate::events::{AppEvent, spawn_event_thread};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = ratatui::init();
@@ -28,10 +28,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     execute!(io::stdout(), DisableMouseCapture)?;
     ratatui::restore();
-
-    if let Err(error) = app.save_config() {
-        eprintln!("failed to save config: {error}");
-    }
 
     run_result.map_err(Into::into)
 }

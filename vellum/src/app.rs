@@ -2,25 +2,17 @@ use std::collections::HashSet;
 use std::env;
 use std::fmt;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use common::ipc::BgInfo;
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
 
 use crate::backend::Backend;
 
 const LOG_CAPACITY: usize = 128;
-const CONFIG_FILE_NAME: &str = "vellum.toml";
 
-fn default_monitor_scale() -> f32 {
-    1.0
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalingMode {
     Fill,
     Fit,
@@ -47,7 +39,7 @@ impl fmt::Display for ScalingMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DaemonStatus {
     Running,
     #[default]
@@ -128,12 +120,11 @@ impl FileEntry {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Monitor {
     pub name: String,
     pub width: u16,
     pub height: u16,
-    #[serde(default = "default_monitor_scale")]
     pub scale: f32,
     pub wallpaper: Option<PathBuf>,
 }
@@ -154,40 +145,6 @@ impl Monitor {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MonitorConfig {
-    pub name: String,
-    pub width: u16,
-    pub height: u16,
-    #[serde(default = "default_monitor_scale")]
-    pub scale: f32,
-    pub wallpaper: Option<PathBuf>,
-}
-
-impl From<&Monitor> for MonitorConfig {
-    fn from(monitor: &Monitor) -> Self {
-        Self {
-            name: monitor.name.clone(),
-            width: monitor.width,
-            height: monitor.height,
-            scale: monitor.scale,
-            wallpaper: monitor.wallpaper.clone(),
-        }
-    }
-}
-
-impl From<MonitorConfig> for Monitor {
-    fn from(value: MonitorConfig) -> Self {
-        Self {
-            name: value.name,
-            width: value.width,
-            height: value.height,
-            scale: value.scale,
-            wallpaper: value.wallpaper,
-        }
-    }
-}
-
 impl From<BgInfo> for Monitor {
     fn from(value: BgInfo) -> Self {
         let scale = value.scale_factor.to_f32();
@@ -203,29 +160,6 @@ impl From<BgInfo> for Monitor {
             },
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AppConfig {
-    pub current_path: PathBuf,
-    pub selected_file: Option<PathBuf>,
-    pub favorites: Vec<PathBuf>,
-    pub favorites_only: bool,
-    pub hide_unsupported: bool,
-    pub daemon_status: DaemonStatus,
-    pub selected_monitor: usize,
-    pub selected_scaling_mode: usize,
-    pub monitors: Vec<MonitorConfig>,
-}
-
-#[derive(Debug, Error)]
-pub enum AppError {
-    #[error("io error: {0}")]
-    Io(#[from] io::Error),
-    #[error("toml deserialize error: {0}")]
-    TomlDe(#[from] toml::de::Error),
-    #[error("toml serialize error: {0}")]
-    TomlSer(#[from] toml::ser::Error),
 }
 
 pub struct App {
@@ -307,30 +241,7 @@ impl App {
     }
 
     pub fn load_or_default() -> Self {
-        Self::load_from_disk().unwrap_or_default()
-    }
-
-    pub fn load_from_disk() -> Result<Self, AppError> {
-        let path = Self::config_path();
-        if !path.exists() {
-            return Ok(Self::new());
-        }
-
-        let content = fs::read_to_string(&path)?;
-        let config: AppConfig = toml::from_str(&content)?;
-        Ok(Self::from_config(config))
-    }
-
-    pub fn save_config(&self) -> Result<(), AppError> {
-        let path = Self::config_path();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        let config = self.to_config();
-        let content = toml::to_string_pretty(&config)?;
-        fs::write(path, content)?;
-        Ok(())
+        Self::new()
     }
 
     pub fn handle_event(&mut self, event: Event, backend: &mut Backend) -> bool {
@@ -737,7 +648,9 @@ impl App {
         self.daemon_status = backend.status();
 
         if let Ok(monitors) = backend.refresh_monitors() {
-            let selected_name = self.selected_monitor_ref().map(|monitor| monitor.name.clone());
+            let selected_name = self
+                .selected_monitor_ref()
+                .map(|monitor| monitor.name.clone());
             self.monitors = monitors;
 
             if let Some(selected_name) = selected_name {
@@ -754,77 +667,6 @@ impl App {
                 self.selected_monitor = 0;
             }
         }
-    }
-
-    fn config_path() -> PathBuf {
-        config_dir()
-            .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-            .join("vellum")
-            .join(CONFIG_FILE_NAME)
-    }
-
-    fn to_config(&self) -> AppConfig {
-        AppConfig {
-            current_path: self.current_path.clone(),
-            selected_file: self
-                .selected_browser_entry()
-                .map(|entry| entry.path.clone()),
-            favorites: self.favorites.iter().cloned().collect(),
-            favorites_only: self.favorites_only,
-            hide_unsupported: self.hide_unsupported,
-            daemon_status: self.daemon_status,
-            selected_monitor: self.selected_monitor,
-            selected_scaling_mode: self.selected_scaling_mode,
-            monitors: self.monitors.iter().map(MonitorConfig::from).collect(),
-        }
-    }
-
-    fn from_config(config: AppConfig) -> Self {
-        let mut app = Self {
-            current_path: config.current_path,
-            browser_entries: Vec::new(),
-            browser_filtered_indices: Vec::new(),
-            browser_selected: 0,
-            favorites: config.favorites.into_iter().collect(),
-            search_active: false,
-            search_buffer: String::new(),
-            hide_unsupported: config.hide_unsupported,
-            favorites_only: config.favorites_only,
-            monitors: if config.monitors.is_empty() {
-                vec![
-                    Monitor::new("eDP-1", 2560, 1600),
-                    Monitor::new("DP-1", 1920, 1080),
-                ]
-            } else {
-                config.monitors.into_iter().map(Into::into).collect()
-            },
-            selected_monitor: config.selected_monitor,
-            scaling_modes: ScalingMode::ALL.to_vec(),
-            selected_scaling_mode: config
-                .selected_scaling_mode
-                .min(ScalingMode::ALL.len().saturating_sub(1)),
-            daemon_status: config.daemon_status,
-            logs: vec!["[INFO] Vellum TUI ready".to_string()],
-            focus: Focus::Files,
-            matcher: SkimMatcherV2::default(),
-        };
-
-        if app.selected_monitor >= app.monitors.len() {
-            app.selected_monitor = 0;
-        }
-
-        app.refresh_browser_entries();
-
-        if let Some(selected_file) = config.selected_file
-            && let Some(index) = app
-                .browser_filtered_indices
-                .iter()
-                .position(|browser_index| app.browser_entries[*browser_index].path == selected_file)
-        {
-            app.browser_selected = index;
-        }
-
-        app
     }
 
     fn push_log(&mut self, entry: String) {
@@ -898,21 +740,5 @@ mod tests {
         assert!(is_supported_media(Path::new("wallpaper.PNG")));
         assert!(is_supported_media(Path::new("animation.gif")));
         assert!(!is_supported_media(Path::new("notes.txt")));
-    }
-
-    #[test]
-    fn config_round_trip_keeps_scaling_mode_and_monitor_state() {
-        let mut app = App::new();
-        app.selected_scaling_mode = 3;
-        app.monitors[0].wallpaper = Some(PathBuf::from("/tmp/test.png"));
-
-        let config = app.to_config();
-        let restored = App::from_config(config);
-
-        assert_eq!(restored.current_scaling_mode(), ScalingMode::Center);
-        assert_eq!(
-            restored.monitors[0].wallpaper,
-            Some(PathBuf::from("/tmp/test.png"))
-        );
     }
 }

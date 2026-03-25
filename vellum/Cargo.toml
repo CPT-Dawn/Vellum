@@ -33,9 +33,7 @@ image = { version = "0.25", default-features = false, features = [
     "webp",
 ] }
 resvg = { version = "0.47" }
-serde = { version = "1", features = ["derive"] }
 thiserror = "2"
-toml = "0.9"
 jxl-oxide = { version = "0.12", features = ["image"], optional = true }
 
 [features]
