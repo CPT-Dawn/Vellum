@@ -591,84 +591,6 @@ impl App {
             .map(|entry| entry.path.clone())
     }
 
-    fn capture_profile(&self) -> model::WallpaperProfile {
-        model::WallpaperProfile {
-            browser_dir: self.browser_dir.clone(),
-            browser_selected: self.browser_selected,
-            search_query: self.search_query.clone(),
-            selected_targets: self.selected_targets.iter().cloned().collect(),
-            monitor_selected: self.monitor_selected,
-            playlist_selected: self.playlist_selected,
-            playlist_running: self.playlist_running,
-            playlist_interval_secs: self.playlist_interval.as_secs(),
-            playlist: self.playlist.clone(),
-            scale_mode: self.scale_mode,
-            rotation: self.rotation,
-            transition: self.transition.clone(),
-        }
-    }
-
-    fn apply_profile(&mut self, profile: model::WallpaperProfile) -> Result<()> {
-        self.browser_dir = profile.browser_dir;
-        self.browser_selected = profile.browser_selected;
-        self.search_query = profile.search_query;
-        self.selected_targets = profile.selected_targets.into_iter().collect();
-        if !self.monitors.is_empty() {
-            let available_names = self
-                .monitors
-                .iter()
-                .map(|monitor| monitor.name.clone())
-                .collect::<HashSet<_>>();
-            self.selected_targets
-                .retain(|name| available_names.contains(name));
-        }
-        self.active_monitor_name = self.selected_targets.iter().next().cloned();
-        self.monitor_selected = profile.monitor_selected;
-        self.playlist_selected = profile.playlist_selected;
-        self.playlist_running = profile.playlist_running;
-        self.playlist_interval = Duration::from_secs(profile.playlist_interval_secs.max(5));
-        self.playlist = profile.playlist;
-        self.scale_mode = profile.scale_mode;
-        self.rotation = profile.rotation;
-        self.transition = profile.transition;
-        self.targets_initialized = true;
-
-        self.reload_browser_dir()?;
-        self.sync_monitor_state();
-        self.sync_playlist_state();
-        self.refresh_preview();
-        self.notify(NotificationLevel::Success, "Loaded default profile");
-        Ok(())
-    }
-
-    fn save_default_profile(&mut self) {
-        let profile = self.capture_profile();
-        let path = model::default_profile_path();
-
-        match model::save_profile(&path, &profile) {
-            Ok(()) => self.notify(
-                NotificationLevel::Success,
-                format!("Saved default profile to {}", path.display()),
-            ),
-            Err(err) => self.notify(
-                NotificationLevel::Error,
-                format!("Profile save failed: {err:#}"),
-            ),
-        }
-    }
-
-    fn load_default_profile(&mut self) {
-        let path = model::default_profile_path();
-
-        match model::load_profile(&path).and_then(|profile| self.apply_profile(profile)) {
-            Ok(()) => {}
-            Err(err) => self.notify(
-                NotificationLevel::Error,
-                format!("Profile load failed: {err:#}"),
-            ),
-        }
-    }
-
     fn handle_transition_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Up | KeyCode::Char('k') => {
@@ -808,8 +730,6 @@ impl App {
                 self.notify(NotificationLevel::Info, "Exiting TUI");
             }
             KeyCode::Char('?') => self.help_open = true,
-            KeyCode::F(8) => self.save_default_profile(),
-            KeyCode::F(9) => self.load_default_profile(),
             KeyCode::Tab => self.cycle_focus(true),
             KeyCode::BackTab => self.cycle_focus(false),
             KeyCode::Esc => {}
@@ -932,7 +852,7 @@ pub(crate) fn app_key_hints(app: &App) -> String {
 }
 
 pub(crate) fn global_key_hints() -> &'static str {
-    "q quit | ? help | F8 save profile | F9 load profile | Ctrl+r refresh monitors | b launch daemon"
+    "q quit | ? help | Ctrl+r refresh monitors | b launch daemon"
 }
 
 async fn run_app() -> io::Result<()> {

@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use image::{DynamicImage, GenericImageView, ImageBuffer, Rgba, RgbaImage, imageops};
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config as NucleoConfig, Matcher as NucleoMatcher, Utf32Str};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use tokio::process::Command;
 
@@ -58,7 +58,7 @@ pub enum InputMode {
     Search,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScaleMode {
     Fit,
     Fill,
@@ -107,7 +107,7 @@ impl ScaleMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rotation {
     Deg0,
     Deg90,
@@ -208,7 +208,7 @@ pub struct MonitorEntry {
     pub focused: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct TransitionState {
     pub duration_ms: u32,
     pub fps: u16,
@@ -286,25 +286,9 @@ impl TransitionState {
 pub const EASING_PRESETS: [&str; 4] = ["linear", "ease-in", "ease-out", "ease-in-out"];
 pub const TRANSITION_EFFECTS: [&str; 4] = ["simple", "fade", "wipe", "grow"];
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct PlaylistEntry {
     pub path: PathBuf,
-    pub transition: TransitionState,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WallpaperProfile {
-    pub browser_dir: PathBuf,
-    pub browser_selected: usize,
-    pub search_query: String,
-    pub selected_targets: Vec<String>,
-    pub monitor_selected: usize,
-    pub playlist_selected: usize,
-    pub playlist_running: bool,
-    pub playlist_interval_secs: u64,
-    pub playlist: Vec<PlaylistEntry>,
-    pub scale_mode: ScaleMode,
-    pub rotation: Rotation,
     pub transition: TransitionState,
 }
 
@@ -327,42 +311,6 @@ pub fn preferred_initial_browser_dir() -> PathBuf {
     }
 
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-}
-
-pub fn default_profile_path() -> PathBuf {
-    if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME") {
-        return PathBuf::from(config_home)
-            .join("vellum")
-            .join("default-profile.json");
-    }
-
-    if let Some(home) = std::env::var_os("HOME") {
-        return PathBuf::from(home)
-            .join(".config")
-            .join("vellum")
-            .join("default-profile.json");
-    }
-
-    std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("vellum-default-profile.json")
-}
-
-pub fn load_profile(path: &Path) -> Result<WallpaperProfile> {
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("cannot read profile '{}'", path.display()))?;
-
-    serde_json::from_str(&raw).context("invalid profile JSON")
-}
-
-pub fn save_profile(path: &Path, profile: &WallpaperProfile) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("cannot create profile directory '{}'", parent.display()))?;
-    }
-
-    let raw = serde_json::to_string_pretty(profile).context("cannot encode profile JSON")?;
-    fs::write(path, raw).with_context(|| format!("cannot write profile '{}'", path.display()))
 }
 
 pub fn is_supported_image_path(path: &Path) -> bool {
