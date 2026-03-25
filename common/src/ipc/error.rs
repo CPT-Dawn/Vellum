@@ -57,7 +57,7 @@ impl fmt::Display for IpcError {
             IpcErrorKind::Listen => write!(f, "failed to listen on socket: {err}"),
             IpcErrorKind::NoSocketFile(path) => write!(
                 f,
-                "Socket file '{}' not found. Make sure awww-daemon is running, \
+                "Socket file '{}' not found. Make sure vellum-daemon is running, \
                     and that the --namespace argument matches for the client and the daemon",
                 path.display()
             ),

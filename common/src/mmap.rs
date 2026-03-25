@@ -66,7 +66,7 @@ impl Mmap {
         use rustix::path::DecInt;
         use rustix::time::{ClockId, clock_gettime};
 
-        const PREFIX: &[u8] = b"/awww-ipc-";
+        const PREFIX: &[u8] = b"/vellum-ipc-";
         const FLAGS: OFlags = OFlags::CREATE.union(OFlags::EXCL).union(OFlags::RDWR);
         const MODE: Mode = Mode::RUSR.union(Mode::WUSR);
 
@@ -95,7 +95,7 @@ impl Mmap {
         use rustix::fs::MemfdFlags;
         use rustix::fs::SealFlags;
 
-        let name = c"awww-ipc";
+        let name = c"vellum-ipc";
         let flags = MemfdFlags::ALLOW_SEALING | MemfdFlags::CLOEXEC;
 
         loop {

@@ -164,7 +164,7 @@ impl Compressor {
         assert_eq!(
             prev.len(),
             cur.len(),
-            "awww cannot currently deal with animations whose frames have different sizes!"
+            "vellum cannot currently deal with animations whose frames have different sizes!"
         );
 
         self.buf.clear();

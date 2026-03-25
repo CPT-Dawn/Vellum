@@ -691,7 +691,7 @@ pub extern "C" fn main(
     }
 
     // create the socket listener and setup the signal handlers
-    // this will also return an error if there is an `awww-daemon` instance already
+    // this will also return an error if there is a `vellum-daemon` instance already
     // running
     let listener = SocketWrapper::new(&cli.namespace).unwrap();
     setup_signals();
@@ -849,7 +849,7 @@ impl SocketWrapper {
         if fs::access(&addr, fs::Access::EXISTS).is_ok() {
             if is_daemon_running(namespace).map_err(|s| s.to_string())? {
                 return Err(
-                    "There is an awww-daemon instance already running on this socket!".to_string(),
+                    "There is a vellum-daemon instance already running on this socket!".to_string(),
                 );
             }
             warn!(

@@ -1,11 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["client", "daemon", "common", "tests"]
-default-members = ["client", "daemon"]
+members = ["common", "daemon", "vellum"]
+default-members = ["daemon", "vellum"]
 
 [workspace.package]
-version = "0.12.0"
-authors = ["Leonardo Gibrowski Faé <leonardo.fae44@gmail.com>"]
+version = "1.0.0"
+authors = ["CPT-Dawn"]
 edition = "2024"
 license-file = "LICENSE"
 rust-version = "1.89.0"

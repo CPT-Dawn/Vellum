@@ -79,7 +79,7 @@ fn draw_top_bar(frame: &mut Frame, area: Rect, app: &App) {
     let wallpaper = app.selected_wallpaper_label();
     let title = Line::from(vec![
         Span::styled(
-            " Waywall ",
+            " Vellum ",
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
         Span::styled("Wallpaper Manager Frontend", Style::default().fg(TEXT)),
@@ -321,10 +321,11 @@ fn draw_monitors(frame: &mut Frame, area: Rect, app: &App) {
         .iter()
         .map(|monitor| {
             let label = format!(
-                "{} {}x{} {}",
+                "{} {}x{} @{} {}",
                 monitor.name,
                 monitor.width,
                 monitor.height,
+                monitor.scale,
                 monitor
                     .wallpaper
                     .as_ref()

@@ -1,23 +1,54 @@
 use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
 use image::{
-    AnimationDecoder, DynamicImage, Frames, GenericImageView, ImageError, ImageFormat,
     codecs::{gif::GifDecoder, png::PngDecoder, webp::WebPDecoder},
+    AnimationDecoder, DynamicImage, Frames, GenericImageView, ImageError, ImageFormat,
 };
 use resvg::usvg::{Options, Tree};
 
 use std::{
-    io::{Cursor, Read, stdin},
+    io::{stdin, Cursor, Read},
     path::Path,
 };
 
 use common::{
     compression::{BitPack, Compressor},
-    ipc::{self, Coord, Nanos, PixelFormat, Position},
+    ipc::{Nanos, PixelFormat},
 };
 
-use crate::cli::ResizeStrategy;
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ResizeStrategy {
+    #[default]
+    Crop,
+    Fit,
+    Stretch,
+    No,
+}
 
-use super::cli;
+impl ResizeStrategy {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::No => "no",
+            Self::Crop => "crop",
+            Self::Fit => "fit",
+            Self::Stretch => "stretch",
+        }
+    }
+}
+
+impl core::str::FromStr for ResizeStrategy {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "no" => Ok(Self::No),
+            "crop" => Ok(Self::Crop),
+            "fit" => Ok(Self::Fit),
+            "stretch" => Ok(Self::Stretch),
+            _ => Err("unrecognized resize strategy. Valid resize strategies are: no | crop | fit | stretch"),
+        }
+    }
+}
 
 pub enum Format {
     Image(ImageFormat),
@@ -25,8 +56,8 @@ pub enum Format {
     Svg(Box<Tree>),
 }
 
-impl std::fmt::Debug for Format {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Format {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Image(arg0) => f.debug_tuple("Image").field(arg0).finish(),
             Self::JpegXL => f.debug_tuple("JpegXL").finish(),
@@ -42,7 +73,7 @@ pub struct ImgBuf {
 }
 
 impl ImgBuf {
-    /// Create a new ImgBuf from a given path. Use - for Stdin
+    /// Create a new ImgBuf from a given path. Use `-` for stdin.
     pub fn new(path: &Path) -> Result<Self, String> {
         let bytes = if let Some("-") = path.to_str() {
             let mut bytes = Vec::new();
@@ -62,10 +93,10 @@ impl ImgBuf {
         let is_animated = match format {
             Some(ImageFormat::Gif) => true,
             Some(ImageFormat::WebP) => WebPDecoder::new(Cursor::new(&bytes))
-                .map_err(|e| format!("failed to decode Webp Image: {e}"))?
+                .map_err(|e| format!("failed to decode Webp image: {e}"))?
                 .has_animation(),
             Some(ImageFormat::Png) => PngDecoder::new(Cursor::new(&bytes))
-                .map_err(|e| format!("failed to decode Png Image: {e}"))?
+                .map_err(|e| format!("failed to decode Png image: {e}"))?
                 .is_apng()
                 .map_err(|e| format!("failed to detect if Png is animated: {e}"))?,
             None => match reader.into_dimensions() {
@@ -88,14 +119,14 @@ impl ImgBuf {
                             }
                             Err(e) => {
                                 return Err(format!(
-                                    "Unrecognized format by `image` crate. Also failed to decode as `svg`: {e}."
-                                ));
+                                "unrecognized format by `image` crate. Also failed to decode as `svg`: {e}."
+                            ));
                             }
                         }
                     }
                     _ => {
                         return Err(format!(
-                            "Format recognized by `image` crate but another error occurred: {e}."
+                            "format recognized by `image` crate but another error occurred: {e}."
                         ));
                     }
                 },
@@ -104,7 +135,7 @@ impl ImgBuf {
         };
 
         Ok(Self {
-            format: Format::Image(format.unwrap()), // this is ok because we return err earlier if it is None
+            format: Format::Image(format.unwrap()),
             bytes: bytes.into_boxed_slice(),
             is_animated,
         })
@@ -114,7 +145,7 @@ impl ImgBuf {
         self.is_animated
     }
 
-    /// Decode the ImgBuf into an RgbImage
+    /// Decode the ImgBuf into an RGB or RGBA image.
     pub fn decode_prepare(&'_ self) -> DecodeBuffer<'_> {
         match &self.format {
             Format::Image(_) | Format::JpegXL => DecodeBuffer::RasterImage(RasterImage(self)),
@@ -122,7 +153,7 @@ impl ImgBuf {
         }
     }
 
-    /// Convert this ImgBuf into Frames
+    /// Convert this ImgBuf into animation frames.
     pub fn as_frames(&'_ self) -> Result<Frames<'_>, String> {
         match self.format {
             Format::Image(ImageFormat::Gif) => Ok(GifDecoder::new(Cursor::new(&self.bytes))
@@ -134,7 +165,7 @@ impl ImgBuf {
             Format::Image(ImageFormat::Png) => Ok(PngDecoder::new(Cursor::new(&self.bytes))
                 .map_err(|e| format!("failed to decode png during animation: {e}"))?
                 .apng()
-                .unwrap() // we detected this earlier
+                .unwrap()
                 .into_frames()),
             _ => Err(format!(
                 "requested format has no decoder: {:#?}",
@@ -195,6 +226,7 @@ impl RasterImage<'_> {
 impl VectorImage<'_> {
     pub fn decode(&self, format: PixelFormat, width: u32, height: u32) -> Result<Image, String> {
         use resvg::{tiny_skia::PixmapMut, usvg::Transform};
+
         let tree = self.0;
         let scale = {
             let size = tree.size();
@@ -252,7 +284,7 @@ pub enum DecodeBuffer<'a> {
     VectorImage(VectorImage<'a>),
 }
 
-/// Created by decoding a RasterImage or a VectorImage
+/// Created by decoding a RasterImage or a VectorImage.
 pub struct Image {
     width: u32,
     height: u32,
@@ -263,7 +295,6 @@ pub struct Image {
 impl Image {
     #[must_use]
     fn crop(&self, x: u32, y: u32, width: u32, height: u32) -> Self {
-        // make sure we don't crop a region larger than the image
         let x = x.min(self.width) as usize;
         let y = y.min(self.height) as usize;
         let width = (width as usize).min(self.width as usize - x);
@@ -291,8 +322,6 @@ impl Image {
     fn from_frame(frame: image::Frame, format: PixelFormat) -> Self {
         let dynimage = DynamicImage::ImageRgba8(frame.into_buffer());
         let (width, height) = dynimage.dimensions();
-
-        // NOTE: when animating frames, we ALWAYS use 3 channels
 
         let format = match format {
             PixelFormat::Bgr | PixelFormat::Abgr => PixelFormat::Bgr,
@@ -326,7 +355,6 @@ pub fn compress_frames(
     let mut compressor = Compressor::new();
     let mut compressed_frames = Vec::new();
 
-    // The first frame should always exist
     let first = frames.next().unwrap().unwrap();
     let first_duration = first.delay().numer_denom_ms();
     let mut first_duration = Nanos::from_millis((first_duration.0 / first_duration.1).into());
@@ -368,7 +396,6 @@ pub fn compress_frames(
         canvas = Some(img);
     }
 
-    //Add the first frame we got earlier:
     if let Some(canvas) = canvas.as_ref() {
         match compressor.compress(canvas, &first_img, format) {
             Some(bytes) => compressed_frames.push((bytes, first_duration)),
@@ -380,16 +407,6 @@ pub fn compress_frames(
     }
 
     Ok(compressed_frames)
-}
-
-pub fn make_filter(filter: cli::Filter) -> fast_image_resize::FilterType {
-    match filter {
-        cli::Filter::Nearest => fast_image_resize::FilterType::Box,
-        cli::Filter::Bilinear => fast_image_resize::FilterType::Bilinear,
-        cli::Filter::CatmullRom => fast_image_resize::FilterType::CatmullRom,
-        cli::Filter::Mitchell => fast_image_resize::FilterType::Mitchell,
-        cli::Filter::Lanczos3 => fast_image_resize::FilterType::Lanczos3,
-    }
 }
 
 pub fn img_pad(img: &Image, dimensions: (u32, u32), color: [u8; 4]) -> Box<[u8]> {
@@ -427,8 +444,6 @@ pub fn img_pad(img: &Image, dimensions: (u32, u32), color: [u8; 4]) -> Box<[u8]>
         padded.extend_from_slice(color);
     }
 
-    // Calculate left and right border widths. `u32::div` rounds toward 0, so, if `img_w` is odd,
-    // add an extra pixel to the right border to ensure the row is the correct width.
     let left_border_w = (padded_w - img_w) / 2;
     let right_border_w = left_border_w + (img_w % 2);
 
@@ -453,8 +468,6 @@ pub fn img_pad(img: &Image, dimensions: (u32, u32), color: [u8; 4]) -> Box<[u8]>
     padded.into_boxed_slice()
 }
 
-/// Resize an image to fit within the given dimensions, covering as much space as possible without
-/// cropping.
 pub fn img_resize_fit(
     img: &Image,
     dimensions: (u32, u32),
@@ -465,7 +478,6 @@ pub fn img_resize_fit(
     if (img.width, img.height) == (width, height) {
         Ok(img.bytes.clone())
     } else {
-        // if our image is already scaled to fit, skip resizing it and just pad it directly
         if img.width == width || img.height == height {
             return Ok(img_pad(img, dimensions, padding_color));
         }
@@ -591,111 +603,4 @@ pub fn img_resize_crop(
     };
 
     Ok(resized_img)
-}
-
-pub fn make_transition(img: &cli::Img) -> ipc::Transition {
-    let mut angle = img.transition_angle;
-    let mut wave = img.transition_wave;
-    let step = img.transition_step;
-
-    let x = match img.transition_pos.x {
-        cli::CliCoord::Percent(x) => {
-            if !(0.0..=1.0).contains(&x) {
-                println!(
-                    "Warning: x value not in range [0,1] position might be set outside screen: {x}"
-                );
-            }
-            Coord::Percent(x)
-        }
-        cli::CliCoord::Pixel(x) => Coord::Pixel(x),
-    };
-
-    let y = match img.transition_pos.y {
-        cli::CliCoord::Percent(y) => {
-            if !(0.0..=1.0).contains(&y) {
-                println!(
-                    "Warning: y value not in range [0,1] position might be set outside screen: {y}"
-                );
-            }
-            Coord::Percent(y)
-        }
-        cli::CliCoord::Pixel(y) => Coord::Pixel(y),
-    };
-
-    let mut pos = Position::new(x, y);
-
-    let transition_type = match img.transition_type {
-        cli::TransitionType::None => ipc::TransitionType::None,
-        cli::TransitionType::Simple => ipc::TransitionType::Simple,
-        cli::TransitionType::Fade => ipc::TransitionType::Fade,
-        cli::TransitionType::Wipe => {
-            wave = (0.0, 0.0);
-            ipc::TransitionType::Wipe
-        }
-        cli::TransitionType::Outer => ipc::TransitionType::Outer,
-        cli::TransitionType::Grow => ipc::TransitionType::Grow,
-        cli::TransitionType::Wave => ipc::TransitionType::Wave,
-        cli::TransitionType::Right => {
-            angle = 0.0;
-            ipc::TransitionType::Wipe
-        }
-        cli::TransitionType::Top => {
-            angle = 90.0;
-            ipc::TransitionType::Wipe
-        }
-        cli::TransitionType::Left => {
-            angle = 180.0;
-            ipc::TransitionType::Wipe
-        }
-        cli::TransitionType::Bottom => {
-            angle = 270.0;
-            ipc::TransitionType::Wipe
-        }
-        cli::TransitionType::Center => {
-            pos = Position::new(Coord::Percent(0.5), Coord::Percent(0.5));
-            ipc::TransitionType::Grow
-        }
-        cli::TransitionType::Any => {
-            pos = Position::new(
-                Coord::Percent(fastrand::f32()),
-                Coord::Percent(fastrand::f32()),
-            );
-            if fastrand::bool() {
-                ipc::TransitionType::Grow
-            } else {
-                ipc::TransitionType::Outer
-            }
-        }
-        cli::TransitionType::Random => {
-            pos = Position::new(
-                Coord::Percent(fastrand::f32()),
-                Coord::Percent(fastrand::f32()),
-            );
-            angle = fastrand::f64() * 360.0;
-            wave = (fastrand::f32() * 100.0, fastrand::f32() * 100.0);
-
-            match fastrand::u8(0..4) {
-                0 => ipc::TransitionType::Fade,
-                1 => ipc::TransitionType::Wave,
-                2 => ipc::TransitionType::Outer,
-                3 => ipc::TransitionType::Grow,
-                _ => unreachable!(),
-            }
-        }
-    };
-
-    let transition = ipc::Transition {
-        duration: img.transition_duration,
-        step,
-        fps: img.transition_fps,
-        bezier: img.transition_bezier,
-        angle,
-        pos,
-        transition_type,
-        wave,
-        invert_y: img.invert_y,
-    };
-
-    common::log::debug!("transition: {transition:#?}");
-    transition
 }

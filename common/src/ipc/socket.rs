@@ -72,10 +72,10 @@ impl IpcSocket {
                 path = Path::from_cstr(final_component);
             }
             runtime.push_cstr(path.as_c_str());
-            runtime.append_cstr(c"-awww-daemon");
+            runtime.append_cstr(c"-vellum-daemon");
         } else {
             log::warn!("WAYLAND_DISPLAY variable not set. Defaulting to wayland-0");
-            runtime.push_cstr(c"wayland-0-awww-daemon");
+            runtime.push_cstr(c"wayland-0-vellum-daemon");
         }
 
         runtime

@@ -7,11 +7,18 @@ use std::path::{Path, PathBuf};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
+use common::ipc::BgInfo;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::backend::Backend;
+
 const LOG_CAPACITY: usize = 128;
-const CONFIG_FILE_NAME: &str = "wallpaper-manager.toml";
+const CONFIG_FILE_NAME: &str = "vellum.toml";
+
+fn default_monitor_scale() -> f32 {
+    1.0
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ScalingMode {
@@ -126,6 +133,8 @@ pub struct Monitor {
     pub name: String,
     pub width: u16,
     pub height: u16,
+    #[serde(default = "default_monitor_scale")]
+    pub scale: f32,
     pub wallpaper: Option<PathBuf>,
 }
 
@@ -135,6 +144,7 @@ impl Monitor {
             name: name.to_string(),
             width,
             height,
+            scale: 1.0,
             wallpaper: None,
         }
     }
@@ -149,6 +159,8 @@ pub struct MonitorConfig {
     pub name: String,
     pub width: u16,
     pub height: u16,
+    #[serde(default = "default_monitor_scale")]
+    pub scale: f32,
     pub wallpaper: Option<PathBuf>,
 }
 
@@ -158,6 +170,7 @@ impl From<&Monitor> for MonitorConfig {
             name: monitor.name.clone(),
             width: monitor.width,
             height: monitor.height,
+            scale: monitor.scale,
             wallpaper: monitor.wallpaper.clone(),
         }
     }
@@ -169,7 +182,25 @@ impl From<MonitorConfig> for Monitor {
             name: value.name,
             width: value.width,
             height: value.height,
+            scale: value.scale,
             wallpaper: value.wallpaper,
+        }
+    }
+}
+
+impl From<BgInfo> for Monitor {
+    fn from(value: BgInfo) -> Self {
+        let scale = value.scale_factor.to_f32();
+        let (width, height) = value.dim;
+        Self {
+            name: value.name.into(),
+            width: width.min(u16::MAX as u32) as u16,
+            height: height.min(u16::MAX as u32) as u16,
+            scale,
+            wallpaper: match value.img {
+                common::ipc::BgImg::Img(path) => Some(PathBuf::from(path.as_ref())),
+                common::ipc::BgImg::Color(_) => None,
+            },
         }
     }
 }
@@ -266,7 +297,7 @@ impl App {
             scaling_modes: ScalingMode::ALL.to_vec(),
             selected_scaling_mode: 1,
             daemon_status: DaemonStatus::Stopped,
-            logs: vec!["[INFO] Waywall TUI ready".to_string()],
+            logs: vec!["[INFO] Vellum TUI ready".to_string()],
             focus: Focus::Files,
             matcher: SkimMatcherV2::default(),
         };
@@ -302,12 +333,12 @@ impl App {
         Ok(())
     }
 
-    pub fn handle_event(&mut self, event: Event) -> bool {
+    pub fn handle_event(&mut self, event: Event, backend: &mut Backend) -> bool {
         match event {
             Event::Key(key)
                 if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat =>
             {
-                self.handle_key_event(key)
+                self.handle_key_event(key, backend)
             }
             Event::Resize(_, _) => {
                 self.push_log("[INFO] Terminal resized".to_string());
@@ -317,7 +348,7 @@ impl App {
         }
     }
 
-    pub fn handle_key_event(&mut self, key: KeyEvent) -> bool {
+    pub fn handle_key_event(&mut self, key: KeyEvent, backend: &mut Backend) -> bool {
         if self.search_active {
             return self.handle_search_key(key);
         }
@@ -362,7 +393,7 @@ impl App {
                 false
             }
             KeyCode::Char('s') => {
-                self.toggle_daemon_status();
+                self.toggle_daemon_status(backend);
                 false
             }
             KeyCode::Tab => {
@@ -386,7 +417,7 @@ impl App {
                 false
             }
             KeyCode::Enter => {
-                self.activate_selection();
+                self.activate_selection(backend);
                 false
             }
             KeyCode::Char('[') => {
@@ -467,7 +498,7 @@ impl App {
         }
     }
 
-    fn activate_selection(&mut self) {
+    fn activate_selection(&mut self, backend: &mut Backend) {
         if self.focus == Focus::Files {
             if let Some(entry) = self.selected_browser_entry().cloned() {
                 match entry.kind {
@@ -476,25 +507,25 @@ impl App {
                         self.refresh_browser_entries();
                     }
                     FileKind::File => {
-                        self.apply_wallpaper(entry.path);
+                        self.apply_wallpaper(backend, entry.path);
                     }
                 }
             }
             return;
         }
 
-        self.apply_wallpaper_from_selection();
+        self.apply_wallpaper_from_selection(backend);
     }
 
-    fn apply_wallpaper_from_selection(&mut self) {
-        if let Some(entry) = self.selected_browser_entry().cloned() {
-            if entry.kind == FileKind::File {
-                self.apply_wallpaper(entry.path);
-            }
+    fn apply_wallpaper_from_selection(&mut self, backend: &mut Backend) {
+        if let Some(entry) = self.selected_browser_entry().cloned()
+            && entry.kind == FileKind::File
+        {
+            self.apply_wallpaper(backend, entry.path);
         }
     }
 
-    fn apply_wallpaper(&mut self, wallpaper: PathBuf) {
+    fn apply_wallpaper(&mut self, backend: &mut Backend, wallpaper: PathBuf) {
         if self.monitors.is_empty() {
             self.push_log("[WARN] No monitors available".to_string());
             return;
@@ -502,21 +533,34 @@ impl App {
 
         let mode = self.current_scaling_mode();
         let monitor_name = self.monitors[self.selected_monitor].name.clone();
-        self.monitors[self.selected_monitor].wallpaper = Some(wallpaper.clone());
-        self.push_log(format!(
-            "[INFO] Applied {} to {} using {}",
-            wallpaper.display(),
-            monitor_name,
-            mode
-        ));
+        match backend.apply_wallpaper(&wallpaper, &monitor_name, mode) {
+            Ok(()) => {
+                self.push_log(format!(
+                    "[INFO] Applied {} to {} using {}",
+                    wallpaper.display(),
+                    monitor_name,
+                    mode
+                ));
+                self.sync_from_backend(backend);
+            }
+            Err(error) => {
+                self.push_log(format!("[ERROR] Failed to apply wallpaper: {error}"));
+            }
+        }
     }
 
-    fn toggle_daemon_status(&mut self) {
-        self.daemon_status = match self.daemon_status {
-            DaemonStatus::Running => DaemonStatus::Stopped,
-            DaemonStatus::Stopped | DaemonStatus::Crashed => DaemonStatus::Running,
-        };
-        self.push_log(format!("[INFO] Daemon {}", self.daemon_status));
+    fn toggle_daemon_status(&mut self, backend: &mut Backend) {
+        match backend.toggle_daemon() {
+            Ok(status) => {
+                self.daemon_status = status;
+                self.sync_from_backend(backend);
+                self.push_log(format!("[INFO] Daemon {}", self.daemon_status));
+            }
+            Err(error) => {
+                self.daemon_status = DaemonStatus::Crashed;
+                self.push_log(format!("[ERROR] Failed to toggle daemon: {error}"));
+            }
+        }
     }
 
     fn toggle_favorite_current(&mut self) {
@@ -689,10 +733,33 @@ impl App {
         )
     }
 
+    pub fn sync_from_backend(&mut self, backend: &mut Backend) {
+        self.daemon_status = backend.status();
+
+        if let Ok(monitors) = backend.refresh_monitors() {
+            let selected_name = self.selected_monitor_ref().map(|monitor| monitor.name.clone());
+            self.monitors = monitors;
+
+            if let Some(selected_name) = selected_name {
+                if let Some(index) = self
+                    .monitors
+                    .iter()
+                    .position(|monitor| monitor.name == selected_name)
+                {
+                    self.selected_monitor = index;
+                } else if self.selected_monitor >= self.monitors.len() {
+                    self.selected_monitor = 0;
+                }
+            } else if self.selected_monitor >= self.monitors.len() {
+                self.selected_monitor = 0;
+            }
+        }
+    }
+
     fn config_path() -> PathBuf {
         config_dir()
             .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-            .join("waywall")
+            .join("vellum")
             .join(CONFIG_FILE_NAME)
     }
 
@@ -737,7 +804,7 @@ impl App {
                 .selected_scaling_mode
                 .min(ScalingMode::ALL.len().saturating_sub(1)),
             daemon_status: config.daemon_status,
-            logs: vec!["[INFO] Waywall TUI ready".to_string()],
+            logs: vec!["[INFO] Vellum TUI ready".to_string()],
             focus: Focus::Files,
             matcher: SkimMatcherV2::default(),
         };
@@ -748,14 +815,13 @@ impl App {
 
         app.refresh_browser_entries();
 
-        if let Some(selected_file) = config.selected_file {
-            if let Some(index) = app
+        if let Some(selected_file) = config.selected_file
+            && let Some(index) = app
                 .browser_filtered_indices
                 .iter()
                 .position(|browser_index| app.browser_entries[*browser_index].path == selected_file)
-            {
-                app.browser_selected = index;
-            }
+        {
+            app.browser_selected = index;
         }
 
         app
@@ -814,7 +880,7 @@ fn config_dir() -> Option<PathBuf> {
 fn default_browser_path() -> PathBuf {
     let configured = config_dir()
         .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-        .join("waywall");
+        .join("vellum");
 
     if configured.is_dir() {
         configured

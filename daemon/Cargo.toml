@@ -1,5 +1,5 @@
 [package]
-name = "awww-daemon"
+name = "vellum-daemon"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -14,8 +14,13 @@ common = { workspace = true }
 
 waybackend = { version = "0.10", default-features = false }
 libc = "0.2"
-rustix = { version = "1.1", default-features = false, features = [ "event", "runtime", "stdio", "termios" ] }
-smallvec  = { version = "1.15", default-features = false, features = [ "union" ] }
+rustix = { version = "1.1", default-features = false, features = [
+    "event",
+    "runtime",
+    "stdio",
+    "termios",
+] }
+smallvec = { version = "1.15", default-features = false, features = ["union"] }
 
 [build-dependencies]
 waybackend-scanner = { version = "0.10", features = ["build-script"] }

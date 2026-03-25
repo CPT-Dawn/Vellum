@@ -299,9 +299,9 @@ fn create_dir(p: &Path) -> io::Result<()> {
 
 fn user_cache_dir() -> io::Result<PathBuf> {
     if let Some(path) = unsafe { crate::getenv(c"XDG_CACHE_HOME") } {
-        Ok(PathBuf::from_iter([path, c"awww"]))
+        Ok(PathBuf::from_iter([path, c"vellum"]))
     } else if let Some(path) = unsafe { crate::getenv(c"HOME") } {
-        Ok(PathBuf::from_iter([path, c".cache", c"awww"]))
+        Ok(PathBuf::from_iter([path, c".cache", c"vellum"]))
     } else {
         Err(io::Errno::NOENT)
     }

@@ -61,14 +61,14 @@ impl Cli {
                 b"-q" | b"--quiet" => quiet = true,
                 b"-h" | b"--help" => {
                     let msg = b"\
-awww-daemon
+vellum-daemon
 
 Options:
 
     -f|--format <argb|abgr|rgb|bgr>
         Force the use of a specific wl_shm format.
 
-        By default, awww-daemon will use argb, because it is most widely
+        By default, vellum-daemon will use argb, because it is most widely
         supported. Generally speaking, formats with 3 channels will use 3/4 the
         memory of formats with 4 channels. Also, bgr formats are more efficient
         than rgb formats because we do not need to do an extra swap of the bytes
@@ -82,12 +82,12 @@ Options:
         else. If there is ever a use case for these, we can reconsider this.
 
     -n|--namespace <namespace>
-        Which wayland namespace to append to `awww-daemon`.
+        Which wayland namespace to append to `vellum-daemon`.
 
-        The resulting namespace will the `awww-daemon<specified namespace>`.
-        This also affects the name of the `awww-daemon` socket we will use to
+        The resulting namespace will the `vellum-daemon<specified namespace>`.
+        This also affects the name of the `vellum-daemon` socket we will use to
         communicate with the `client`. Specifically, our socket name is
-        ${{WAYLAND_DISPLAY}}-awww-daemon.<specified namespace>.socket.
+        ${{WAYLAND_DISPLAY}}-vellum-daemon.<specified namespace>.socket.
 
         Some compositors can have several different wallpapers per output. This
         allows you to differentiate between them. Most users will probably not have
@@ -95,8 +95,8 @@ Options:
 
     --no-cache
         Don't search the cache for the last wallpaper for each output.
-        Useful if you always want to select which image 'awww' loads manually
-        using 'awww img'.
+        Useful if you always want to select which image 'vellum' loads manually
+        from the TUI.
 
     -q|--quiet    will only log errors
     -h|--help     print help
@@ -108,7 +108,7 @@ Options:
                 b"-V" | b"--version" => {
                     let stdout = unsafe { rustix::stdio::stdout() };
                     let bufs = [
-                        rustix::io::IoSlice::new(b"awww-daemon "),
+                        rustix::io::IoSlice::new(b"vellum-daemon "),
                         rustix::io::IoSlice::new(env!("CARGO_PKG_VERSION").as_bytes()),
                         rustix::io::IoSlice::new(b"\n"),
                     ];

@@ -1,7 +1,6 @@
 use common::{
-    cache::{get_previous_image_cache, read_cache_file},
     ipc::{BgImg, BgInfo, PixelFormat, Scale},
-    log::{debug, error, warn},
+    log::{debug, error},
 };
 use waybackend::{Waybackend, objman::ObjectManager, types::ObjectId};
 
@@ -116,7 +115,7 @@ impl Wallpaper {
             wl_surface,
             Some(output),
             *layer,
-            &format!("awww-daemon{}", daemon.namespace),
+            &format!("vellum-daemon{}", daemon.namespace),
         )
         .unwrap();
 
@@ -256,7 +255,7 @@ impl Wallpaper {
     pub fn commit_surface_changes(
         &mut self,
         backend: &mut Waybackend,
-        namespace: &str,
+        _namespace: &str,
         use_cache: bool,
     ) -> bool {
         if self.needs_ack {
@@ -275,64 +274,10 @@ impl Wallpaper {
         self.dirty = false;
 
         if (!self.configured && use_cache) || self.img.is_set() {
-            'brk: {
-                let output_name = self.name.as_deref().unwrap_or("?");
-                let cache_data = match read_cache_file(output_name) {
-                    Ok(cache_data) => cache_data,
-                    Err(e) => {
-                        warn!("failed to read cache file: {e}");
-                        break 'brk;
-                    }
-                };
-
-                match get_previous_image_cache(output_name, namespace, &cache_data) {
-                    Ok(Some(cache)) => {
-                        // Note: we do not need to wait for this command because we set SIGCHLD to
-                        // SIG_IGN, and posix says that does not generate a zombie process (see
-                        // `man 3p _EXIT`
-
-                        unsafe extern "C" {
-                            static environ: *const *const core::ffi::c_char;
-                        }
-
-                        let cmd = format!(
-                            "exec awww img \
-                            --outputs='{output_name}' \
-                            --resize={} \
-                            --filter={} \
-                            --namespace='{namespace}' \
-                            --transition-type=none \
-                            '{}'\0",
-                            cache.resize, cache.filter, cache.img_path
-                        );
-                        match unsafe { rustix::runtime::kernel_fork() } {
-                            Ok(rustix::runtime::Fork::Child(_)) => {
-                                let args: [*const u8; 4] = [
-                                    c"sh".as_ptr().cast(),
-                                    c"-c".as_ptr().cast(),
-                                    cmd.as_ptr(),
-                                    core::ptr::null(),
-                                ];
-                                let err = unsafe {
-                                    rustix::runtime::execve(
-                                        c"/bin/sh",
-                                        args.as_ptr(),
-                                        environ as *const _,
-                                    )
-                                };
-                                panic!("execve failed: {err}");
-                            }
-                            Ok(rustix::runtime::Fork::ParentOf(_)) => (),
-                            Err(e) => error!("fork failed: {e}"),
-                        }
-                    }
-                    Ok(None) => break 'brk,
-                    Err(e) => {
-                        warn!("failed get previous image cache: {e}");
-                        break 'brk;
-                    }
-                };
-            }
+            debug!(
+                "Output {} has cache data, but automatic restore via the old client CLI is disabled",
+                self.output_name
+            );
         }
 
         let (width, height) = (self.width.get(), self.height.get());
