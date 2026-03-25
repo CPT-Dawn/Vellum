@@ -15,7 +15,6 @@ use tokio::process::Command;
 pub enum FocusRegion {
     Library,
     Preview,
-    Monitors,
     Playlist,
     Transitions,
 }
@@ -24,8 +23,7 @@ impl FocusRegion {
     pub fn next(self) -> Self {
         match self {
             Self::Library => Self::Preview,
-            Self::Preview => Self::Monitors,
-            Self::Monitors => Self::Playlist,
+            Self::Preview => Self::Playlist,
             Self::Playlist => Self::Transitions,
             Self::Transitions => Self::Library,
         }
@@ -35,8 +33,7 @@ impl FocusRegion {
         match self {
             Self::Library => Self::Transitions,
             Self::Preview => Self::Library,
-            Self::Monitors => Self::Preview,
-            Self::Playlist => Self::Monitors,
+            Self::Playlist => Self::Transitions,
             Self::Transitions => Self::Playlist,
         }
     }
@@ -45,7 +42,6 @@ impl FocusRegion {
         match self {
             Self::Library => "Library",
             Self::Preview => "Preview",
-            Self::Monitors => "Monitors",
             Self::Playlist => "Playlist",
             Self::Transitions => "Transitions",
         }
@@ -203,8 +199,6 @@ pub struct MonitorEntry {
     pub name: String,
     pub width: u32,
     pub height: u32,
-    pub x: i32,
-    pub y: i32,
     pub focused: bool,
 }
 
@@ -290,16 +284,6 @@ pub const TRANSITION_EFFECTS: [&str; 4] = ["simple", "fade", "wipe", "grow"];
 pub struct PlaylistEntry {
     pub path: PathBuf,
     pub transition: TransitionState,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct AspectSimulation {
-    pub target_width: u32,
-    pub target_height: u32,
-    pub bars_x: u32,
-    pub bars_y: u32,
-    pub crop_x: u32,
-    pub crop_y: u32,
 }
 
 pub fn preferred_initial_browser_dir() -> PathBuf {
@@ -400,8 +384,6 @@ struct HyprMonitor {
     name: String,
     width: u32,
     height: u32,
-    x: i32,
-    y: i32,
     #[serde(default)]
     focused: bool,
 }
@@ -427,8 +409,6 @@ async fn probe_hyprctl_monitors() -> Result<Vec<MonitorEntry>> {
             name: monitor.name,
             width: monitor.width,
             height: monitor.height,
-            x: monitor.x,
-            y: monitor.y,
             focused: monitor.focused,
         })
         .collect())
@@ -465,23 +445,11 @@ fn parse_wlr_randr_monitors(payload: Value) -> Result<Vec<MonitorEntry>> {
             let obj = item.as_object()?;
             let name = obj.get("name")?.as_str()?.to_owned();
             let (width, height) = extract_wlr_dimensions(obj)?;
-            let x = obj
-                .get("x")
-                .and_then(Value::as_i64)
-                .and_then(|value| i32::try_from(value).ok())
-                .unwrap_or(0);
-            let y = obj
-                .get("y")
-                .and_then(Value::as_i64)
-                .and_then(|value| i32::try_from(value).ok())
-                .unwrap_or(0);
 
             Some(MonitorEntry {
                 name,
                 width,
                 height,
-                x,
-                y,
                 focused: false,
             })
         })
@@ -594,133 +562,4 @@ pub fn render_to_monitor_canvas(
             DynamicImage::ImageRgba8(canvas)
         }
     }
-}
-
-pub fn simulate_aspect(
-    image: (u32, u32),
-    monitor: (u32, u32),
-    scale_mode: ScaleMode,
-    rotation: Rotation,
-) -> AspectSimulation {
-    let (mut image_width, mut image_height) = (image.0.max(1), image.1.max(1));
-    if matches!(rotation, Rotation::Deg90 | Rotation::Deg270) {
-        std::mem::swap(&mut image_width, &mut image_height);
-    }
-
-    let monitor_width = monitor.0.max(1) as f64;
-    let monitor_height = monitor.1.max(1) as f64;
-    let image_width_f = image_width as f64;
-    let image_height_f = image_height as f64;
-
-    match scale_mode {
-        ScaleMode::Stretch => AspectSimulation {
-            target_width: monitor.0.max(1),
-            target_height: monitor.1.max(1),
-            bars_x: 0,
-            bars_y: 0,
-            crop_x: 0,
-            crop_y: 0,
-        },
-        ScaleMode::Fill => {
-            let scale = (monitor_width / image_width_f).max(monitor_height / image_height_f);
-            let target_width = (image_width_f * scale).round().max(1.0) as u32;
-            let target_height = (image_height_f * scale).round().max(1.0) as u32;
-            AspectSimulation {
-                target_width,
-                target_height,
-                bars_x: 0,
-                bars_y: 0,
-                crop_x: target_width.saturating_sub(monitor.0) / 2,
-                crop_y: target_height.saturating_sub(monitor.1) / 2,
-            }
-        }
-        ScaleMode::Fit => {
-            let scale = (monitor_width / image_width_f).min(monitor_height / image_height_f);
-            let target_width = (image_width_f * scale).round().max(1.0) as u32;
-            let target_height = (image_height_f * scale).round().max(1.0) as u32;
-            AspectSimulation {
-                target_width,
-                target_height,
-                bars_x: monitor.0.saturating_sub(target_width) / 2,
-                bars_y: monitor.1.saturating_sub(target_height) / 2,
-                crop_x: 0,
-                crop_y: 0,
-            }
-        }
-        ScaleMode::Center => AspectSimulation {
-            target_width: image_width.min(monitor.0),
-            target_height: image_height.min(monitor.1),
-            bars_x: monitor.0.saturating_sub(image_width.min(monitor.0)) / 2,
-            bars_y: monitor.1.saturating_sub(image_height.min(monitor.1)) / 2,
-            crop_x: image_width.saturating_sub(monitor.0) / 2,
-            crop_y: image_height.saturating_sub(monitor.1) / 2,
-        },
-    }
-}
-
-pub fn monitor_layout_ascii(
-    monitors: &[MonitorEntry],
-    selected: usize,
-    cols: usize,
-    rows: usize,
-) -> Vec<String> {
-    if monitors.is_empty() || cols < 4 || rows < 3 {
-        return vec![String::from("No monitor data")];
-    }
-
-    let min_x = monitors.iter().map(|monitor| monitor.x).min().unwrap_or(0);
-    let min_y = monitors.iter().map(|monitor| monitor.y).min().unwrap_or(0);
-    let max_x = monitors
-        .iter()
-        .map(|monitor| monitor.x + i32::try_from(monitor.width).unwrap_or(i32::MAX / 4))
-        .max()
-        .unwrap_or(1);
-    let max_y = monitors
-        .iter()
-        .map(|monitor| monitor.y + i32::try_from(monitor.height).unwrap_or(i32::MAX / 4))
-        .max()
-        .unwrap_or(1);
-
-    let span_x = (max_x - min_x).max(1) as f32;
-    let span_y = (max_y - min_y).max(1) as f32;
-
-    let mut grid = vec![vec![' '; cols]; rows];
-
-    for (idx, monitor) in monitors.iter().enumerate() {
-        let x0 = (((monitor.x - min_x) as f32 / span_x) * (cols as f32 - 1.0)).round() as usize;
-        let y0 = (((monitor.y - min_y) as f32 / span_y) * (rows as f32 - 1.0)).round() as usize;
-        let x1 = ((((monitor.x - min_x) as f32 + monitor.width as f32) / span_x)
-            * (cols as f32 - 1.0))
-            .round() as usize;
-        let y1 = ((((monitor.y - min_y) as f32 + monitor.height as f32) / span_y)
-            * (rows as f32 - 1.0))
-            .round() as usize;
-
-        let fill = if idx == selected { '▓' } else { '▒' };
-        let y_start = y0.min(rows - 1);
-        let y_end = y1.min(rows - 1);
-        let x_start = x0.min(cols - 1);
-        let x_end = x1.min(cols - 1);
-
-        for (y, row) in grid
-            .iter_mut()
-            .enumerate()
-            .skip(y_start)
-            .take(y_end.saturating_sub(y_start) + 1)
-        {
-            for (x, cell) in row
-                .iter_mut()
-                .enumerate()
-                .skip(x_start)
-                .take(x_end.saturating_sub(x_start) + 1)
-            {
-                let border = y == y_start || y == y_end || x == x_start || x == x_end;
-                *cell = if border { '█' } else { fill };
-            }
-        }
-    }
-
-    grid.into_iter()
-        .map(|line| line.into_iter().collect::<String>())
-        .collect()
 }

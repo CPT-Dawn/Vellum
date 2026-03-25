@@ -2,6 +2,12 @@ mod backend;
 mod model;
 mod render;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LeftPaneTab {
+    LibraryExplorer,
+    ActiveQueue,
+}
+
 use std::{
     collections::{BTreeSet, HashMap, HashSet, VecDeque},
     ffi::CString,
@@ -21,6 +27,7 @@ use model::{
     PlaylistEntry, Rotation, ScaleMode, TransitionState,
 };
 use ratatui::{Terminal, backend::CrosstermBackend, widgets::ListState};
+use ratatui_image::{picker::Picker, protocol::StatefulProtocol};
 use tokio::{
     sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
     time,
@@ -118,6 +125,7 @@ enum AppEvent {
 pub(crate) struct App {
     pub(crate) should_quit: bool,
     pub(crate) focus: model::FocusRegion,
+    pub(crate) left_tab: LeftPaneTab,
     pub(crate) input_mode: InputMode,
     pub(crate) help_open: bool,
 
@@ -137,6 +145,8 @@ pub(crate) struct App {
 
     pub(crate) selected_preview: Option<ImagePreview>,
     image_dim_cache: HashMap<PathBuf, Option<(u32, u32)>>,
+    preview_picker: Option<Picker>,
+    preview_state: Option<StatefulProtocol>,
 
     pub(crate) playlist: Vec<PlaylistEntry>,
     pub(crate) playlist_running: bool,
@@ -151,6 +161,7 @@ pub(crate) struct App {
 
     pub(crate) notifications: VecDeque<Notification>,
     pub(crate) status: String,
+    pub(crate) activity_open: bool,
 
     pub(crate) daemon_namespace: String,
     backend_child: Option<tokio::process::Child>,
@@ -175,6 +186,7 @@ impl App {
         Self {
             should_quit: false,
             focus: model::FocusRegion::Library,
+            left_tab: LeftPaneTab::LibraryExplorer,
             input_mode: InputMode::Normal,
             help_open: false,
             browser_dir: model::preferred_initial_browser_dir(),
@@ -191,6 +203,8 @@ impl App {
             targets_initialized: false,
             selected_preview: None,
             image_dim_cache: HashMap::new(),
+            preview_picker: None,
+            preview_state: None,
             playlist: Vec::new(),
             playlist_running: false,
             playlist_interval: Duration::from_secs(20),
@@ -202,6 +216,7 @@ impl App {
             transition: TransitionState::default(),
             notifications: VecDeque::new(),
             status: String::from("Welcome to Vellum"),
+            activity_open: false,
             daemon_namespace: String::from("vellum"),
             backend_child: None,
             daemon_online: false,
@@ -214,6 +229,28 @@ impl App {
 
     fn request_monitor_refresh(&mut self) {
         self.refresh_monitors = true;
+    }
+
+    fn init_preview_picker(&mut self) {
+        self.preview_picker = Picker::from_query_stdio()
+            .ok()
+            .or_else(|| Some(Picker::halfblocks()));
+    }
+
+    fn toggle_activity_log(&mut self) {
+        self.activity_open = !self.activity_open;
+    }
+
+    fn toggle_left_tab(&mut self) {
+        self.left_tab = match self.left_tab {
+            LeftPaneTab::LibraryExplorer => LeftPaneTab::ActiveQueue,
+            LeftPaneTab::ActiveQueue => LeftPaneTab::LibraryExplorer,
+        };
+
+        self.focus = match self.left_tab {
+            LeftPaneTab::LibraryExplorer => model::FocusRegion::Library,
+            LeftPaneTab::ActiveQueue => model::FocusRegion::Playlist,
+        };
     }
 
     fn notify(&mut self, level: NotificationLevel, text: impl Into<String>) {
@@ -320,20 +357,6 @@ impl App {
         self.refresh_preview();
     }
 
-    fn move_monitor(&mut self, delta: isize) {
-        if self.monitors.is_empty() {
-            return;
-        }
-
-        let max = self.monitors.len().saturating_sub(1) as isize;
-        self.monitor_selected = (self.monitor_selected as isize + delta).clamp(0, max) as usize;
-        self.active_monitor_name = self
-            .monitors
-            .get(self.monitor_selected)
-            .map(|monitor| monitor.name.clone());
-        self.sync_monitor_state();
-    }
-
     fn move_playlist(&mut self, delta: isize) {
         if self.playlist.is_empty() {
             return;
@@ -392,11 +415,13 @@ impl App {
     fn refresh_preview(&mut self) {
         let Some(entry) = self.selected_browser_entry() else {
             self.selected_preview = None;
+            self.preview_state = None;
             return;
         };
 
         if entry.is_dir() {
             self.selected_preview = None;
+            self.preview_state = None;
             return;
         }
 
@@ -410,10 +435,26 @@ impl App {
         };
 
         self.selected_preview = dims.map(|(width, height)| ImagePreview {
-            path: image_path,
+            path: image_path.clone(),
             width,
             height,
         });
+
+        self.preview_state = None;
+
+        let Some(picker) = self.preview_picker.as_ref() else {
+            return;
+        };
+
+        let Ok(reader) = image::ImageReader::open(&image_path) else {
+            return;
+        };
+
+        let Ok(image) = reader.decode() else {
+            return;
+        };
+
+        self.preview_state = Some(picker.new_resize_protocol(image));
     }
 
     fn toggle_playlist_for_selected(&mut self) {
@@ -652,29 +693,6 @@ impl App {
         }
     }
 
-    fn handle_monitor_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
-        if let KeyCode::Char(ch) = code
-            && ('1'..='9').contains(&ch)
-        {
-            let index = (ch as u8 - b'1') as usize;
-            self.toggle_target_for_monitor(index);
-            return;
-        }
-
-        match code {
-            KeyCode::Up | KeyCode::Char('k') => self.move_monitor(-1),
-            KeyCode::Down | KeyCode::Char('j') => self.move_monitor(1),
-            KeyCode::Char('m') => self.toggle_target_for_monitor(self.monitor_selected),
-            KeyCode::Char('A') => self.select_all_targets(),
-            KeyCode::Char('x') => self.clear_targets(),
-            KeyCode::Enter | KeyCode::Char('a') => self.apply_current_browser_selection(),
-            KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.request_monitor_refresh()
-            }
-            _ => {}
-        }
-    }
-
     fn handle_playlist_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Up | KeyCode::Char('k') => self.move_playlist(-1),
@@ -703,7 +721,7 @@ impl App {
         }
 
         if let KeyCode::Char(ch) = code
-            && ('1'..='9').contains(&ch)
+            && ('1'..='4').contains(&ch)
         {
             let index = (ch as u8 - b'1') as usize;
             self.toggle_target_for_monitor(index);
@@ -730,7 +748,17 @@ impl App {
                 self.notify(NotificationLevel::Info, "Exiting TUI");
             }
             KeyCode::Char('?') => self.help_open = true,
-            KeyCode::Tab => self.cycle_focus(true),
+            KeyCode::Char('L') => self.toggle_activity_log(),
+            KeyCode::Tab => {
+                if matches!(
+                    self.focus,
+                    model::FocusRegion::Library | model::FocusRegion::Playlist
+                ) {
+                    self.toggle_left_tab();
+                } else {
+                    self.cycle_focus(true);
+                }
+            }
             KeyCode::BackTab => self.cycle_focus(false),
             KeyCode::Esc => {}
             KeyCode::Char('b') => ensure_backend_running(self),
@@ -762,14 +790,12 @@ impl App {
             KeyCode::Enter => match self.focus {
                 model::FocusRegion::Library => self.handle_library_key(KeyCode::Enter),
                 model::FocusRegion::Preview => self.apply_current_browser_selection(),
-                model::FocusRegion::Monitors => self.apply_current_browser_selection(),
                 model::FocusRegion::Playlist => self.apply_selected_playlist_item(),
                 model::FocusRegion::Transitions => self.apply_current_browser_selection(),
             },
             _ => match self.focus {
                 model::FocusRegion::Library => self.handle_library_key(code),
                 model::FocusRegion::Preview => self.handle_preview_key(code),
-                model::FocusRegion::Monitors => self.handle_monitor_key(code, modifiers),
                 model::FocusRegion::Playlist => self.handle_playlist_key(code),
                 model::FocusRegion::Transitions => self.handle_transition_key(code),
             },
@@ -800,17 +826,6 @@ impl App {
     }
 }
 
-pub(crate) fn selected_preview_simulation(app: &App) -> Option<model::AspectSimulation> {
-    let preview = app.selected_preview.as_ref()?;
-    let monitor = app.selected_monitor()?;
-    Some(model::simulate_aspect(
-        (preview.width, preview.height),
-        (monitor.width, monitor.height),
-        app.scale_mode,
-        app.rotation,
-    ))
-}
-
 pub(crate) fn daemon_status_text(app: &App) -> &'static str {
     if app.daemon_online {
         "online"
@@ -833,17 +848,14 @@ pub(crate) fn app_key_hints(app: &App) -> String {
     }
 
     match app.focus {
-        model::FocusRegion::Library => {
-            String::from("j/k browse | Enter open/apply | p queue | / search | g/G jump | Tab next")
-        }
+        model::FocusRegion::Library => String::from(
+            "j/k browse | Enter open/apply | p queue | / search | g/G jump | Tab queue",
+        ),
         model::FocusRegion::Preview => {
             String::from("f fit mode | r rotate | Enter apply | m toggle active target | Tab next")
         }
-        model::FocusRegion::Monitors => String::from(
-            "j/k select | 1..9 toggle target | m toggle | A all | x clear | Enter apply",
-        ),
         model::FocusRegion::Playlist => {
-            String::from("j/k select | u/n reorder | d delete | x clear | Space play | Enter apply")
+            String::from("j/k select | u/n reorder | d delete | x clear | Space play | Tab library")
         }
         model::FocusRegion::Transitions => {
             String::from("j/k field | h/l change | +/- interval | Enter apply | Tab next")
@@ -852,7 +864,7 @@ pub(crate) fn app_key_hints(app: &App) -> String {
 }
 
 pub(crate) fn global_key_hints() -> &'static str {
-    "q quit | ? help | Ctrl+r refresh monitors | b launch daemon"
+    "q quit | ? help | L activity log | Ctrl+r refresh monitors | b launch daemon"
 }
 
 async fn run_app() -> io::Result<()> {
@@ -870,6 +882,7 @@ async fn run_app() -> io::Result<()> {
         mpsc::unbounded_channel();
 
     let mut app = App::new(event_tx);
+    app.init_preview_picker();
     if let Err(err) = app.reload_browser_dir() {
         app.notify(
             NotificationLevel::Error,
@@ -890,7 +903,7 @@ async fn run_app() -> io::Result<()> {
                 poll_backend_child(&mut app).await;
                 run_playlist_tick(&mut app);
                 app.prune_notifications();
-                terminal.draw(|frame| render::draw(frame, &app))?;
+                terminal.draw(|frame| render::draw(frame, &mut app))?;
             }
             Some(event) = event_rx.recv() => {
                 handle_app_event(&mut app, event);
