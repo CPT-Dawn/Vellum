@@ -1,0 +1,48 @@
+[package]
+name = "awww"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = [
+  # all formats, except avif, since avif compiles just rav1d, which is just an
+  # encoder, which we do not care about. avif-native is an optional dependency,
+  # since it adds a dependency on dav1d
+  "bmp",
+  "dds",
+  "exr",
+  "ff",
+  "gif",
+  "hdr",
+  "ico",
+  "jpeg",
+  "png",
+  "pnm",
+  "qoi",
+  "tga",
+  "tiff",
+  "webp",
+] }
+jzon  = { version = "0.12", default-features = false }
+resvg = { version = "0.47" }
+rustix = { version = "1.1", default-features = false, features = [ "fs", "stdio" ] }
+fast_image_resize = "6.0"
+clap = { version = "4.6", features = ["derive", "wrap_help", "env"] }
+fastrand = { version = "2.3", default-features = false, features = ["std"] }
+common = { workspace = true }
+jxl-oxide = { version = "0.12", features = ["image"], optional = true }
+
+[features]
+all-formats = ["avif", "jxl"]
+avif = ["image/avif-native"]
+jxl = ["dep:jxl-oxide"]
+
+[build-dependencies]
+clap = { version = "4.6", features = ["derive", "env"] }
+clap_complete = "4.6"

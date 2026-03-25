@@ -1,0 +1,32 @@
+[package]
+name = "common"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rustix = { version = "1.1", default-features = false, features = [
+  "alloc",
+  "fs",
+  "net",
+  "mm",
+  "shm",
+  "stdio",
+  "param",
+  "process",
+  "termios",
+  "thread",
+  "time",
+] }
+cpufeatures = { version = "0.3" }
+
+[build-dependencies]
+pkg-config = "0.3"
+
+[dev-dependencies]
+fastrand = { version = "2.3", default-features = false, features = [ "std" ] }
