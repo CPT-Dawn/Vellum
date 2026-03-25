@@ -120,13 +120,6 @@ impl Backend {
         Ok(DaemonStatus::Crashed)
     }
 
-    pub fn toggle_daemon(&mut self) -> Result<DaemonStatus, BackendError> {
-        match self.status() {
-            DaemonStatus::Running => self.stop_daemon(),
-            DaemonStatus::Stopped | DaemonStatus::Crashed => self.start_daemon(),
-        }
-    }
-
     pub fn apply_wallpaper(
         &self,
         wallpaper: &Path,
@@ -327,7 +320,9 @@ fn canonical_wallpaper_path(wallpaper: &Path) -> Result<String, BackendError> {
 }
 
 fn daemon_program_path() -> PathBuf {
-    if let Ok(mut path) = std::env::current_exe() && path.pop() {
+    if let Ok(mut path) = std::env::current_exe()
+        && path.pop()
+    {
         let candidate = path.join("vellum-daemon");
         if candidate.exists() {
             return candidate;

@@ -1,12 +1,12 @@
 use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
 use image::{
-    codecs::{gif::GifDecoder, png::PngDecoder, webp::WebPDecoder},
     AnimationDecoder, DynamicImage, Frames, GenericImageView, ImageError, ImageFormat,
+    codecs::{gif::GifDecoder, png::PngDecoder, webp::WebPDecoder},
 };
 use resvg::usvg::{Options, Tree};
 
 use std::{
-    io::{stdin, Cursor, Read},
+    io::{Cursor, Read, stdin},
     path::Path,
 };
 
@@ -45,7 +45,9 @@ impl core::str::FromStr for ResizeStrategy {
             "crop" => Ok(Self::Crop),
             "fit" => Ok(Self::Fit),
             "stretch" => Ok(Self::Stretch),
-            _ => Err("unrecognized resize strategy. Valid resize strategies are: no | crop | fit | stretch"),
+            _ => Err(
+                "unrecognized resize strategy. Valid resize strategies are: no | crop | fit | stretch",
+            ),
         }
     }
 }
@@ -119,8 +121,8 @@ impl ImgBuf {
                             }
                             Err(e) => {
                                 return Err(format!(
-                                "unrecognized format by `image` crate. Also failed to decode as `svg`: {e}."
-                            ));
+                                    "unrecognized format by `image` crate. Also failed to decode as `svg`: {e}."
+                                ));
                             }
                         }
                     }

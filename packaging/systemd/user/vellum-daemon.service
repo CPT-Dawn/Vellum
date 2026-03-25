@@ -1,0 +1,12 @@
+[Unit]
+Description=Vellum wallpaper daemon
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/vellum-daemon
+Restart=on-failure
+RestartSec=2
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=default.target

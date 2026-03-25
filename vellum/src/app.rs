@@ -307,7 +307,7 @@ impl App {
                 false
             }
             KeyCode::Char('s') => {
-                self.toggle_daemon_status(backend);
+                self.start_or_refresh_daemon(backend);
                 false
             }
             KeyCode::Tab => {
@@ -470,17 +470,24 @@ impl App {
         }
     }
 
-    fn toggle_daemon_status(&mut self, backend: &mut Backend) {
-        match backend.toggle_daemon() {
-            Ok(status) => {
-                self.daemon_status = status;
+    fn start_or_refresh_daemon(&mut self, backend: &mut Backend) {
+        match backend.status() {
+            DaemonStatus::Running => {
+                self.daemon_status = DaemonStatus::Running;
                 self.sync_from_backend(backend);
-                self.push_log(format!("[INFO] Daemon {}", self.daemon_status));
+                self.push_log("[INFO] Daemon refreshed".to_string());
             }
-            Err(error) => {
-                self.daemon_status = DaemonStatus::Crashed;
-                self.push_log(format!("[ERROR] Failed to toggle daemon: {error}"));
-            }
+            DaemonStatus::Stopped | DaemonStatus::Crashed => match backend.start_daemon() {
+                Ok(status) => {
+                    self.daemon_status = status;
+                    self.sync_from_backend(backend);
+                    self.push_log(format!("[INFO] Daemon {}", self.daemon_status));
+                }
+                Err(error) => {
+                    self.daemon_status = DaemonStatus::Crashed;
+                    self.push_log(format!("[ERROR] Failed to start daemon: {error}"));
+                }
+            },
         }
     }
 

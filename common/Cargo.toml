@@ -29,4 +29,4 @@ cpufeatures = { version = "0.3" }
 pkg-config = "0.3"
 
 [dev-dependencies]
-fastrand = { version = "2.3", default-features = false, features = [ "std" ] }
+fastrand = { version = "2.3", default-features = false, features = ["std"] }

@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
-use ratatui::Frame;
 
 use crate::app::{App, DaemonStatus, FileEntry, FileKind, Monitor};
 
@@ -478,7 +478,7 @@ fn draw_legend(frame: &mut Frame, area: Rect, app: &App) {
                 "[s]",
                 Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" Start Daemon", Style::default().fg(TEXT)),
+            Span::styled(" Start/Refresh Daemon", Style::default().fg(TEXT)),
             Span::raw("  "),
             Span::styled(
                 "[Enter]",
