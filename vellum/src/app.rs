@@ -163,6 +163,7 @@ impl From<BgInfo> for Monitor {
 }
 
 pub struct App {
+    pictures_root: PathBuf,
     pub current_path: PathBuf,
     pub browser_entries: Vec<FileEntry>,
     pub browser_filtered_indices: Vec<usize>,
@@ -213,8 +214,10 @@ impl Default for App {
 
 impl App {
     pub fn new() -> Self {
+        let pictures_root = pictures_dir();
         let mut app = Self {
-            current_path: default_browser_path(),
+            pictures_root: pictures_root.clone(),
+            current_path: pictures_root,
             browser_entries: Vec::new(),
             browser_filtered_indices: Vec::new(),
             browser_selected: 0,
@@ -414,8 +417,15 @@ impl App {
             if let Some(entry) = self.selected_browser_entry().cloned() {
                 match entry.kind {
                     FileKind::Directory => {
-                        self.current_path = entry.path;
-                        self.refresh_browser_entries();
+                        if self.is_within_root(&entry.path) {
+                            self.current_path = entry.path;
+                            self.refresh_browser_entries();
+                        } else {
+                            self.push_log(format!(
+                                "[WARN] Refusing to open directory outside Pictures: {}",
+                                entry.path.display()
+                            ));
+                        }
                     }
                     FileKind::File => {
                         self.apply_wallpaper(backend, entry.path);
@@ -488,10 +498,14 @@ impl App {
     }
 
     fn go_to_parent_directory(&mut self) {
-        if let Some(parent) = self.current_path.parent() {
+        if let Some(parent) = self.current_path.parent()
+            && self.is_within_root(parent)
+        {
             self.current_path = parent.to_path_buf();
             self.push_log(format!("[INFO] Opened {}", self.current_path.display()));
             self.refresh_browser_entries();
+        } else {
+            self.push_log("[INFO] Already at Pictures root".to_string());
         }
     }
 
@@ -594,6 +608,10 @@ impl App {
     }
 
     fn build_file_entry(&self, path: PathBuf) -> Option<FileEntry> {
+        if !self.is_within_root(&path) {
+            return None;
+        }
+
         let metadata = fs::metadata(&path).ok()?;
         let kind = if metadata.is_dir() {
             FileKind::Directory
@@ -677,6 +695,17 @@ impl App {
         self.logs.push(entry);
     }
 
+    fn is_within_root(&self, path: &Path) -> bool {
+        let root = self
+            .pictures_root
+            .canonicalize()
+            .unwrap_or_else(|_| self.pictures_root.clone());
+        match path.canonicalize() {
+            Ok(candidate) => candidate.starts_with(&root),
+            Err(_) => false,
+        }
+    }
+
     fn next_scaling_mode(&mut self) {
         if self.selected_scaling_mode + 1 < self.scaling_modes.len() {
             self.selected_scaling_mode += 1;
@@ -713,22 +742,12 @@ fn is_supported_media(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn config_dir() -> Option<PathBuf> {
-    env::var_os("XDG_CONFIG_HOME")
+fn pictures_dir() -> PathBuf {
+    env::var_os("HOME")
         .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-}
-
-fn default_browser_path() -> PathBuf {
-    let configured = config_dir()
-        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-        .join("vellum");
-
-    if configured.is_dir() {
-        configured
-    } else {
-        env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-    }
+        .or_else(|| env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Pictures")
 }
 
 #[cfg(test)]
