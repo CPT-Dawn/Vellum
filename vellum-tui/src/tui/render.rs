@@ -654,7 +654,15 @@ fn visible_playlist_items(
                         .to_string(),
                     Style::default().fg(C_TEXT),
                 ),
-                Span::styled("  queued", Style::default().fg(C_MUTED)),
+                Span::styled("  on ", Style::default().fg(C_MUTED)),
+                Span::styled(
+                    if entry.target_monitor.is_empty() {
+                        String::from("current")
+                    } else {
+                        entry.target_monitor.clone()
+                    },
+                    Style::default().fg(C_ACCENT_2),
+                ),
             ]))
         })
         .collect::<Vec<_>>();

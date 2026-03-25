@@ -284,6 +284,7 @@ pub const TRANSITION_EFFECTS: [&str; 4] = ["simple", "fade", "wipe", "grow"];
 pub struct PlaylistEntry {
     pub path: PathBuf,
     pub transition: TransitionState,
+    pub target_monitor: String,
 }
 
 pub fn preferred_initial_browser_dir() -> PathBuf {

@@ -411,6 +411,10 @@ impl App {
             .unwrap_or_default()
     }
 
+    fn selected_output_name(&self) -> Option<String> {
+        self.selected_output_names().into_iter().next()
+    }
+
     fn apply_filter(&mut self) {
         self.browser_filtered = model::fuzzy_filter(&self.browser_entries, &self.search_query);
         self.sync_browser_state();
@@ -487,6 +491,7 @@ impl App {
         self.playlist.push(PlaylistEntry {
             path: entry.path,
             transition: self.transition.clone(),
+            target_monitor: self.selected_output_name().unwrap_or_default(),
         });
         self.playlist_selected = self.playlist.len().saturating_sub(1);
         self.sync_playlist_state();
@@ -628,7 +633,13 @@ impl App {
             return;
         };
 
-        request_apply(self, entry.path, entry.transition);
+        let selected_outputs = if entry.target_monitor.is_empty() {
+            self.selected_output_names()
+        } else {
+            vec![entry.target_monitor.clone()]
+        };
+
+        request_apply_with_outputs(self, entry.path, entry.transition, selected_outputs);
     }
 
     fn selected_image_path(&self) -> Option<PathBuf> {
@@ -1051,10 +1062,25 @@ fn run_playlist_tick(app: &mut App) {
     app.playlist_selected = (index + 1) % app.playlist.len();
     app.sync_playlist_state();
     app.last_playlist_tick = Instant::now();
-    request_apply(app, entry.path, entry.transition);
+    let selected_outputs = if entry.target_monitor.is_empty() {
+        app.selected_output_names()
+    } else {
+        vec![entry.target_monitor]
+    };
+    request_apply_with_outputs(app, entry.path, entry.transition, selected_outputs);
 }
 
 fn request_apply(app: &mut App, path: PathBuf, transition: TransitionState) {
+    let selected_outputs = app.selected_output_names();
+    request_apply_with_outputs(app, path, transition, selected_outputs);
+}
+
+fn request_apply_with_outputs(
+    app: &mut App,
+    path: PathBuf,
+    transition: TransitionState,
+    selected_outputs: Vec<String>,
+) {
     if app.ipc_in_flight {
         app.notify(NotificationLevel::Warn, "Apply already in flight");
         return;
@@ -1077,7 +1103,6 @@ fn request_apply(app: &mut App, path: PathBuf, transition: TransitionState) {
     );
 
     let namespace = app.daemon_namespace.clone();
-    let selected_outputs = app.selected_output_names();
     let scale_mode = app.scale_mode;
     let rotation = app.rotation;
     let tx = app.event_tx.clone();
