@@ -17,6 +17,7 @@ const WARN: Color = Color::Rgb(227, 174, 90);
 const BAD: Color = Color::Rgb(224, 92, 110);
 const TEXT: Color = Color::Rgb(220, 228, 237);
 const MUTED: Color = Color::Rgb(145, 156, 170);
+const CELL_ASPECT_COMPENSATION: f64 = 2.0;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let root = frame.area();
@@ -189,92 +190,48 @@ fn browser_item(entry: &FileEntry) -> ListItem<'static> {
 }
 
 fn draw_monitor_canvas(frame: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .title(Line::from(vec![
-            Span::styled(
-                " Monitor Canvas ",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(
-                    "{} / {}",
-                    app.selected_monitor_label(),
-                    app.current_scaling_mode()
-                ),
-                Style::default().fg(MUTED),
-            ),
-        ]))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(BORDER))
-        .style(Style::default().bg(PANEL));
-    frame.render_widget(block, area);
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(BORDER))
+            .style(Style::default().bg(PANEL)),
+        area,
+    );
 
     if let Some(monitor) = app.selected_monitor_ref() {
         let preview = fitted_monitor_rect(area, monitor);
+        let stand = monitor_stand_rect(area, preview);
+        let base = monitor_base_rect(area, preview);
+
         frame.render_widget(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(ACCENT))
-                .style(Style::default().bg(PANEL_ALT))
-                .title(Line::from(vec![
-                    Span::styled(
-                        " Preview ",
-                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!("{}: {}x{}", monitor.name, monitor.width, monitor.height),
-                        Style::default().fg(MUTED),
-                    ),
-                ])),
+                .style(Style::default().bg(PANEL_ALT)),
             preview,
         );
 
-        let inner = inner_rect(preview);
-        let wallpaper = app
-            .selected_browser_entry()
-            .map(|entry| entry.name.clone())
-            .unwrap_or_else(|| "No wallpaper selected".to_string());
-        let content = vec![
-            Line::from(vec![
-                Span::styled("Image ", Style::default().fg(MUTED)),
-                Span::styled(
-                    format!("[{}]", app.current_scaling_mode()),
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!(" to {}x{}", monitor.width, monitor.height),
-                    Style::default().fg(TEXT),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("Monitor ", Style::default().fg(MUTED)),
-                Span::styled(monitor.name.clone(), Style::default().fg(TEXT)),
-                Span::raw(" • "),
-                Span::styled(
-                    format!("aspect {:.2}:1", monitor.aspect_ratio()),
-                    Style::default().fg(ACCENT_SOFT),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("Source ", Style::default().fg(MUTED)),
-                Span::styled(wallpaper, Style::default().fg(TEXT)),
-            ]),
-        ];
+        if let Some(stand) = stand {
+            frame.render_widget(
+                Block::default().style(Style::default().bg(ACCENT_SOFT)),
+                stand,
+            );
+        }
 
-        frame.render_widget(
-            Paragraph::new(Text::from(content))
-                .style(Style::default().fg(TEXT))
-                .left_aligned(),
-            inner,
-        );
+        if let Some(base) = base {
+            frame.render_widget(
+                Block::default().style(Style::default().bg(ACCENT_SOFT)),
+                base,
+            );
+        }
     }
 }
 
 fn fitted_monitor_rect(area: Rect, monitor: &Monitor) -> Rect {
     let usable_width = area.width.saturating_sub(4).max(8);
-    let usable_height = area.height.saturating_sub(4).max(4);
+    let usable_height = area.height.saturating_sub(6).max(4);
 
-    let target_ratio = monitor.aspect_ratio();
+    let target_ratio = monitor.aspect_ratio() * CELL_ASPECT_COMPENSATION;
     let area_ratio = usable_width as f64 / usable_height.max(1) as f64;
 
     let (width, height) = if area_ratio > target_ratio {
@@ -288,17 +245,33 @@ fn fitted_monitor_rect(area: Rect, monitor: &Monitor) -> Rect {
     };
 
     let x = area.x + (area.width.saturating_sub(width)) / 2;
-    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let y = area.y + (area.height.saturating_sub(height + 2)) / 2;
     Rect::new(x, y, width, height)
 }
 
-fn inner_rect(area: Rect) -> Rect {
-    Rect::new(
-        area.x.saturating_add(1),
-        area.y.saturating_add(1),
-        area.width.saturating_sub(2),
-        area.height.saturating_sub(2),
-    )
+fn monitor_stand_rect(area: Rect, screen: Rect) -> Option<Rect> {
+    let stand_width = (screen.width / 5).clamp(4, screen.width.saturating_sub(2).max(4));
+    let stand_x = screen.x + (screen.width.saturating_sub(stand_width)) / 2;
+    let stand_y = screen.y.saturating_add(screen.height);
+
+    if stand_y >= area.bottom() {
+        return None;
+    }
+
+    Some(Rect::new(stand_x, stand_y, stand_width, 1))
+}
+
+fn monitor_base_rect(area: Rect, screen: Rect) -> Option<Rect> {
+    let stand_y = screen.y.saturating_add(screen.height);
+    let base_y = stand_y.saturating_add(1);
+    let base_width = (screen.width / 3).clamp(6, screen.width.max(6));
+    let base_x = screen.x + (screen.width.saturating_sub(base_width)) / 2;
+
+    if base_y >= area.bottom() {
+        return None;
+    }
+
+    Some(Rect::new(base_x, base_y, base_width, 1))
 }
 
 fn draw_controls(frame: &mut Frame, area: Rect, app: &App) {
@@ -543,5 +516,59 @@ fn status_style(status: DaemonStatus) -> Style {
         DaemonStatus::Running => Style::default().fg(GOOD).add_modifier(Modifier::BOLD),
         DaemonStatus::Stopped => Style::default().fg(WARN).add_modifier(Modifier::BOLD),
         DaemonStatus::Crashed => Style::default().fg(BAD).add_modifier(Modifier::BOLD),
+    }
+}
+
+#[cfg(test)]
+fn monitor_aspect_label(width: u16, height: u16) -> String {
+    const COMMON_RATIOS: &[(u32, u32, &str)] = &[
+        (32, 9, "32:9"),
+        (21, 9, "21:9"),
+        (16, 10, "16:10"),
+        (16, 9, "16:9"),
+        (3, 2, "3:2"),
+        (4, 3, "4:3"),
+        (5, 4, "5:4"),
+        (9, 16, "9:16"),
+        (10, 16, "10:16"),
+        (2, 3, "2:3"),
+        (3, 4, "3:4"),
+    ];
+
+    let width = width as u32;
+    let height = height as u32;
+
+    for (ratio_width, ratio_height, label) in COMMON_RATIOS {
+        if width.saturating_mul(*ratio_height) == height.saturating_mul(*ratio_width) {
+            return (*label).to_string();
+        }
+    }
+
+    let divisor = gcd(width, height);
+    format!("{}:{}", width / divisor, height / divisor)
+}
+
+#[cfg(test)]
+fn gcd(mut left: u32, mut right: u32) -> u32 {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+
+    left.max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::monitor_aspect_label;
+
+    #[test]
+    fn recognizes_common_monitor_ratios() {
+        assert_eq!(monitor_aspect_label(2560, 1600), "16:10");
+        assert_eq!(monitor_aspect_label(1920, 1080), "16:9");
+        assert_eq!(monitor_aspect_label(1080, 1920), "9:16");
+        assert_eq!(monitor_aspect_label(3440, 1440), "43:18");
+        assert_eq!(monitor_aspect_label(1280, 1024), "5:4");
     }
 }
