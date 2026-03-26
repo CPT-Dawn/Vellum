@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use common::cache;
 use common::ipc::{
-    self, Answer, BgInfo, Coord, IpcError, IpcSocket, Position, RequestSend, Transition,
+    self, Answer, BgInfo, ClearSend, Coord, IpcError, IpcSocket, Position, RequestSend, Transition,
     TransitionType,
 };
 
@@ -137,6 +137,37 @@ impl Backend {
 
         let socket = IpcSocket::client(&self.namespace)?;
         RequestSend::Img(request).send(&socket)?;
+
+        match Answer::receive(socket.recv()?) {
+            Answer::Ok => Ok(()),
+            _ => Err(BackendError::Message(
+                "daemon returned an unexpected response".to_string(),
+            )),
+        }
+    }
+
+    pub fn clear_wallpaper(&self, monitor_name: &str) -> Result<(), BackendError> {
+        let socket = IpcSocket::client(&self.namespace)?;
+        let request = ClearSend {
+            color: [0, 0, 0, 255],
+            outputs: vec![monitor_name.to_string()].into_boxed_slice(),
+        }
+        .create_request()
+        .map_err(|error| BackendError::Message(error.to_string()))?;
+
+        RequestSend::Clear(request).send(&socket)?;
+
+        match Answer::receive(socket.recv()?) {
+            Answer::Ok => Ok(()),
+            _ => Err(BackendError::Message(
+                "daemon returned an unexpected response".to_string(),
+            )),
+        }
+    }
+
+    pub fn toggle_pause(&self) -> Result<(), BackendError> {
+        let socket = IpcSocket::client(&self.namespace)?;
+        RequestSend::Pause.send(&socket)?;
 
         match Answer::receive(socket.recv()?) {
             Answer::Ok => Ok(()),

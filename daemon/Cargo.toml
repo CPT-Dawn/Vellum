@@ -14,6 +14,23 @@ common = { workspace = true }
 
 waybackend = { version = "0.10", default-features = false }
 libc = "0.2"
+fast_image_resize = "6.0"
+image = { version = "0.25", default-features = false, features = [
+    "bmp",
+    "dds",
+    "exr",
+    "ff",
+    "gif",
+    "hdr",
+    "ico",
+    "jpeg",
+    "png",
+    "pnm",
+    "qoi",
+    "tga",
+    "tiff",
+    "webp",
+] }
 rustix = { version = "1.1", default-features = false, features = [
     "event",
     "runtime",
@@ -21,6 +38,7 @@ rustix = { version = "1.1", default-features = false, features = [
     "termios",
 ] }
 smallvec = { version = "1.15", default-features = false, features = ["union"] }
+resvg = { version = "0.47" }
 
 [build-dependencies]
 waybackend-scanner = { version = "0.10", features = ["build-script"] }

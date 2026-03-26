@@ -259,13 +259,6 @@ fn draw_monitor_canvas(frame: &mut Frame, area: Rect, app: &App) {
                 Span::styled("Source ", Style::default().fg(MUTED)),
                 Span::styled(wallpaper, Style::default().fg(TEXT)),
             ]),
-            Line::from(vec![
-                Span::styled(
-                    "Preview only ",
-                    Style::default().fg(WARN).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("Sixel/Kitty overlay reserved", Style::default().fg(MUTED)),
-            ]),
         ];
 
         frame.render_widget(
@@ -479,6 +472,19 @@ fn draw_legend(frame: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
             ),
             Span::styled(" Start/Refresh Daemon", Style::default().fg(TEXT)),
+            Span::raw("  "),
+            Span::styled(
+                "[c]",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" Clear Monitor", Style::default().fg(TEXT)),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "[p]",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" Pause Daemon", Style::default().fg(TEXT)),
             Span::raw("  "),
             Span::styled(
                 "[Enter]",

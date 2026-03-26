@@ -280,6 +280,14 @@ impl App {
                 self.toggle_favorite_current();
                 false
             }
+            KeyCode::Char('c') => {
+                self.clear_selected_monitor(backend);
+                false
+            }
+            KeyCode::Char('p') => {
+                self.toggle_pause(backend);
+                false
+            }
             KeyCode::Char('v') => {
                 self.hide_unsupported = !self.hide_unsupported;
                 self.push_log(format!(
@@ -466,6 +474,36 @@ impl App {
             }
             Err(error) => {
                 self.push_log(format!("[ERROR] Failed to apply wallpaper: {error}"));
+            }
+        }
+    }
+
+    fn clear_selected_monitor(&mut self, backend: &mut Backend) {
+        if self.monitors.is_empty() {
+            self.push_log("[WARN] No monitors available".to_string());
+            return;
+        }
+
+        let monitor_name = self.monitors[self.selected_monitor].name.clone();
+        match backend.clear_wallpaper(&monitor_name) {
+            Ok(()) => {
+                self.push_log(format!("[INFO] Cleared {}", monitor_name));
+                self.sync_from_backend(backend);
+            }
+            Err(error) => {
+                self.push_log(format!("[ERROR] Failed to clear wallpaper: {error}"));
+            }
+        }
+    }
+
+    fn toggle_pause(&mut self, backend: &mut Backend) {
+        match backend.toggle_pause() {
+            Ok(()) => {
+                self.push_log("[INFO] Daemon pause toggled".to_string());
+                self.sync_from_backend(backend);
+            }
+            Err(error) => {
+                self.push_log(format!("[ERROR] Failed to toggle pause: {error}"));
             }
         }
     }

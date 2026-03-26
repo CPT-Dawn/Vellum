@@ -1,10 +1,12 @@
 use common::{
+    cache,
     ipc::{BgImg, BgInfo, PixelFormat, Scale},
     log::{debug, error},
 };
 use waybackend::{Waybackend, objman::ObjectManager, types::ObjectId};
 
 use core::num::NonZeroI32;
+use std::path::Path;
 
 mod bump_pool;
 mod cell;
@@ -13,7 +15,7 @@ use crate::output_info::OutputInfo;
 pub use cell::WallpaperCell;
 
 use crate::{
-    WaylandObject,
+    WaylandObject, imgproc,
     wayland::{
         wl_compositor, wl_region, wl_surface, wp_fractional_scale_manager_v1,
         wp_fractional_scale_v1, wp_viewport, wp_viewporter, zwlr_layer_shell_v1,
@@ -255,7 +257,9 @@ impl Wallpaper {
     pub fn commit_surface_changes(
         &mut self,
         backend: &mut Waybackend,
+        objman: &mut ObjectManager<WaylandObject>,
         _namespace: &str,
+        pixel_format: PixelFormat,
         use_cache: bool,
     ) -> bool {
         if self.needs_ack {
@@ -271,14 +275,12 @@ impl Wallpaper {
         if !self.dirty {
             return false;
         }
-        self.dirty = false;
-
-        if (!self.configured && use_cache) || self.img.is_set() {
-            debug!(
-                "Output {} has cache data, but automatic restore via the old client CLI is disabled",
-                self.output_name
-            );
+        let should_restore = !self.configured && use_cache && !self.img.is_set();
+        if !self.dirty && !should_restore {
+            return false;
         }
+
+        self.dirty = false;
 
         let (width, height) = (self.width.get(), self.height.get());
         debug!(
@@ -291,10 +293,76 @@ impl Wallpaper {
         let (w, h) = self.scale_factor.mul_dim(width, height);
         self.pool.resize(backend, w, h);
 
+        if should_restore && self.restore_from_cache(backend, objman, pixel_format, _namespace) {
+            self.configured = true;
+            return true;
+        }
+
         self.frame_callback_handler.callback = None;
 
         wl_surface::req::commit(backend, self.wl_surface).unwrap();
         self.configured = true;
+        true
+    }
+
+    fn restore_from_cache(
+        &mut self,
+        backend: &mut Waybackend,
+        objman: &mut ObjectManager<WaylandObject>,
+        pixel_format: PixelFormat,
+        namespace: &str,
+    ) -> bool {
+        let output_name = self.output_name.to_string();
+        let cache_data = match cache::read_cache_file(&output_name) {
+            Ok(cache_data) => cache_data,
+            Err(error) => {
+                debug!(
+                    "Output {} has no cache to restore: {error}",
+                    self.output_name
+                );
+                return false;
+            }
+        };
+
+        let entry = match cache::get_previous_image_cache(&output_name, namespace, &cache_data) {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return false,
+            Err(error) => {
+                debug!(
+                    "Output {} cache entry is invalid: {error}",
+                    self.output_name
+                );
+                return false;
+            }
+        };
+
+        let resize = match entry.resize.parse::<imgproc::ResizeStrategy>() {
+            Ok(resize) => resize,
+            Err(error) => {
+                debug!(
+                    "Output {} cache resize mode is invalid: {error}",
+                    self.output_name
+                );
+                return false;
+            }
+        };
+
+        let path = Path::new(entry.img_path);
+        let dimensions = self.get_dimensions();
+        let bytes = match imgproc::load_wallpaper_bytes(path, dimensions, pixel_format, resize) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                debug!("Output {} restore decode failed: {error}", self.output_name);
+                return false;
+            }
+        };
+
+        self.set_img_info(BgImg::Img(entry.img_path.into()));
+        self.canvas_change(backend, objman, pixel_format, |canvas| {
+            canvas.copy_from_slice(&bytes);
+        });
+        self.attach_buffer_and_damage_surface(backend, objman);
+        wl_surface::req::commit(backend, self.wl_surface).unwrap();
         true
     }
 
@@ -308,6 +376,10 @@ impl Wallpaper {
 
     pub fn has_output_name(&self, name: u32) -> bool {
         self.output_name == name
+    }
+
+    pub fn output_name(&self) -> u32 {
+        self.output_name
     }
 
     pub fn has_layer_surface(&self, layer_surface: ObjectId) -> bool {

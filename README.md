@@ -14,8 +14,11 @@ Preferred setup on Arch or AUR installs:
 
 This keeps the daemon running for the whole Wayland session and lets systemd restart it if it fails during compositor startup.
 
+When cache is available, the daemon restores the last wallpaper for each output on first commit.
+
 If your desktop environment uses XDG autostart instead of a user service, install `packaging/autostart/vellum-daemon.desktop` into `~/.config/autostart/` or `/etc/xdg/autostart/`.
 
 ## TUI Daemon Keybind
 
-In the TUI, `s` now starts the daemon if it is stopped and refreshes its status if it is already running. It no longer stops the daemon.
+In the TUI, `s` starts the daemon if it is stopped and refreshes its status if it is already running. It no longer stops the daemon.
+Use `c` to clear the selected monitor and `p` to pause or resume the daemon.

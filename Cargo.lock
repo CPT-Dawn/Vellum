@@ -2508,7 +2508,10 @@ name = "vellum-daemon"
 version = "1.0.0"
 dependencies = [
  "common",
+ "fast_image_resize",
+ "image",
  "libc",
+ "resvg",
  "rustix",
  "smallvec",
  "waybackend",

@@ -8,6 +8,7 @@
 mod animations;
 mod cli;
 mod clock;
+mod imgproc;
 mod output_info;
 mod systemd;
 mod wallpaper;
@@ -294,7 +295,9 @@ impl Daemon {
         for wallpaper in &self.wallpapers {
             if wallpaper.borrow_mut().commit_surface_changes(
                 &mut self.backend,
+                &mut self.objman,
                 &self.namespace,
+                self.pixel_format,
                 self.use_cache,
             ) {
                 to_stop.push(wallpaper.clone());
