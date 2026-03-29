@@ -78,12 +78,12 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
 fn draw_monitor_header(frame: &mut Frame, area: Rect, app: &App) {
     let title = Line::from(vec![
         Span::styled(
-            " 󰍹 Outputs ",
+            " 󰍹 Monitor ",
             Style::default()
                 .fg(ACCENT_PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("session targets", Style::default().fg(TEXT_MUTED)),
+        Span::styled("selected target", Style::default().fg(TEXT_MUTED)),
     ]);
 
     let lines = if app.monitors.is_empty() {
@@ -93,31 +93,46 @@ fn draw_monitor_header(frame: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(WARN).add_modifier(Modifier::BOLD),
             )]),
             Line::from(vec![
-                Span::styled(" 󰆊 Wallpaper ", Style::default().fg(TEXT_MUTED)),
-                Span::styled("(none)", Style::default().fg(TEXT_DIM)),
+                Span::styled(" 󰁔 Outputs ", Style::default().fg(TEXT_MUTED)),
+                Span::styled("0", Style::default().fg(TEXT_DIM)),
             ]),
         ]
     } else {
+        let selected_index = app.selected_monitor.saturating_add(1);
+        let selected_has_wallpaper = app
+            .selected_monitor_ref()
+            .and_then(|monitor| monitor.wallpaper.as_ref())
+            .is_some();
+
         vec![
             Line::from(vec![
-                Span::styled(" 󰨈 ", Style::default().fg(TEXT_MUTED)),
+                Span::styled(" 󰨈 Selected ", Style::default().fg(TEXT_MUTED)),
                 Span::styled(
-                    app.selected_monitor_label(),
+                    format!(" {}. {} ", selected_index, app.selected_monitor_label()),
                     Style::default()
-                        .fg(ACCENT_SECONDARY)
+                        .fg(CURSOR_TEXT)
+                        .bg(HIGHLIGHT_BG)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
                 Span::styled(
-                    app.selected_monitor_metrics_label(),
-                    Style::default().fg(TEXT_SECONDARY),
+                    if selected_has_wallpaper {
+                        "󰄬 applied"
+                    } else {
+                        "󰄱 empty"
+                    },
+                    Style::default().fg(if selected_has_wallpaper {
+                        GOOD
+                    } else {
+                        TEXT_MUTED
+                    }),
                 ),
             ]),
             Line::from(vec![
-                Span::styled(" 󰆊 ", Style::default().fg(TEXT_MUTED)),
+                Span::styled(" 󰍹 ", Style::default().fg(TEXT_MUTED)),
                 Span::styled(
-                    app.selected_wallpaper_label(),
-                    Style::default().fg(TEXT_DIM),
+                    app.selected_monitor_metrics_label(),
+                    Style::default().fg(TEXT_SECONDARY),
                 ),
                 Span::raw("  "),
                 Span::styled(
@@ -164,18 +179,18 @@ fn draw_daemon_header(frame: &mut Frame, area: Rect, app: &App) {
             ),
         ]),
         Line::from(vec![
-            Span::styled(" 󰓦 ", Style::default().fg(TEXT_MUTED)),
-            Span::styled(
-                app.current_scaling_mode().to_string(),
-                Style::default().fg(TEXT_SECONDARY),
-            ),
-            Span::raw("  "),
             Span::styled("󰌌 ", Style::default().fg(TEXT_MUTED)),
             Span::styled(
                 focus_label(app.focus),
                 Style::default()
                     .fg(ACCENT_SECONDARY)
                     .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled("󰁔 ", Style::default().fg(TEXT_MUTED)),
+            Span::styled(
+                format!("{} outputs", app.monitors.len()),
+                Style::default().fg(TEXT_SECONDARY),
             ),
         ]),
     ]))
@@ -367,37 +382,21 @@ fn draw_preview_and_logs(frame: &mut Frame, area: Rect, app: &mut App) {
         .spacing(1)
         .split(area);
 
-    draw_preview_with_summary(frame, chunks[0], app, false);
+    draw_preview_panel(frame, chunks[0], app, false);
     draw_logs(frame, chunks[1], app);
 }
 
-fn draw_preview_with_summary(frame: &mut Frame, area: Rect, app: &mut App, active: bool) {
-    let block = panel_block(
-        Line::from(vec![
-            Span::styled(
-                " 󰋩 Live Preview ",
-                Style::default()
-                    .fg(ACCENT_PRIMARY)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("monitor framing", Style::default().fg(TEXT_MUTED)),
-        ]),
-        active,
-    );
+fn draw_preview_panel(frame: &mut Frame, area: Rect, app: &mut App, active: bool) {
+    let block = panel_block("", active);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let preview_summary =
-        Layout::vertical([Constraint::Percentage(68), Constraint::Percentage(32)]).split(inner);
-    let art_area = preview_summary[0];
-    let summary_area = preview_summary[1];
-
     if let Some(preview) = app
         .selected_monitor_ref()
-        .map(|monitor| fitted_monitor_rect(art_area, monitor))
+        .map(|monitor| fitted_monitor_rect(inner, monitor))
     {
-        let stand = monitor_stand_rect(art_area, preview);
-        let base = monitor_base_rect(art_area, preview);
+        let stand = monitor_stand_rect(inner, preview);
+        let base = monitor_base_rect(inner, preview);
 
         frame.render_widget(
             Block::default()
@@ -421,57 +420,9 @@ fn draw_preview_with_summary(frame: &mut Frame, area: Rect, app: &mut App, activ
             app.update_preview_request(preview_inner.width, preview_inner.height);
             if let Some(image) = app.preview_image() {
                 draw_halfblock_preview(frame, preview_inner, image);
-            } else {
-                let placeholder = Paragraph::new(Text::from(vec![Line::from(vec![
-                    Span::styled("󰋩 ", Style::default().fg(TEXT_MUTED)),
-                    Span::styled(
-                        app.preview_status().to_string(),
-                        Style::default().fg(TEXT_DIM),
-                    ),
-                ])]))
-                .style(Style::default().fg(TEXT_DIM));
-                frame.render_widget(placeholder, preview_inner);
             }
         }
     }
-
-    let wallpaper = app
-        .selected_browser_entry()
-        .map(|entry| entry.name.clone())
-        .unwrap_or_else(|| "No wallpaper selected".to_string());
-
-    let flow = if app.daemon_status == DaemonStatus::Running {
-        "daemon online / apply ready"
-    } else {
-        "daemon unavailable"
-    };
-
-    let summary = Paragraph::new(Text::from(vec![
-        Line::from(vec![
-            Span::styled(" 󰍹 Resolution ", Style::default().fg(TEXT_MUTED)),
-            Span::styled(
-                app.selected_monitor_metrics_label(),
-                Style::default().fg(TEXT_SECONDARY),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(" 󰆊 Candidate ", Style::default().fg(TEXT_MUTED)),
-            Span::styled(wallpaper, Style::default().fg(ACCENT_PRIMARY)),
-        ]),
-        Line::from(vec![
-            Span::styled(" 󰑓 Pipeline ", Style::default().fg(TEXT_MUTED)),
-            Span::styled(flow, Style::default().fg(ACCENT_SECONDARY)),
-            Span::raw("  "),
-            Span::styled("󰓦 ", Style::default().fg(TEXT_MUTED)),
-            Span::styled(
-                app.current_scaling_mode().to_string(),
-                Style::default().fg(TEXT_SECONDARY),
-            ),
-        ]),
-    ]))
-    .style(Style::default().fg(TEXT_PRIMARY));
-
-    frame.render_widget(summary, summary_area);
 }
 
 fn render_bar(frame: &mut Frame, area: Rect, glyph: &str, color: Color) {

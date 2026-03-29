@@ -743,10 +743,6 @@ impl App {
         self.preview_image.as_ref()
     }
 
-    pub fn preview_status(&self) -> &str {
-        &self.preview_status
-    }
-
     pub fn update_preview_request(&mut self, target_width: u16, target_height_rows: u16) {
         self.poll_preview_results();
 
@@ -838,13 +834,6 @@ impl App {
         self.selected_monitor_ref()
             .map(|monitor| monitor.name.clone())
             .unwrap_or_else(|| "No monitors".to_string())
-    }
-
-    pub fn selected_wallpaper_label(&self) -> String {
-        self.selected_monitor_ref()
-            .and_then(|monitor| monitor.wallpaper.as_ref())
-            .map(|wallpaper| wallpaper.display().to_string())
-            .unwrap_or_else(|| "(none)".to_string())
     }
 
     pub fn selected_monitor_metrics_label(&self) -> String {
