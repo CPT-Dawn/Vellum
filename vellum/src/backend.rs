@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
@@ -11,6 +12,12 @@ use common::ipc::{
 
 use crate::app::{DaemonStatus, Monitor, ScalingMode};
 use crate::imgproc::{self, ImgBuf, ResizeStrategy};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DaemonResourceUsage {
+    pub pid: u32,
+    pub memory_kib: u64,
+}
 
 #[derive(Debug, Error)]
 pub enum BackendError {
@@ -58,6 +65,19 @@ impl Backend {
 
     pub fn refresh_monitors(&self) -> Result<Vec<Monitor>, BackendError> {
         Ok(self.query_infos()?.into_iter().map(Monitor::from).collect())
+    }
+
+    pub fn resource_snapshot(&self) -> Option<DaemonResourceUsage> {
+        let pid = self
+            .daemon_child
+            .as_ref()
+            .map(|child| child.id())
+            .or_else(|| find_daemon_pid(&self.namespace))?;
+
+        Some(DaemonResourceUsage {
+            pid,
+            memory_kib: process_memory_kib(pid)?,
+        })
     }
 
     pub fn start_daemon(&mut self) -> Result<DaemonStatus, BackendError> {
@@ -336,6 +356,38 @@ fn build_image_request(
     }
 
     Ok(builder.build())
+}
+
+fn find_daemon_pid(namespace: &str) -> Option<u32> {
+    let proc_dir = fs::read_dir("/proc").ok()?;
+
+    for entry in proc_dir.flatten() {
+        let Some(pid) = entry.file_name().to_string_lossy().parse::<u32>().ok() else {
+            continue;
+        };
+
+        let cmdline = fs::read_to_string(entry.path().join("cmdline")).unwrap_or_default();
+        if cmdline.contains("vellum-daemon") && cmdline.contains(namespace) {
+            return Some(pid);
+        }
+
+        let comm = fs::read_to_string(entry.path().join("comm")).unwrap_or_default();
+        if comm.trim() == "vellum-daemon" {
+            return Some(pid);
+        }
+    }
+
+    None
+}
+
+fn process_memory_kib(pid: u32) -> Option<u64> {
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+
+    status.lines().find_map(|line| {
+        line.strip_prefix("VmRSS:")
+            .and_then(|value| value.split_whitespace().next())
+            .and_then(|value| value.parse::<u64>().ok())
+    })
 }
 
 fn canonical_wallpaper_path(wallpaper: &Path) -> Result<String, BackendError> {

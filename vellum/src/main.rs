@@ -2,6 +2,7 @@ mod app;
 mod backend;
 mod events;
 mod imgproc;
+mod preview;
 mod ui;
 
 use std::io;
@@ -43,7 +44,10 @@ fn run(
     for event in receiver {
         let should_quit = match event {
             AppEvent::Input(input) => app.handle_event(input, backend),
-            AppEvent::Tick => false,
+            AppEvent::Tick => {
+                app.poll_preview_results();
+                false
+            }
         };
 
         terminal.draw(|frame| ui::draw(frame, app))?;

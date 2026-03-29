@@ -3,12 +3,16 @@ use std::env;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use common::ipc::BgInfo;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
 
 use crate::backend::Backend;
+use crate::backend::DaemonResourceUsage;
+use crate::preview::{self, PreviewImage, PreviewRequest, PreviewResult};
 
 const LOG_CAPACITY: usize = 128;
 
@@ -62,15 +66,13 @@ impl fmt::Display for DaemonStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Files,
-    Monitors,
     Scaling,
 }
 
 impl Focus {
     fn next(self) -> Self {
         match self {
-            Self::Files => Self::Monitors,
-            Self::Monitors => Self::Scaling,
+            Self::Files => Self::Scaling,
             Self::Scaling => Self::Files,
         }
     }
@@ -78,8 +80,7 @@ impl Focus {
     fn previous(self) -> Self {
         match self {
             Self::Files => Self::Scaling,
-            Self::Monitors => Self::Files,
-            Self::Scaling => Self::Monitors,
+            Self::Scaling => Self::Files,
         }
     }
 }
@@ -177,10 +178,26 @@ pub struct App {
     pub selected_monitor: usize,
     pub scaling_modes: Vec<ScalingMode>,
     pub selected_scaling_mode: usize,
+    pub applied_scaling_mode: usize,
     pub daemon_status: DaemonStatus,
+    pub daemon_resources: Option<DaemonResourceUsage>,
     pub logs: Vec<String>,
     pub focus: Focus,
     matcher: SkimMatcherV2,
+    preview_request_tx: Sender<PreviewRequest>,
+    preview_result_rx: Receiver<PreviewResult>,
+    preview_request_seq: u64,
+    preview_last_key: Option<PreviewRequestKey>,
+    preview_status: String,
+    preview_image: Option<PreviewImage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreviewRequestKey {
+    path: PathBuf,
+    scaling: ScalingMode,
+    width: u16,
+    height: u16,
 }
 
 impl fmt::Debug for App {
@@ -199,9 +216,18 @@ impl fmt::Debug for App {
             .field("selected_monitor", &self.selected_monitor)
             .field("scaling_modes", &self.scaling_modes)
             .field("selected_scaling_mode", &self.selected_scaling_mode)
+            .field("applied_scaling_mode", &self.applied_scaling_mode)
             .field("daemon_status", &self.daemon_status)
+            .field("daemon_resources", &self.daemon_resources)
             .field("logs", &self.logs)
             .field("focus", &self.focus)
+            .field("preview_request_seq", &self.preview_request_seq)
+            .field("preview_last_key", &self.preview_last_key)
+            .field("preview_status", &self.preview_status)
+            .field(
+                "preview_image",
+                &self.preview_image.as_ref().map(|_| "ready"),
+            )
             .finish()
     }
 }
@@ -215,6 +241,10 @@ impl Default for App {
 impl App {
     pub fn new() -> Self {
         let pictures_root = pictures_dir();
+        let (preview_request_tx, preview_request_rx) = mpsc::channel();
+        let (preview_result_tx, preview_result_rx) = mpsc::channel();
+        preview::spawn_preview_worker(preview_request_rx, preview_result_tx);
+
         let mut app = Self {
             pictures_root: pictures_root.clone(),
             current_path: pictures_root,
@@ -233,10 +263,18 @@ impl App {
             selected_monitor: 0,
             scaling_modes: ScalingMode::ALL.to_vec(),
             selected_scaling_mode: 1,
+            applied_scaling_mode: 1,
             daemon_status: DaemonStatus::Stopped,
+            daemon_resources: None,
             logs: vec!["[INFO] Vellum TUI ready".to_string()],
             focus: Focus::Files,
             matcher: SkimMatcherV2::default(),
+            preview_request_tx,
+            preview_result_rx,
+            preview_request_seq: 0,
+            preview_last_key: None,
+            preview_status: "Select an image file to preview".to_string(),
+            preview_image: None,
         };
 
         app.refresh_browser_entries();
@@ -278,6 +316,10 @@ impl App {
             }
             KeyCode::Char('f') => {
                 self.toggle_favorite_current();
+                false
+            }
+            KeyCode::Char(c) if c.is_ascii_digit() => {
+                self.select_monitor_hotkey(c);
                 false
             }
             KeyCode::Char('c') => {
@@ -386,11 +428,6 @@ impl App {
                     self.sync_browser_state();
                 }
             }
-            Focus::Monitors => {
-                if self.selected_monitor > 0 {
-                    self.selected_monitor -= 1;
-                }
-            }
             Focus::Scaling => {
                 if self.selected_scaling_mode > 0 {
                     self.selected_scaling_mode -= 1;
@@ -405,11 +442,6 @@ impl App {
                 if self.browser_selected + 1 < self.browser_filtered_indices.len() {
                     self.browser_selected += 1;
                     self.sync_browser_state();
-                }
-            }
-            Focus::Monitors => {
-                if self.selected_monitor + 1 < self.monitors.len() {
-                    self.selected_monitor += 1;
                 }
             }
             Focus::Scaling => {
@@ -462,14 +494,28 @@ impl App {
 
         let mode = self.current_scaling_mode();
         let monitor_name = self.monitors[self.selected_monitor].name.clone();
+        self.push_action_log(
+            "ACTION",
+            format!(
+                "Apply requested: {} -> {} ({})",
+                wallpaper.display(),
+                monitor_name,
+                mode
+            ),
+        );
+
         match backend.apply_wallpaper(&wallpaper, &monitor_name, mode) {
             Ok(()) => {
-                self.push_log(format!(
-                    "[INFO] Applied {} to {} using {}",
-                    wallpaper.display(),
-                    monitor_name,
-                    mode
-                ));
+                self.applied_scaling_mode = self.selected_scaling_mode;
+                self.push_action_log(
+                    "SUCCESS",
+                    format!(
+                        "Daemon accepted: {} on {} ({})",
+                        wallpaper.display(),
+                        monitor_name,
+                        mode
+                    ),
+                );
                 self.sync_from_backend(backend);
             }
             Err(error) => {
@@ -682,8 +728,110 @@ impl App {
             .unwrap_or(ScalingMode::Fill)
     }
 
+    pub fn applied_scaling_mode(&self) -> ScalingMode {
+        self.scaling_modes
+            .get(self.applied_scaling_mode)
+            .copied()
+            .unwrap_or(ScalingMode::Fill)
+    }
+
     pub fn selected_monitor_ref(&self) -> Option<&Monitor> {
         self.monitors.get(self.selected_monitor)
+    }
+
+    pub fn preview_image(&self) -> Option<&PreviewImage> {
+        self.preview_image.as_ref()
+    }
+
+    pub fn preview_status(&self) -> &str {
+        &self.preview_status
+    }
+
+    pub fn update_preview_request(&mut self, target_width: u16, target_height_rows: u16) {
+        self.poll_preview_results();
+
+        if target_width < 1 || target_height_rows < 1 {
+            self.preview_status = "Preview area too small".to_string();
+            self.preview_image = None;
+            self.preview_last_key = None;
+            return;
+        }
+
+        let Some((entry_path, entry_name, entry_kind, entry_supported)) =
+            self.selected_browser_entry().map(|entry| {
+                (
+                    entry.path.clone(),
+                    entry.name.clone(),
+                    entry.kind,
+                    entry.supported,
+                )
+            })
+        else {
+            self.preview_status = "Select an image file to preview".to_string();
+            self.preview_image = None;
+            self.preview_last_key = None;
+            return;
+        };
+
+        if entry_kind != FileKind::File {
+            self.preview_status = "Directories cannot be previewed".to_string();
+            self.preview_image = None;
+            self.preview_last_key = None;
+            return;
+        }
+
+        if !entry_supported {
+            self.preview_status = "Unsupported format for preview".to_string();
+            self.preview_image = None;
+            self.preview_last_key = None;
+            return;
+        }
+
+        let key = PreviewRequestKey {
+            path: entry_path,
+            scaling: self.current_scaling_mode(),
+            width: target_width,
+            height: target_height_rows,
+        };
+
+        if self.preview_last_key.as_ref() == Some(&key) {
+            return;
+        }
+
+        self.preview_request_seq = self.preview_request_seq.saturating_add(1);
+        self.preview_last_key = Some(key.clone());
+        self.preview_status = format!("Loading {}", entry_name);
+
+        let request = PreviewRequest {
+            seq: self.preview_request_seq,
+            path: key.path,
+            scaling: key.scaling,
+            target_width: key.width,
+            target_height_rows: key.height,
+        };
+
+        if let Err(error) = self.preview_request_tx.send(request) {
+            self.preview_status = format!("Preview worker unavailable: {error}");
+        }
+    }
+
+    pub fn poll_preview_results(&mut self) {
+        while let Ok(result) = self.preview_result_rx.try_recv() {
+            if result.seq != self.preview_request_seq {
+                continue;
+            }
+
+            match result.image {
+                Ok(image) => {
+                    self.preview_status = "Preview ready".to_string();
+                    self.preview_image = Some(image);
+                }
+                Err(error) => {
+                    self.preview_status = format!("Preview error: {error}");
+                    self.preview_image = None;
+                }
+            }
+        }
     }
 
     pub fn selected_monitor_label(&self) -> String {
@@ -699,6 +847,32 @@ impl App {
             .unwrap_or_else(|| "(none)".to_string())
     }
 
+    pub fn selected_monitor_metrics_label(&self) -> String {
+        self.selected_monitor_ref()
+            .map(|monitor| {
+                format!(
+                    "{}x{} @{} {}",
+                    monitor.width,
+                    monitor.height,
+                    monitor.scale,
+                    self.current_scaling_mode()
+                )
+            })
+            .unwrap_or_else(|| "No active monitor".to_string())
+    }
+
+    pub fn daemon_resource_label(&self) -> String {
+        self.daemon_resources
+            .map(|resources| {
+                format!(
+                    "PID {} • RAM {:.1} MiB",
+                    resources.pid,
+                    resources.memory_kib as f64 / 1024.0
+                )
+            })
+            .unwrap_or_else(|| "PID -- • RAM --".to_string())
+    }
+
     pub fn visible_browser_items(&self) -> impl Iterator<Item = (usize, &FileEntry)> {
         self.browser_filtered_indices.iter().enumerate().map(
             move |(visible_index, browser_index)| {
@@ -709,6 +883,7 @@ impl App {
 
     pub fn sync_from_backend(&mut self, backend: &mut Backend) {
         self.daemon_status = backend.status();
+        self.daemon_resources = backend.resource_snapshot();
 
         if let Ok(monitors) = backend.refresh_monitors() {
             let selected_name = self
@@ -740,6 +915,22 @@ impl App {
         self.logs.push(entry);
     }
 
+    fn push_action_log(&mut self, tag: &str, message: String) {
+        self.push_log(format!(
+            "[{}] [{}] {}",
+            Self::log_timestamp_seconds(),
+            tag,
+            message
+        ));
+    }
+
+    fn log_timestamp_seconds() -> u64 {
+        match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(duration) => duration.as_secs(),
+            Err(_) => 0,
+        }
+    }
+
     fn is_within_root(&self, path: &Path) -> bool {
         let root = self
             .pictures_root
@@ -761,6 +952,27 @@ impl App {
         if self.selected_scaling_mode > 0 {
             self.selected_scaling_mode -= 1;
         }
+    }
+
+    fn select_monitor_hotkey(&mut self, key: char) -> bool {
+        let Some(digit) = key.to_digit(10) else {
+            return false;
+        };
+
+        let Some(target_index) = digit.checked_sub(1).map(|value| value as usize) else {
+            return false;
+        };
+
+        if target_index < self.monitors.len() {
+            self.selected_monitor = target_index;
+            self.push_log(format!(
+                "[INFO] Selected monitor {}",
+                self.monitors[target_index].name
+            ));
+            return true;
+        }
+
+        false
     }
 }
 

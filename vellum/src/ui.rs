@@ -2,139 +2,204 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{
+    Block, BorderType, Borders, HighlightSpacing, List, ListItem, ListState, Padding, Paragraph,
+};
 
-use crate::app::{App, DaemonStatus, FileEntry, FileKind, Monitor};
+use crate::app::{App, DaemonStatus, FileEntry, FileKind, Focus, Monitor};
 
-const BG: Color = Color::Rgb(11, 15, 20);
-const PANEL: Color = Color::Rgb(17, 23, 32);
-const PANEL_ALT: Color = Color::Rgb(22, 30, 42);
-const BORDER: Color = Color::Rgb(52, 66, 84);
-const ACCENT: Color = Color::Rgb(98, 196, 230);
-const ACCENT_SOFT: Color = Color::Rgb(68, 120, 160);
-const GOOD: Color = Color::Rgb(84, 190, 132);
-const WARN: Color = Color::Rgb(227, 174, 90);
-const BAD: Color = Color::Rgb(224, 92, 110);
-const TEXT: Color = Color::Rgb(220, 228, 237);
-const MUTED: Color = Color::Rgb(145, 156, 170);
+const BORDER: Color = Color::Rgb(70, 76, 98); // muted inactive border
+const ACCENT: Color = Color::Rgb(42, 195, 222); // primary accent cyan
+const ACCENT_SOFT: Color = Color::Rgb(125, 207, 224); // soft cyan
+const PANEL_ACTIVE: Color = Color::Rgb(42, 195, 222); // active panel border
+const GOOD: Color = Color::Rgb(158, 206, 106); // #9ece6a
+const WARN: Color = Color::Rgb(224, 175, 104); // #e0af68
+const BAD: Color = Color::Rgb(247, 118, 142); // #f7768e
+const TEXT: Color = Color::Rgb(214, 220, 235);
+const MUTED: Color = Color::Rgb(113, 122, 149);
+const CURSOR_TEXT: Color = Color::Rgb(245, 247, 250);
 const CELL_ASPECT_COMPENSATION: f64 = 2.0;
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
     let root = frame.area();
-    frame.render_widget(Block::default().style(Style::default().bg(BG)), root);
+    frame.render_widget(Block::default(), root);
 
     let vertical = Layout::vertical([
         Constraint::Percentage(10),
-        Constraint::Percentage(70),
-        Constraint::Percentage(20),
+        Constraint::Percentage(80),
+        Constraint::Percentage(10),
     ])
     .spacing(1);
     let [top, middle, bottom] = vertical.areas(root);
 
-    draw_top_bar(frame, top, app);
+    draw_header(frame, top, app);
 
     let middle_layout = Layout::horizontal([
-        Constraint::Percentage(30),
-        Constraint::Percentage(50),
-        Constraint::Percentage(20),
+        Constraint::Percentage(34),
+        Constraint::Percentage(22),
+        Constraint::Percentage(44),
     ])
     .spacing(1);
-    let [browser_area, canvas_area, controls_area] = middle_layout.areas(middle);
+    let [browser_area, settings_area, preview_logs_area] = middle_layout.areas(middle);
 
-    draw_browser(frame, browser_area, app);
-    draw_monitor_canvas(frame, canvas_area, app);
-    draw_controls(frame, controls_area, app);
+    draw_browser(frame, browser_area, app, app.focus == Focus::Files);
+    draw_settings_panel(frame, settings_area, app, app.focus == Focus::Scaling);
+    draw_preview_and_logs(frame, preview_logs_area, app);
 
-    let bottom_layout =
-        Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).spacing(1);
-    let [logs_area, legend_area] = bottom_layout.areas(bottom);
-
-    draw_logs(frame, logs_area, app);
-    draw_legend(frame, legend_area, app);
+    draw_keybinds(frame, bottom, app);
 }
 
-fn draw_top_bar(frame: &mut Frame, area: Rect, app: &App) {
-    if app.search_active {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(ACCENT))
-            .style(Style::default().bg(PANEL))
-            .title(Line::from(vec![
-                Span::styled(
-                    " Search ",
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("/", Style::default().fg(WARN)),
-            ]));
+fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
+    let chunks = Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .spacing(1)
+        .split(area);
 
-        let input = Paragraph::new(Text::from(format!("/{}", app.search_buffer)))
-            .style(Style::default().fg(TEXT))
-            .block(block);
+    draw_monitor_header(frame, chunks[0], app);
+    draw_daemon_header(frame, chunks[1], app);
+}
 
-        frame.render_widget(input, area);
-        return;
-    }
+fn draw_monitor_header(frame: &mut Frame, area: Rect, app: &App) {
+    let selector_lines = if app.monitors.is_empty() {
+        vec![Line::from(vec![Span::styled(
+            " No monitors detected ",
+            Style::default().fg(WARN),
+        )])]
+    } else {
+        app.monitors
+            .iter()
+            .enumerate()
+            .map(|(index, monitor)| {
+                let is_cursor = index == app.selected_monitor;
+                let is_applied = monitor.wallpaper.is_some();
+                let indicator = if is_cursor { "> " } else { "  " };
+                let style = if is_cursor {
+                    Style::default()
+                        .fg(CURSOR_TEXT)
+                        .add_modifier(Modifier::BOLD)
+                } else if is_applied {
+                    Style::default().fg(ACCENT)
+                } else {
+                    Style::default().fg(MUTED)
+                };
 
-    let status = daemon_status_label(app.daemon_status);
-    let monitor = app.selected_monitor_label();
-    let wallpaper = app.selected_wallpaper_label();
-    let title = Line::from(vec![
+                Line::from(vec![
+                    Span::styled(indicator, style),
+                    Span::styled(format!("{}.{}", index + 1, monitor.name), style),
+                ])
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let status_line = Line::from(vec![
+        Span::styled(" Selected ", Style::default().fg(MUTED)),
         Span::styled(
-            " Vellum ",
+            app.selected_monitor_label(),
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("Wallpaper Manager Frontend", Style::default().fg(TEXT)),
-    ]);
-    let subtitle = Line::from(vec![
-        Span::styled(" Daemon ", Style::default().fg(MUTED)),
-        Span::styled(status, status_style(app.daemon_status)),
         Span::raw("  "),
-        Span::styled("Monitor ", Style::default().fg(MUTED)),
-        Span::styled(monitor, Style::default().fg(ACCENT_SOFT)),
-        Span::raw("  "),
-        Span::styled("Wallpaper ", Style::default().fg(MUTED)),
-        Span::styled(wallpaper, Style::default().fg(TEXT)),
+        Span::styled(
+            app.selected_monitor_metrics_label(),
+            Style::default().fg(TEXT),
+        ),
     ]);
 
-    let paragraph = Paragraph::new(Text::from(vec![title, subtitle]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(BORDER))
-                .style(Style::default().bg(PANEL)),
-        )
-        .style(Style::default().fg(TEXT));
+    let wallpaper_line = Line::from(vec![
+        Span::styled(" Wallpaper ", Style::default().fg(MUTED)),
+        Span::styled(
+            app.selected_wallpaper_label(),
+            Style::default().fg(ACCENT_SOFT),
+        ),
+    ]);
+
+    let paragraph = Paragraph::new(Text::from(vec![
+        Line::from(vec![
+            Span::styled(
+                " 󰍹 Monitors ",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("selection", Style::default().fg(MUTED)),
+        ]),
+        Line::from(vec![Span::styled(
+            " Select ",
+            Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+        )]),
+        selector_lines[0].clone(),
+        selector_lines.get(1).cloned().unwrap_or_else(Line::default),
+        status_line,
+        if app.monitors.len() > 2 {
+            Line::from(vec![Span::styled(
+                format!(" +{} more monitor(s)", app.monitors.len().saturating_sub(2)),
+                Style::default().fg(MUTED),
+            )])
+        } else {
+            wallpaper_line
+        },
+    ]))
+    .block(panel_block("", false))
+    .style(Style::default().fg(TEXT));
 
     frame.render_widget(paragraph, area);
 }
 
-fn draw_browser(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_daemon_header(frame: &mut Frame, area: Rect, app: &App) {
+    let paragraph = Paragraph::new(Text::from(vec![
+        Line::from(vec![
+            Span::styled(
+                " 󰒋 Daemon ",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                daemon_status_label(app.daemon_status),
+                status_style(app.daemon_status),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(" Resource ", Style::default().fg(MUTED)),
+            Span::styled(
+                app.daemon_resource_label(),
+                Style::default().fg(ACCENT_SOFT),
+            ),
+        ]),
+    ]))
+    .block(panel_block("", false))
+    .style(Style::default().fg(TEXT));
+
+    frame.render_widget(paragraph, area);
+}
+
+fn draw_browser(frame: &mut Frame, area: Rect, app: &App, active: bool) {
     let items = app
         .visible_browser_items()
-        .map(|(_, entry)| browser_item(entry))
+        .map(|(_, entry)| {
+            let is_applied = app
+                .selected_monitor_ref()
+                .and_then(|monitor| monitor.wallpaper.as_ref())
+                .map(|wallpaper| wallpaper == &entry.path)
+                .unwrap_or(false);
+            browser_item(entry, is_applied)
+        })
         .collect::<Vec<_>>();
 
-    let block = Block::default()
-        .title(Line::from(vec![
+    let block = panel_block(
+        Line::from(vec![
             Span::styled(
-                " Files ",
+                " 󰉋 Files / Playlist ",
                 Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
             ),
             Span::styled(format!("{} items", items.len()), Style::default().fg(MUTED)),
-        ]))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(BORDER))
-        .style(Style::default().bg(PANEL));
+        ]),
+        active,
+    );
 
     let list = List::new(items)
         .block(block)
         .highlight_style(
             Style::default()
-                .fg(TEXT)
-                .bg(PANEL_ALT)
+                .fg(CURSOR_TEXT)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol("▸ ");
+        .highlight_symbol("> ")
+        .highlight_spacing(HighlightSpacing::Always);
 
     let mut state = ListState::default();
     state.select(if app.browser_filtered_indices.is_empty() {
@@ -146,18 +211,22 @@ fn draw_browser(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn browser_item(entry: &FileEntry) -> ListItem<'static> {
+fn draw_settings_panel(frame: &mut Frame, area: Rect, app: &App, active: bool) {
+    draw_scaling_modes(frame, area, app, active);
+}
+
+fn browser_item(entry: &FileEntry, is_applied: bool) -> ListItem<'static> {
     let favorite = entry.favorite;
     let icon = match entry.kind {
-        FileKind::Directory => "[DIR]",
-        FileKind::File => "[FILE]",
+        FileKind::Directory => "󰉋",
+        FileKind::File => "󰈔",
     };
     let support_badge = if entry.kind == FileKind::File && entry.supported {
-        "IMG"
+        "󰋩"
     } else if entry.kind == FileKind::File {
-        "UNSUP"
+        "󰈥"
     } else {
-        "DIR"
+        "󰉋"
     };
 
     let mut spans = vec![Span::styled(
@@ -176,9 +245,17 @@ fn browser_item(entry: &FileEntry) -> ListItem<'static> {
         ));
     }
 
+    let label_color = if is_applied {
+        ACCENT
+    } else if favorite {
+        WARN
+    } else {
+        MUTED
+    };
+
     spans.push(Span::styled(
         entry.name.clone(),
-        Style::default().fg(if favorite { WARN } else { TEXT }),
+        Style::default().fg(label_color),
     ));
 
     spans.push(Span::styled(
@@ -189,25 +266,38 @@ fn browser_item(entry: &FileEntry) -> ListItem<'static> {
     ListItem::new(Line::from(spans))
 }
 
-fn draw_monitor_canvas(frame: &mut Frame, area: Rect, app: &App) {
-    frame.render_widget(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(BORDER))
-            .style(Style::default().bg(PANEL)),
-        area,
-    );
+fn draw_preview_and_logs(frame: &mut Frame, area: Rect, app: &mut App) {
+    let chunks = Layout::vertical([Constraint::Percentage(56), Constraint::Percentage(44)])
+        .spacing(1)
+        .split(area);
 
-    if let Some(monitor) = app.selected_monitor_ref() {
-        let preview = fitted_monitor_rect(area, monitor);
-        let stand = monitor_stand_rect(area, preview);
-        let base = monitor_base_rect(area, preview);
+    draw_preview_with_summary(frame, chunks[0], app, false);
+    draw_logs(frame, chunks[1], app);
+}
+
+fn draw_preview_with_summary(frame: &mut Frame, area: Rect, app: &mut App, active: bool) {
+    let block = panel_block(" 󰋩 Preview + Summary ", active);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let preview_summary =
+        Layout::vertical([Constraint::Percentage(70), Constraint::Percentage(30)]).split(inner);
+    let art_area = preview_summary[0];
+    let summary_area = preview_summary[1];
+
+    if let Some(preview) = app
+        .selected_monitor_ref()
+        .map(|monitor| fitted_monitor_rect(art_area, monitor))
+    {
+        let stand = monitor_stand_rect(art_area, preview);
+        let base = monitor_base_rect(art_area, preview);
 
         frame.render_widget(
             Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(ACCENT))
-                .style(Style::default().bg(PANEL_ALT)),
+                .style(Style::default().fg(ACCENT)),
             preview,
         );
 
@@ -224,12 +314,112 @@ fn draw_monitor_canvas(frame: &mut Frame, area: Rect, app: &App) {
                 base,
             );
         }
+
+        let preview_inner = preview_inner_rect(preview);
+        if preview_inner.width > 0 && preview_inner.height > 0 {
+            app.update_preview_request(preview_inner.width, preview_inner.height);
+            if let Some(image) = app.preview_image() {
+                draw_halfblock_preview(frame, preview_inner, image);
+            } else {
+                let placeholder = Paragraph::new(app.preview_status().to_string())
+                    .style(Style::default().fg(MUTED));
+                frame.render_widget(placeholder, preview_inner);
+            }
+        }
     }
+
+    let wallpaper = app
+        .selected_browser_entry()
+        .map(|entry| entry.name.clone())
+        .unwrap_or_else(|| "No wallpaper selected".to_string());
+
+    let flow = if app.daemon_status == DaemonStatus::Running {
+        "daemon online / apply ready"
+    } else {
+        "daemon unavailable"
+    };
+
+    let summary = Paragraph::new(Text::from(vec![
+        Line::from(vec![
+            Span::styled(" Resolution ", Style::default().fg(MUTED)),
+            Span::styled(
+                app.selected_monitor_metrics_label(),
+                Style::default().fg(TEXT),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(" Current Wallpaper ", Style::default().fg(MUTED)),
+            Span::styled(wallpaper, Style::default().fg(ACCENT)),
+        ]),
+        Line::from(vec![
+            Span::styled(" Flow ", Style::default().fg(MUTED)),
+            Span::styled(flow, Style::default().fg(ACCENT_SOFT)),
+        ]),
+    ]))
+    .style(Style::default().fg(TEXT));
+
+    frame.render_widget(summary, summary_area);
+}
+
+fn preview_inner_rect(preview: Rect) -> Rect {
+    Rect::new(
+        preview.x.saturating_add(1),
+        preview.y.saturating_add(1),
+        preview.width.saturating_sub(2),
+        preview.height.saturating_sub(2),
+    )
+}
+
+fn draw_halfblock_preview(frame: &mut Frame, area: Rect, image: &crate::preview::PreviewImage) {
+    let cols = area.width.min(image.width);
+    let rows = area.height.min(image.height_px / 2);
+
+    if cols == 0 || rows == 0 {
+        return;
+    }
+
+    let image_width = image.width as usize;
+    let mut lines = Vec::with_capacity(rows as usize);
+
+    for y in 0..rows as usize {
+        let mut spans = Vec::with_capacity(cols as usize);
+        let top_row = y * 2;
+        let bottom_row = top_row + 1;
+
+        for x in 0..cols as usize {
+            let top_idx = (top_row * image_width + x) * 3;
+            let bottom_idx = (bottom_row * image_width + x) * 3;
+
+            let fg = Color::Rgb(
+                image.pixels_rgb[top_idx],
+                image.pixels_rgb[top_idx + 1],
+                image.pixels_rgb[top_idx + 2],
+            );
+            let bg = Color::Rgb(
+                image.pixels_rgb[bottom_idx],
+                image.pixels_rgb[bottom_idx + 1],
+                image.pixels_rgb[bottom_idx + 2],
+            );
+
+            spans.push(Span::styled("▀", Style::default().fg(fg).bg(bg)));
+        }
+
+        lines.push(Line::from(spans));
+    }
+
+    frame.render_widget(Paragraph::new(Text::from(lines)), area);
 }
 
 fn fitted_monitor_rect(area: Rect, monitor: &Monitor) -> Rect {
-    let usable_width = area.width.saturating_sub(4).max(8);
-    let usable_height = area.height.saturating_sub(6).max(4);
+    let inner = Rect::new(
+        area.x.saturating_add(1),
+        area.y.saturating_add(1),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+
+    let usable_width = inner.width.saturating_sub(2).max(8);
+    let usable_height = inner.height.saturating_sub(4).max(4);
 
     let target_ratio = monitor.aspect_ratio() * CELL_ASPECT_COMPENSATION;
     let area_ratio = usable_width as f64 / usable_height.max(1) as f64;
@@ -244,8 +434,8 @@ fn fitted_monitor_rect(area: Rect, monitor: &Monitor) -> Rect {
         (width, height)
     };
 
-    let x = area.x + (area.width.saturating_sub(width)) / 2;
-    let y = area.y + (area.height.saturating_sub(height + 2)) / 2;
+    let x = inner.x + (inner.width.saturating_sub(width)) / 2;
+    let y = inner.y + (inner.height.saturating_sub(height + 2)) / 2;
     Rect::new(x, y, width, height)
 }
 
@@ -274,101 +464,41 @@ fn monitor_base_rect(area: Rect, screen: Rect) -> Option<Rect> {
     Some(Rect::new(base_x, base_y, base_width, 1))
 }
 
-fn draw_controls(frame: &mut Frame, area: Rect, app: &App) {
-    let chunks =
-        Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)]).split(area);
-    draw_monitors(frame, chunks[0], app);
-    draw_scaling_modes(frame, chunks[1], app);
-}
-
-fn draw_monitors(frame: &mut Frame, area: Rect, app: &App) {
-    let items = app
-        .monitors
-        .iter()
-        .map(|monitor| {
-            let label = format!(
-                "{} {}x{} @{} {}",
-                monitor.name,
-                monitor.width,
-                monitor.height,
-                monitor.scale,
-                monitor
-                    .wallpaper
-                    .as_ref()
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| "(none)".to_string())
-            );
-
-            ListItem::new(Line::from(vec![Span::styled(
-                label,
-                Style::default().fg(TEXT),
-            )]))
-        })
-        .collect::<Vec<_>>();
-
-    let block = Block::default()
-        .title(Line::from(vec![
-            Span::styled(
-                " Monitors ",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("selected {}", app.selected_monitor + 1),
-                Style::default().fg(MUTED),
-            ),
-        ]))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(BORDER))
-        .style(Style::default().bg(PANEL));
-
-    let list = List::new(items)
-        .block(block)
-        .highlight_symbol("▸ ")
-        .highlight_style(
-            Style::default()
-                .fg(TEXT)
-                .bg(PANEL_ALT)
-                .add_modifier(Modifier::BOLD),
-        );
-
-    let mut state = ListState::default();
-    state.select(Some(app.selected_monitor));
-    frame.render_stateful_widget(list, area, &mut state);
-}
-
-fn draw_scaling_modes(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_scaling_modes(frame: &mut Frame, area: Rect, app: &App, active: bool) {
     let items = app
         .scaling_modes
         .iter()
         .map(|mode| {
-            ListItem::new(Line::from(vec![Span::styled(
-                mode.to_string(),
-                Style::default().fg(TEXT),
-            )]))
+            let style = if *mode == app.applied_scaling_mode() {
+                Style::default().fg(ACCENT)
+            } else {
+                Style::default().fg(MUTED)
+            };
+
+            ListItem::new(Line::from(vec![Span::styled(mode.to_string(), style)]))
         })
         .collect::<Vec<_>>();
 
-    let block = Block::default()
-        .title(Line::from(vec![
+    let block = panel_block(
+        Line::from(vec![
             Span::styled(
-                " Scaling ",
+                " 󰆞 Scaling ",
                 Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
             ),
             Span::styled("current mode", Style::default().fg(MUTED)),
-        ]))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(BORDER))
-        .style(Style::default().bg(PANEL));
+        ]),
+        active,
+    );
 
     let list = List::new(items)
         .block(block)
-        .highlight_symbol("▸ ")
+        .highlight_symbol("> ")
         .highlight_style(
             Style::default()
-                .fg(TEXT)
-                .bg(PANEL_ALT)
+                .fg(CURSOR_TEXT)
                 .add_modifier(Modifier::BOLD),
-        );
+        )
+        .highlight_spacing(HighlightSpacing::Always);
 
     let mut state = ListState::default();
     state.select(Some(app.selected_scaling_mode));
@@ -386,6 +516,10 @@ fn draw_logs(frame: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(BAD)
             } else if log.contains("[WARN]") {
                 Style::default().fg(WARN)
+            } else if log.contains("[SUCCESS]") {
+                Style::default().fg(GOOD)
+            } else if log.contains("[ACTION]") {
+                Style::default().fg(ACCENT)
             } else {
                 Style::default().fg(TEXT)
             };
@@ -394,109 +528,60 @@ fn draw_logs(frame: &mut Frame, area: Rect, app: &App) {
         })
         .collect::<Vec<_>>();
 
-    let list = List::new(log_items).block(
-        Block::default()
-            .title(Line::from(vec![
-                Span::styled(
-                    " Logs ",
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("ring buffer", Style::default().fg(MUTED)),
-            ]))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(BORDER))
-            .style(Style::default().bg(PANEL)),
-    );
+    let list = List::new(log_items).block(panel_block(" 󰈚 Logs ", false));
 
     frame.render_widget(list, area);
 }
 
-fn draw_legend(frame: &mut Frame, area: Rect, app: &App) {
-    let lines = vec![
-        Line::from(vec![
-            Span::styled(
-                "[/]",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" Search", Style::default().fg(TEXT)),
+fn draw_keybinds(frame: &mut Frame, area: Rect, app: &App) {
+    let lines = vec![Line::from(match app.focus {
+        Focus::Files => vec![
+            key_span("↑/↓ hjkl"),
+            label_span(" Navigate files"),
             Span::raw("  "),
-            Span::styled(
-                "[f]",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" Favorite", Style::default().fg(TEXT)),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "[o]",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" Favorites only", Style::default().fg(TEXT)),
+            key_span("Tab"),
+            label_span(" Next panel"),
             Span::raw("  "),
-            Span::styled(
-                "[v]",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" Toggle Formats", Style::default().fg(TEXT)),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "[s]",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" Start/Refresh Daemon", Style::default().fg(TEXT)),
+            key_span("Enter"),
+            label_span(" Apply"),
             Span::raw("  "),
-            Span::styled(
-                "[c]",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" Clear Monitor", Style::default().fg(TEXT)),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "[p]",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" Pause Daemon", Style::default().fg(TEXT)),
+            key_span("1..n"),
+            label_span(" Monitors"),
             Span::raw("  "),
-            Span::styled(
-                "[Enter]",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" Apply Wallpaper", Style::default().fg(TEXT)),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "[Tab]",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" Focus Pane", Style::default().fg(TEXT)),
+            key_span("q"),
+            label_span(" Quit"),
+        ],
+        Focus::Scaling => vec![
+            key_span("↑/↓ hjkl"),
+            label_span(" Navigate settings"),
             Span::raw("  "),
-            Span::styled("[q]", Style::default().fg(BAD).add_modifier(Modifier::BOLD)),
-            Span::styled(" Quit", Style::default().fg(TEXT)),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "[↑/↓ h/j/k/l]",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" Navigate lists", Style::default().fg(TEXT)),
-        ]),
-    ];
+            key_span("Tab"),
+            label_span(" Next panel"),
+            Span::raw("  "),
+            key_span("[ / ]"),
+            label_span(" Scaling"),
+            Span::raw("  "),
+            key_span("1..n"),
+            label_span(" Monitors"),
+            Span::raw("  "),
+            key_span("q"),
+            label_span(" Quit"),
+        ],
+    })];
 
     let paragraph = Paragraph::new(Text::from(lines))
         .block(
-            Block::default()
-                .title(Line::from(vec![
+            panel_block(
+                Line::from(vec![
                     Span::styled(
-                        " Keybindings ",
+                        " 󰌌 Keys ",
                         Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(format!("mode: {:?}", app.focus), Style::default().fg(MUTED)),
-                ]))
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(BORDER))
-                .style(Style::default().bg(PANEL)),
+                    Span::styled("active panel", Style::default().fg(MUTED)),
+                ]),
+                false,
+            )
+            .padding(Padding::horizontal(1)),
         )
         .style(Style::default().fg(TEXT));
 
@@ -517,6 +602,26 @@ fn status_style(status: DaemonStatus) -> Style {
         DaemonStatus::Stopped => Style::default().fg(WARN).add_modifier(Modifier::BOLD),
         DaemonStatus::Crashed => Style::default().fg(BAD).add_modifier(Modifier::BOLD),
     }
+}
+
+fn panel_block(title: impl Into<Line<'static>>, active: bool) -> Block<'static> {
+    Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(if active { PANEL_ACTIVE } else { BORDER }))
+        .padding(Padding::symmetric(2, 1))
+}
+
+fn key_span(key: &'static str) -> Span<'static> {
+    Span::styled(
+        format!("[{}]", key),
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+    )
+}
+
+fn label_span(label: &'static str) -> Span<'static> {
+    Span::styled(label, Style::default().fg(TEXT))
 }
 
 #[cfg(test)]
