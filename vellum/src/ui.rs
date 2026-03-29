@@ -1,33 +1,50 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols::border;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
-    Block, BorderType, Borders, HighlightSpacing, List, ListItem, ListState, Padding, Paragraph,
+    Block, Borders, HighlightSpacing, List, ListItem, ListState, Padding, Paragraph,
 };
 
-use crate::app::{App, DaemonStatus, FileEntry, FileKind, Focus, Monitor};
+use crate::app::{App, DaemonStatus, FileEntry, FileKind, Focus, Monitor, ScalingMode};
 
-const BORDER: Color = Color::Rgb(70, 76, 98); // muted inactive border
-const ACCENT: Color = Color::Rgb(42, 195, 222); // primary accent cyan
-const ACCENT_SOFT: Color = Color::Rgb(125, 207, 224); // soft cyan
-const PANEL_ACTIVE: Color = Color::Rgb(42, 195, 222); // active panel border
-const GOOD: Color = Color::Rgb(158, 206, 106); // #9ece6a
-const WARN: Color = Color::Rgb(224, 175, 104); // #e0af68
-const BAD: Color = Color::Rgb(247, 118, 142); // #f7768e
-const TEXT: Color = Color::Rgb(214, 220, 235);
-const MUTED: Color = Color::Rgb(113, 122, 149);
-const CURSOR_TEXT: Color = Color::Rgb(245, 247, 250);
+const fn hex(value: u32) -> Color {
+    Color::Rgb(
+        ((value >> 16) & 0xff) as u8,
+        ((value >> 8) & 0xff) as u8,
+        (value & 0xff) as u8,
+    )
+}
+
+const PANEL_BORDER: Color = hex(0x3b4261);
+const PANEL_BORDER_ACTIVE: Color = hex(0x7dcfff);
+const PANEL_GLOW: Color = hex(0x89ddff);
+const ACCENT_PRIMARY: Color = hex(0xbb9af7);
+const ACCENT_SECONDARY: Color = hex(0x7dcfff);
+const GOOD: Color = hex(0x9ece6a);
+const WARN: Color = hex(0xe0af68);
+const BAD: Color = hex(0xf7768e);
+const TEXT_PRIMARY: Color = hex(0xc0caf5);
+const TEXT_SECONDARY: Color = hex(0xa9b1d6);
+const TEXT_MUTED: Color = hex(0x565f89);
+const TEXT_DIM: Color = hex(0x7a88b8);
+const HIGHLIGHT_BG: Color = hex(0x2a2f45);
+const HIGHLIGHT_BG_SOFT: Color = hex(0x24283b);
+const CURSOR_TEXT: Color = hex(0xf5f7ff);
 const CELL_ASPECT_COMPENSATION: f64 = 2.0;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let root = frame.area();
-    frame.render_widget(Block::default(), root);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(Color::Reset)),
+        root,
+    );
 
     let vertical = Layout::vertical([
-        Constraint::Percentage(10),
-        Constraint::Percentage(80),
-        Constraint::Percentage(10),
+        Constraint::Length(8),
+        Constraint::Min(12),
+        Constraint::Length(4),
     ])
     .spacing(1);
     let [top, middle, bottom] = vertical.areas(root);
@@ -35,9 +52,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_header(frame, top, app);
 
     let middle_layout = Layout::horizontal([
-        Constraint::Percentage(34),
-        Constraint::Percentage(22),
-        Constraint::Percentage(44),
+        Constraint::Percentage(36),
+        Constraint::Percentage(24),
+        Constraint::Percentage(40),
     ])
     .spacing(1);
     let [browser_area, settings_area, preview_logs_area] = middle_layout.areas(middle);
@@ -50,7 +67,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 }
 
 fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
-    let chunks = Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)])
+    let chunks = Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)])
         .spacing(1)
         .split(area);
 
@@ -59,84 +76,88 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_monitor_header(frame: &mut Frame, area: Rect, app: &App) {
-    let selector_lines = if app.monitors.is_empty() {
-        vec![Line::from(vec![Span::styled(
-            " No monitors detected ",
-            Style::default().fg(WARN),
-        )])]
-    } else {
-        app.monitors
-            .iter()
-            .enumerate()
-            .map(|(index, monitor)| {
-                let is_cursor = index == app.selected_monitor;
-                let is_applied = monitor.wallpaper.is_some();
-                let indicator = if is_cursor { "> " } else { "  " };
-                let style = if is_cursor {
-                    Style::default()
-                        .fg(CURSOR_TEXT)
-                        .add_modifier(Modifier::BOLD)
-                } else if is_applied {
-                    Style::default().fg(ACCENT)
-                } else {
-                    Style::default().fg(MUTED)
-                };
-
-                Line::from(vec![
-                    Span::styled(indicator, style),
-                    Span::styled(format!("{}.{}", index + 1, monitor.name), style),
-                ])
-            })
-            .collect::<Vec<_>>()
-    };
-
-    let status_line = Line::from(vec![
-        Span::styled(" Selected ", Style::default().fg(MUTED)),
-        Span::styled(
-            app.selected_monitor_label(),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            app.selected_monitor_metrics_label(),
-            Style::default().fg(TEXT),
-        ),
-    ]);
-
-    let wallpaper_line = Line::from(vec![
-        Span::styled(" Wallpaper ", Style::default().fg(MUTED)),
-        Span::styled(
-            app.selected_wallpaper_label(),
-            Style::default().fg(ACCENT_SOFT),
-        ),
-    ]);
-
-    let paragraph = Paragraph::new(Text::from(vec![
+    let mut lines = vec![
         Line::from(vec![
             Span::styled(
-                " 󰍹 Monitors ",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                " 󰍹 Output Matrix ",
+                Style::default()
+                    .fg(ACCENT_PRIMARY)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("selection", Style::default().fg(MUTED)),
+            Span::styled("live targets", Style::default().fg(TEXT_MUTED)),
         ]),
-        Line::from(vec![Span::styled(
-            " Select ",
-            Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
-        )]),
-        selector_lines[0].clone(),
-        selector_lines.get(1).cloned().unwrap_or_else(Line::default),
-        status_line,
-        if app.monitors.len() > 2 {
-            Line::from(vec![Span::styled(
-                format!(" +{} more monitor(s)", app.monitors.len().saturating_sub(2)),
-                Style::default().fg(MUTED),
-            )])
-        } else {
-            wallpaper_line
-        },
-    ]))
-    .block(panel_block("", false))
-    .style(Style::default().fg(TEXT));
+        Line::from(vec![
+            Span::styled(" 󰨈 Focus ", Style::default().fg(TEXT_MUTED)),
+            Span::styled(
+                app.selected_monitor_label(),
+                Style::default()
+                    .fg(ACCENT_SECONDARY)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                app.selected_monitor_metrics_label(),
+                Style::default().fg(TEXT_SECONDARY),
+            ),
+        ]),
+    ];
+
+    if app.monitors.is_empty() {
+        lines.push(Line::from(vec![Span::styled(
+            " 󰖪 No monitors detected ",
+            Style::default().fg(WARN),
+        )]));
+    } else {
+        lines.extend(
+            app.monitors
+                .iter()
+                .enumerate()
+                .take(2)
+                .map(|(index, monitor)| {
+                    let is_cursor = index == app.selected_monitor;
+                    let is_applied = monitor.wallpaper.is_some();
+                    let cue = if is_cursor { "󰜴" } else { " " };
+                    let state = if is_applied { "󰸉" } else { "󰄱" };
+                    let style = if is_cursor {
+                        Style::default()
+                            .fg(CURSOR_TEXT)
+                            .bg(HIGHLIGHT_BG)
+                            .add_modifier(Modifier::BOLD)
+                    } else if is_applied {
+                        Style::default().fg(GOOD)
+                    } else {
+                        Style::default().fg(TEXT_DIM)
+                    };
+
+                    Line::from(vec![
+                        Span::styled(format!(" {} {} ", cue, state), style),
+                        Span::styled(format!("{}. {}", index + 1, monitor.name), style),
+                    ])
+                }),
+        );
+    }
+
+    lines.push(if app.monitors.len() > 2 {
+        Line::from(vec![
+            Span::styled(" 󰁔 ", Style::default().fg(TEXT_MUTED)),
+            Span::styled(
+                format!("{} more monitor(s)", app.monitors.len().saturating_sub(2)),
+                Style::default().fg(TEXT_DIM),
+            ),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(" 󰆊 Wallpaper ", Style::default().fg(TEXT_MUTED)),
+            Span::styled(
+                app.selected_wallpaper_label(),
+                Style::default().fg(ACCENT_PRIMARY),
+            ),
+        ])
+    });
+
+    let paragraph = Paragraph::new(Text::from(lines))
+        .block(panel_block("", false))
+        .style(Style::default().fg(TEXT_PRIMARY));
 
     frame.render_widget(paragraph, area);
 }
@@ -145,24 +166,45 @@ fn draw_daemon_header(frame: &mut Frame, area: Rect, app: &App) {
     let paragraph = Paragraph::new(Text::from(vec![
         Line::from(vec![
             Span::styled(
-                " 󰒋 Daemon ",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                " 󰒋 Daemon Core ",
+                Style::default()
+                    .fg(ACCENT_PRIMARY)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                daemon_status_label(app.daemon_status),
+                format!(
+                    "{} {}",
+                    daemon_status_glyph(app.daemon_status),
+                    daemon_status_label(app.daemon_status)
+                ),
                 status_style(app.daemon_status),
             ),
         ]),
         Line::from(vec![
-            Span::styled(" Resource ", Style::default().fg(MUTED)),
+            Span::styled(" 󰘚 Resource ", Style::default().fg(TEXT_MUTED)),
             Span::styled(
                 app.daemon_resource_label(),
-                Style::default().fg(ACCENT_SOFT),
+                Style::default().fg(ACCENT_SECONDARY),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(" 󰓦 Scaling ", Style::default().fg(TEXT_MUTED)),
+            Span::styled(
+                app.current_scaling_mode().to_string(),
+                Style::default().fg(TEXT_SECONDARY),
+            ),
+            Span::raw("  "),
+            Span::styled("󰌌 Focus ", Style::default().fg(TEXT_MUTED)),
+            Span::styled(
+                focus_label(app.focus),
+                Style::default()
+                    .fg(ACCENT_SECONDARY)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
     ]))
     .block(panel_block("", false))
-    .style(Style::default().fg(TEXT));
+    .style(Style::default().fg(TEXT_PRIMARY));
 
     frame.render_widget(paragraph, area);
 }
@@ -180,25 +222,44 @@ fn draw_browser(frame: &mut Frame, area: Rect, app: &App, active: bool) {
         })
         .collect::<Vec<_>>();
 
-    let block = panel_block(
-        Line::from(vec![
-            Span::styled(
-                " 󰉋 Files / Playlist ",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(format!("{} items", items.len()), Style::default().fg(MUTED)),
-        ]),
-        active,
+    let title = Line::from(vec![
+        Span::styled(
+            " 󰉋 Workspace ",
+            Style::default()
+                .fg(ACCENT_PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{} items", items.len()),
+            Style::default().fg(TEXT_MUTED),
+        ),
+    ]);
+
+    let block = panel_block(title, active);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let [meta_area, list_area] =
+        Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(inner);
+
+    frame.render_widget(
+        Paragraph::new(Text::from(vec![
+            Line::from(vec![
+                Span::styled(" 󰉖 ", Style::default().fg(TEXT_MUTED)),
+                Span::styled(
+                    app.current_path.display().to_string(),
+                    Style::default().fg(TEXT_SECONDARY),
+                ),
+            ]),
+            browser_filter_line(app),
+        ]))
+        .style(Style::default().fg(TEXT_SECONDARY)),
+        meta_area,
     );
 
     let list = List::new(items)
-        .block(block)
-        .highlight_style(
-            Style::default()
-                .fg(CURSOR_TEXT)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("> ")
+        .highlight_style(list_highlight_style(active))
+        .highlight_symbol("▸ ")
         .highlight_spacing(HighlightSpacing::Always);
 
     let mut state = ListState::default();
@@ -208,66 +269,125 @@ fn draw_browser(frame: &mut Frame, area: Rect, app: &App, active: bool) {
         Some(app.browser_selected)
     });
 
-    frame.render_stateful_widget(list, area, &mut state);
+    frame.render_stateful_widget(list, list_area, &mut state);
 }
 
 fn draw_settings_panel(frame: &mut Frame, area: Rect, app: &App, active: bool) {
     draw_scaling_modes(frame, area, app, active);
 }
 
+fn browser_filter_line(app: &App) -> Line<'static> {
+    let mut spans = vec![Span::styled(" 󰈲 ", Style::default().fg(TEXT_MUTED))];
+
+    if app.search_active || !app.search_buffer.is_empty() {
+        let query = if app.search_buffer.is_empty() {
+            "search...".to_string()
+        } else {
+            app.search_buffer.clone()
+        };
+        spans.push(Span::styled(
+            format!("󰍉 {}", query),
+            Style::default()
+                .fg(ACCENT_PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        spans.push(Span::styled("󰍉 no query", Style::default().fg(TEXT_MUTED)));
+    }
+
+    spans.push(Span::raw("  "));
+    spans.push(toggle_badge(" favorites", app.favorites_only, WARN));
+    spans.push(Span::raw(" "));
+    spans.push(toggle_badge(
+        "󰈉 unsupported",
+        app.hide_unsupported,
+        ACCENT_SECONDARY,
+    ));
+
+    Line::from(spans)
+}
+
+fn toggle_badge(label: &'static str, enabled: bool, tone: Color) -> Span<'static> {
+    if enabled {
+        Span::styled(
+            format!(" {} ", label),
+            Style::default()
+                .fg(CURSOR_TEXT)
+                .bg(tone)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled(format!(" {} ", label), Style::default().fg(TEXT_MUTED))
+    }
+}
+
+fn list_highlight_style(active: bool) -> Style {
+    if active {
+        Style::default()
+            .fg(CURSOR_TEXT)
+            .bg(HIGHLIGHT_BG)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(TEXT_SECONDARY).bg(HIGHLIGHT_BG_SOFT)
+    }
+}
+
 fn browser_item(entry: &FileEntry, is_applied: bool) -> ListItem<'static> {
-    let favorite = entry.favorite;
     let icon = match entry.kind {
         FileKind::Directory => "󰉋",
-        FileKind::File => "󰈔",
-    };
-    let support_badge = if entry.kind == FileKind::File && entry.supported {
-        "󰋩"
-    } else if entry.kind == FileKind::File {
-        "󰈥"
-    } else {
-        "󰉋"
+        FileKind::File if entry.supported => "󰈔",
+        FileKind::File => "󰛉",
     };
 
     let mut spans = vec![Span::styled(
         format!("{} ", icon),
         Style::default().fg(if entry.kind == FileKind::Directory {
-            ACCENT
+            ACCENT_SECONDARY
         } else {
-            TEXT
+            TEXT_SECONDARY
         }),
     )];
 
-    if favorite {
+    if entry.favorite {
         spans.push(Span::styled(
-            "★ ",
+            " ",
             Style::default().fg(WARN).add_modifier(Modifier::BOLD),
         ));
     }
 
-    let label_color = if is_applied {
-        ACCENT
-    } else if favorite {
-        WARN
+    let label_style = if is_applied {
+        Style::default()
+            .fg(ACCENT_SECONDARY)
+            .add_modifier(Modifier::BOLD)
+    } else if entry.favorite {
+        Style::default().fg(WARN)
+    } else if entry.kind == FileKind::File && !entry.supported {
+        Style::default().fg(BAD)
+    } else if entry.kind == FileKind::Directory {
+        Style::default().fg(TEXT_SECONDARY)
     } else {
-        MUTED
+        Style::default().fg(TEXT_DIM)
     };
 
-    spans.push(Span::styled(
-        entry.name.clone(),
-        Style::default().fg(label_color),
-    ));
+    spans.push(Span::styled(entry.name.clone(), label_style));
 
-    spans.push(Span::styled(
-        format!("  [{}]", support_badge),
-        Style::default().fg(MUTED),
-    ));
+    if is_applied {
+        spans.push(Span::styled(
+            "  󰄬 applied",
+            Style::default().fg(GOOD).add_modifier(Modifier::BOLD),
+        ));
+    } else if entry.kind == FileKind::File && !entry.supported {
+        spans.push(Span::styled(
+            "  󰅚 unsupported",
+            Style::default().fg(TEXT_MUTED),
+        ));
+    }
 
     ListItem::new(Line::from(spans))
 }
 
 fn draw_preview_and_logs(frame: &mut Frame, area: Rect, app: &mut App) {
-    let chunks = Layout::vertical([Constraint::Percentage(56), Constraint::Percentage(44)])
+    let chunks = Layout::vertical([Constraint::Percentage(62), Constraint::Percentage(38)])
         .spacing(1)
         .split(area);
 
@@ -276,12 +396,23 @@ fn draw_preview_and_logs(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn draw_preview_with_summary(frame: &mut Frame, area: Rect, app: &mut App, active: bool) {
-    let block = panel_block(" 󰋩 Preview + Summary ", active);
+    let block = panel_block(
+        Line::from(vec![
+            Span::styled(
+                " 󰋩 Live Preview ",
+                Style::default()
+                    .fg(ACCENT_PRIMARY)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("monitor framing", Style::default().fg(TEXT_MUTED)),
+        ]),
+        active,
+    );
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let preview_summary =
-        Layout::vertical([Constraint::Percentage(70), Constraint::Percentage(30)]).split(inner);
+        Layout::vertical([Constraint::Percentage(68), Constraint::Percentage(32)]).split(inner);
     let art_area = preview_summary[0];
     let summary_area = preview_summary[1];
 
@@ -295,24 +426,18 @@ fn draw_preview_with_summary(frame: &mut Frame, area: Rect, app: &mut App, activ
         frame.render_widget(
             Block::default()
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(ACCENT))
-                .style(Style::default().fg(ACCENT)),
+                .border_set(border::ROUNDED)
+                .border_style(Style::default().fg(PANEL_GLOW))
+                .style(Style::default().fg(ACCENT_SECONDARY)),
             preview,
         );
 
         if let Some(stand) = stand {
-            frame.render_widget(
-                Block::default().style(Style::default().bg(ACCENT_SOFT)),
-                stand,
-            );
+            render_bar(frame, stand, "▄", PANEL_BORDER_ACTIVE);
         }
 
         if let Some(base) = base {
-            frame.render_widget(
-                Block::default().style(Style::default().bg(ACCENT_SOFT)),
-                base,
-            );
+            render_bar(frame, base, "▀", PANEL_BORDER);
         }
 
         let preview_inner = preview_inner_rect(preview);
@@ -321,8 +446,14 @@ fn draw_preview_with_summary(frame: &mut Frame, area: Rect, app: &mut App, activ
             if let Some(image) = app.preview_image() {
                 draw_halfblock_preview(frame, preview_inner, image);
             } else {
-                let placeholder = Paragraph::new(app.preview_status().to_string())
-                    .style(Style::default().fg(MUTED));
+                let placeholder = Paragraph::new(Text::from(vec![Line::from(vec![
+                    Span::styled("󰋩 ", Style::default().fg(TEXT_MUTED)),
+                    Span::styled(
+                        app.preview_status().to_string(),
+                        Style::default().fg(TEXT_DIM),
+                    ),
+                ])]))
+                .style(Style::default().fg(TEXT_DIM));
                 frame.render_widget(placeholder, preview_inner);
             }
         }
@@ -341,24 +472,42 @@ fn draw_preview_with_summary(frame: &mut Frame, area: Rect, app: &mut App, activ
 
     let summary = Paragraph::new(Text::from(vec![
         Line::from(vec![
-            Span::styled(" Resolution ", Style::default().fg(MUTED)),
+            Span::styled(" 󰍹 Resolution ", Style::default().fg(TEXT_MUTED)),
             Span::styled(
                 app.selected_monitor_metrics_label(),
-                Style::default().fg(TEXT),
+                Style::default().fg(TEXT_SECONDARY),
             ),
         ]),
         Line::from(vec![
-            Span::styled(" Current Wallpaper ", Style::default().fg(MUTED)),
-            Span::styled(wallpaper, Style::default().fg(ACCENT)),
+            Span::styled(" 󰆊 Candidate ", Style::default().fg(TEXT_MUTED)),
+            Span::styled(wallpaper, Style::default().fg(ACCENT_PRIMARY)),
         ]),
         Line::from(vec![
-            Span::styled(" Flow ", Style::default().fg(MUTED)),
-            Span::styled(flow, Style::default().fg(ACCENT_SOFT)),
+            Span::styled(" 󰑓 Pipeline ", Style::default().fg(TEXT_MUTED)),
+            Span::styled(flow, Style::default().fg(ACCENT_SECONDARY)),
+            Span::raw("  "),
+            Span::styled("󰓦 ", Style::default().fg(TEXT_MUTED)),
+            Span::styled(
+                app.current_scaling_mode().to_string(),
+                Style::default().fg(TEXT_SECONDARY),
+            ),
         ]),
     ]))
-    .style(Style::default().fg(TEXT));
+    .style(Style::default().fg(TEXT_PRIMARY));
 
     frame.render_widget(summary, summary_area);
+}
+
+fn render_bar(frame: &mut Frame, area: Rect, glyph: &str, color: Color) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let line = glyph.repeat(area.width as usize);
+    let rows = (0..area.height)
+        .map(|_| Line::from(vec![Span::styled(line.clone(), Style::default().fg(color))]))
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(Text::from(rows)), area);
 }
 
 fn preview_inner_rect(preview: Rect) -> Rect {
@@ -469,35 +618,47 @@ fn draw_scaling_modes(frame: &mut Frame, area: Rect, app: &App, active: bool) {
         .scaling_modes
         .iter()
         .map(|mode| {
-            let style = if *mode == app.applied_scaling_mode() {
-                Style::default().fg(ACCENT)
+            let is_applied = *mode == app.applied_scaling_mode();
+            let style = if is_applied {
+                Style::default().fg(GOOD).add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(MUTED)
+                Style::default().fg(TEXT_DIM)
             };
 
-            ListItem::new(Line::from(vec![Span::styled(mode.to_string(), style)]))
+            let mut spans = vec![Span::styled(
+                format!("{} ", scaling_mode_icon(*mode)),
+                Style::default().fg(ACCENT_SECONDARY),
+            )];
+            spans.push(Span::styled(mode.to_string(), style));
+
+            if is_applied {
+                spans.push(Span::styled(
+                    "  • applied",
+                    Style::default().fg(GOOD).add_modifier(Modifier::BOLD),
+                ));
+            }
+
+            ListItem::new(Line::from(spans))
         })
         .collect::<Vec<_>>();
 
     let block = panel_block(
         Line::from(vec![
             Span::styled(
-                " 󰆞 Scaling ",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                " 󰆞 Scaling Modes ",
+                Style::default()
+                    .fg(ACCENT_PRIMARY)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("current mode", Style::default().fg(MUTED)),
+            Span::styled("active strategy", Style::default().fg(TEXT_MUTED)),
         ]),
         active,
     );
 
     let list = List::new(items)
         .block(block)
-        .highlight_symbol("> ")
-        .highlight_style(
-            Style::default()
-                .fg(CURSOR_TEXT)
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_symbol("▸ ")
+        .highlight_style(list_highlight_style(active))
         .highlight_spacing(HighlightSpacing::Always);
 
     let mut state = ListState::default();
@@ -512,29 +673,61 @@ fn draw_logs(frame: &mut Frame, area: Rect, app: &App) {
         .rev()
         .take(area.height.saturating_sub(2) as usize)
         .map(|log| {
-            let style = if log.contains("[ERROR]") {
-                Style::default().fg(BAD)
+            let (icon, style) = if log.contains("[ERROR]") {
+                ("󰅙", Style::default().fg(BAD))
             } else if log.contains("[WARN]") {
-                Style::default().fg(WARN)
+                ("󰀦", Style::default().fg(WARN))
             } else if log.contains("[SUCCESS]") {
-                Style::default().fg(GOOD)
+                ("󰄬", Style::default().fg(GOOD))
             } else if log.contains("[ACTION]") {
-                Style::default().fg(ACCENT)
+                ("󰑮", Style::default().fg(ACCENT_SECONDARY))
             } else {
-                Style::default().fg(TEXT)
+                ("󰌶", Style::default().fg(TEXT_SECONDARY))
             };
 
-            ListItem::new(Line::from(vec![Span::styled(log.clone(), style)]))
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{} ", icon), style),
+                Span::styled(log.clone(), style),
+            ]))
         })
         .collect::<Vec<_>>();
 
-    let list = List::new(log_items).block(panel_block(" 󰈚 Logs ", false));
+    let list = List::new(log_items).block(panel_block(
+        Line::from(vec![
+            Span::styled(
+                " 󰈚 Activity ",
+                Style::default()
+                    .fg(ACCENT_PRIMARY)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("event stream", Style::default().fg(TEXT_MUTED)),
+        ]),
+        false,
+    ));
 
     frame.render_widget(list, area);
 }
 
 fn draw_keybinds(frame: &mut Frame, area: Rect, app: &App) {
-    let lines = vec![Line::from(match app.focus {
+    let focus_chip = Span::styled(
+        format!(" {} ", focus_label(app.focus)),
+        Style::default()
+            .fg(CURSOR_TEXT)
+            .bg(ACCENT_SECONDARY)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let mut lines = vec![Line::from(vec![
+        Span::styled(" 󰌌 Active Panel ", Style::default().fg(TEXT_MUTED)),
+        focus_chip,
+        Span::raw("  "),
+        Span::styled(
+            format!("󰍉 {}", search_hint_label(app)),
+            Style::default().fg(TEXT_DIM),
+        ),
+    ])];
+
+    lines.push(Line::from(match app.focus {
         Focus::Files => vec![
             key_span("↑/↓ hjkl"),
             label_span(" Navigate files"),
@@ -544,6 +737,12 @@ fn draw_keybinds(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw("  "),
             key_span("Enter"),
             label_span(" Apply"),
+            Span::raw("  "),
+            key_span("/"),
+            label_span(" Search"),
+            Span::raw("  "),
+            key_span("f"),
+            label_span(" Favorite"),
             Span::raw("  "),
             key_span("1..n"),
             label_span(" Monitors"),
@@ -561,31 +760,48 @@ fn draw_keybinds(frame: &mut Frame, area: Rect, app: &App) {
             key_span("[ / ]"),
             label_span(" Scaling"),
             Span::raw("  "),
+            key_span("o / v"),
+            label_span(" Filters"),
+            Span::raw("  "),
             key_span("1..n"),
             label_span(" Monitors"),
             Span::raw("  "),
             key_span("q"),
             label_span(" Quit"),
         ],
-    })];
+    }));
 
     let paragraph = Paragraph::new(Text::from(lines))
         .block(
             panel_block(
                 Line::from(vec![
                     Span::styled(
-                        " 󰌌 Keys ",
-                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                        " 󰌌 Interaction ",
+                        Style::default()
+                            .fg(ACCENT_PRIMARY)
+                            .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled("active panel", Style::default().fg(MUTED)),
+                    Span::styled("live controls", Style::default().fg(TEXT_MUTED)),
                 ]),
                 false,
             )
             .padding(Padding::horizontal(1)),
         )
-        .style(Style::default().fg(TEXT));
+        .style(Style::default().fg(TEXT_PRIMARY));
 
     frame.render_widget(paragraph, area);
+}
+
+fn search_hint_label(app: &App) -> String {
+    if app.search_active {
+        if app.search_buffer.is_empty() {
+            "type to search".to_string()
+        } else {
+            app.search_buffer.clone()
+        }
+    } else {
+        "inactive".to_string()
+    }
 }
 
 fn daemon_status_label(status: DaemonStatus) -> &'static str {
@@ -593,6 +809,14 @@ fn daemon_status_label(status: DaemonStatus) -> &'static str {
         DaemonStatus::Running => "Running",
         DaemonStatus::Stopped => "Stopped",
         DaemonStatus::Crashed => "Crashed",
+    }
+}
+
+fn daemon_status_glyph(status: DaemonStatus) -> &'static str {
+    match status {
+        DaemonStatus::Running => "󰐊",
+        DaemonStatus::Stopped => "󰓛",
+        DaemonStatus::Crashed => "󰅚",
     }
 }
 
@@ -604,24 +828,53 @@ fn status_style(status: DaemonStatus) -> Style {
     }
 }
 
+fn focus_label(focus: Focus) -> &'static str {
+    match focus {
+        Focus::Files => "󰉋 Files",
+        Focus::Scaling => "󰆞 Scaling",
+    }
+}
+
+fn scaling_mode_icon(mode: ScalingMode) -> &'static str {
+    match mode {
+        ScalingMode::Fill => "󰊠",
+        ScalingMode::Fit => "󰉋",
+        ScalingMode::Crop => "󰆐",
+        ScalingMode::Center => "󰩃",
+        ScalingMode::Tile => "󰔉",
+    }
+}
+
 fn panel_block(title: impl Into<Line<'static>>, active: bool) -> Block<'static> {
     Block::default()
         .title(title)
+        .title_style(
+            Style::default()
+                .fg(if active { PANEL_GLOW } else { TEXT_MUTED })
+                .add_modifier(Modifier::BOLD),
+        )
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(if active { PANEL_ACTIVE } else { BORDER }))
+        .border_set(border::ROUNDED)
+        .border_style(Style::default().fg(if active {
+            PANEL_BORDER_ACTIVE
+        } else {
+            PANEL_BORDER
+        }))
+        .style(Style::default().bg(Color::Reset))
         .padding(Padding::symmetric(2, 1))
 }
 
 fn key_span(key: &'static str) -> Span<'static> {
     Span::styled(
         format!("[{}]", key),
-        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(ACCENT_SECONDARY)
+            .add_modifier(Modifier::BOLD),
     )
 }
 
 fn label_span(label: &'static str) -> Span<'static> {
-    Span::styled(label, Style::default().fg(TEXT))
+    Span::styled(label, Style::default().fg(TEXT_SECONDARY))
 }
 
 #[cfg(test)]
