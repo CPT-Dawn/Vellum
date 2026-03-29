@@ -42,7 +42,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     );
 
     let vertical = Layout::vertical([
-        Constraint::Length(8),
+        Constraint::Length(5),
         Constraint::Min(12),
         Constraint::Length(4),
     ])
@@ -76,101 +76,78 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_monitor_header(frame: &mut Frame, area: Rect, app: &App) {
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled(
-                " 󰍹 Output Matrix ",
-                Style::default()
-                    .fg(ACCENT_PRIMARY)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("live targets", Style::default().fg(TEXT_MUTED)),
-        ]),
-        Line::from(vec![
-            Span::styled(" 󰨈 Focus ", Style::default().fg(TEXT_MUTED)),
-            Span::styled(
-                app.selected_monitor_label(),
-                Style::default()
-                    .fg(ACCENT_SECONDARY)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                app.selected_monitor_metrics_label(),
-                Style::default().fg(TEXT_SECONDARY),
-            ),
-        ]),
-    ];
+    let title = Line::from(vec![
+        Span::styled(
+            " 󰍹 Outputs ",
+            Style::default()
+                .fg(ACCENT_PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("session targets", Style::default().fg(TEXT_MUTED)),
+    ]);
 
-    if app.monitors.is_empty() {
-        lines.push(Line::from(vec![Span::styled(
-            " 󰖪 No monitors detected ",
-            Style::default().fg(WARN),
-        )]));
+    let lines = if app.monitors.is_empty() {
+        vec![
+            Line::from(vec![Span::styled(
+                " 󰖪 No monitors detected",
+                Style::default().fg(WARN).add_modifier(Modifier::BOLD),
+            )]),
+            Line::from(vec![
+                Span::styled(" 󰆊 Wallpaper ", Style::default().fg(TEXT_MUTED)),
+                Span::styled("(none)", Style::default().fg(TEXT_DIM)),
+            ]),
+        ]
     } else {
-        lines.extend(
-            app.monitors
-                .iter()
-                .enumerate()
-                .take(2)
-                .map(|(index, monitor)| {
-                    let is_cursor = index == app.selected_monitor;
-                    let is_applied = monitor.wallpaper.is_some();
-                    let cue = if is_cursor { "󰜴" } else { " " };
-                    let state = if is_applied { "󰸉" } else { "󰄱" };
-                    let style = if is_cursor {
-                        Style::default()
-                            .fg(CURSOR_TEXT)
-                            .bg(HIGHLIGHT_BG)
-                            .add_modifier(Modifier::BOLD)
-                    } else if is_applied {
-                        Style::default().fg(GOOD)
-                    } else {
-                        Style::default().fg(TEXT_DIM)
-                    };
-
-                    Line::from(vec![
-                        Span::styled(format!(" {} {} ", cue, state), style),
-                        Span::styled(format!("{}. {}", index + 1, monitor.name), style),
-                    ])
-                }),
-        );
-    }
-
-    lines.push(if app.monitors.len() > 2 {
-        Line::from(vec![
-            Span::styled(" 󰁔 ", Style::default().fg(TEXT_MUTED)),
-            Span::styled(
-                format!("{} more monitor(s)", app.monitors.len().saturating_sub(2)),
-                Style::default().fg(TEXT_DIM),
-            ),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled(" 󰆊 Wallpaper ", Style::default().fg(TEXT_MUTED)),
-            Span::styled(
-                app.selected_wallpaper_label(),
-                Style::default().fg(ACCENT_PRIMARY),
-            ),
-        ])
-    });
+        vec![
+            Line::from(vec![
+                Span::styled(" 󰨈 ", Style::default().fg(TEXT_MUTED)),
+                Span::styled(
+                    app.selected_monitor_label(),
+                    Style::default()
+                        .fg(ACCENT_SECONDARY)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                Span::styled(
+                    app.selected_monitor_metrics_label(),
+                    Style::default().fg(TEXT_SECONDARY),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled(" 󰆊 ", Style::default().fg(TEXT_MUTED)),
+                Span::styled(
+                    app.selected_wallpaper_label(),
+                    Style::default().fg(TEXT_DIM),
+                ),
+                Span::raw("  "),
+                Span::styled(
+                    format!("{} output(s)", app.monitors.len()),
+                    Style::default().fg(TEXT_MUTED),
+                ),
+            ]),
+        ]
+    };
 
     let paragraph = Paragraph::new(Text::from(lines))
-        .block(panel_block("", false))
+        .block(header_panel_block(title, false))
         .style(Style::default().fg(TEXT_PRIMARY));
 
     frame.render_widget(paragraph, area);
 }
 
 fn draw_daemon_header(frame: &mut Frame, area: Rect, app: &App) {
+    let title = Line::from(vec![
+        Span::styled(
+            " 󰒋 Daemon ",
+            Style::default()
+                .fg(ACCENT_PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("runtime status", Style::default().fg(TEXT_MUTED)),
+    ]);
+
     let paragraph = Paragraph::new(Text::from(vec![
         Line::from(vec![
-            Span::styled(
-                " 󰒋 Daemon Core ",
-                Style::default()
-                    .fg(ACCENT_PRIMARY)
-                    .add_modifier(Modifier::BOLD),
-            ),
             Span::styled(
                 format!(
                     "{} {}",
@@ -179,22 +156,21 @@ fn draw_daemon_header(frame: &mut Frame, area: Rect, app: &App) {
                 ),
                 status_style(app.daemon_status),
             ),
-        ]),
-        Line::from(vec![
-            Span::styled(" 󰘚 Resource ", Style::default().fg(TEXT_MUTED)),
+            Span::raw("  "),
+            Span::styled("󰘚 ", Style::default().fg(TEXT_MUTED)),
             Span::styled(
                 app.daemon_resource_label(),
                 Style::default().fg(ACCENT_SECONDARY),
             ),
         ]),
         Line::from(vec![
-            Span::styled(" 󰓦 Scaling ", Style::default().fg(TEXT_MUTED)),
+            Span::styled(" 󰓦 ", Style::default().fg(TEXT_MUTED)),
             Span::styled(
                 app.current_scaling_mode().to_string(),
                 Style::default().fg(TEXT_SECONDARY),
             ),
             Span::raw("  "),
-            Span::styled("󰌌 Focus ", Style::default().fg(TEXT_MUTED)),
+            Span::styled("󰌌 ", Style::default().fg(TEXT_MUTED)),
             Span::styled(
                 focus_label(app.focus),
                 Style::default()
@@ -203,7 +179,7 @@ fn draw_daemon_header(frame: &mut Frame, area: Rect, app: &App) {
             ),
         ]),
     ]))
-    .block(panel_block("", false))
+    .block(header_panel_block(title, false))
     .style(Style::default().fg(TEXT_PRIMARY));
 
     frame.render_widget(paragraph, area);
@@ -846,6 +822,18 @@ fn scaling_mode_icon(mode: ScalingMode) -> &'static str {
 }
 
 fn panel_block(title: impl Into<Line<'static>>, active: bool) -> Block<'static> {
+    panel_block_with_padding(title, active, Padding::symmetric(2, 1))
+}
+
+fn header_panel_block(title: impl Into<Line<'static>>, active: bool) -> Block<'static> {
+    panel_block_with_padding(title, active, Padding::symmetric(1, 0))
+}
+
+fn panel_block_with_padding(
+    title: impl Into<Line<'static>>,
+    active: bool,
+    padding: Padding,
+) -> Block<'static> {
     Block::default()
         .title(title)
         .title_style(
@@ -861,7 +849,7 @@ fn panel_block(title: impl Into<Line<'static>>, active: bool) -> Block<'static> 
             PANEL_BORDER
         }))
         .style(Style::default().bg(Color::Reset))
-        .padding(Padding::symmetric(2, 1))
+        .padding(padding)
 }
 
 fn key_span(key: &'static str) -> Span<'static> {
