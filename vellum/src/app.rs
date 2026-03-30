@@ -1,10 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use common::ipc::BgInfo;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -16,6 +16,10 @@ use crate::preview::{self, PreviewImage, PreviewRequest, PreviewResult};
 
 const LOG_CAPACITY: usize = 128;
 const BACKEND_SYNC_INTERVAL_TICKS: u8 = 5;
+const PLAYLIST_INTERVAL_MIN_SECS: u64 = 10;
+const PLAYLIST_INTERVAL_MAX_SECS: u64 = 3600;
+const PLAYLIST_INTERVAL_STEP_SECS: u64 = 10;
+const PLAYLIST_ITEM_COUNT: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalingMode {
@@ -68,13 +72,15 @@ impl fmt::Display for DaemonStatus {
 pub enum Focus {
     Files,
     Scaling,
+    Playlist,
 }
 
 impl Focus {
     fn next(self) -> Self {
         match self {
             Self::Files => Self::Scaling,
-            Self::Scaling => Self::Files,
+            Self::Scaling => Self::Playlist,
+            Self::Playlist => Self::Files,
         }
     }
 
@@ -82,6 +88,50 @@ impl Focus {
         match self {
             Self::Files => Self::Scaling,
             Self::Scaling => Self::Files,
+            Self::Playlist => Self::Scaling,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaylistSource {
+    Workspace,
+    Favorites,
+}
+
+impl PlaylistSource {
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::Workspace => Self::Favorites,
+            Self::Favorites => Self::Workspace,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Workspace => "Workspace",
+            Self::Favorites => "Favorites",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PlaylistConfig {
+    pub source: PlaylistSource,
+    pub interval_secs: u64,
+    pub running: bool,
+    pub next_shuffle_at: Option<Instant>,
+    pub last_wallpaper: Option<PathBuf>,
+}
+
+impl Default for PlaylistConfig {
+    fn default() -> Self {
+        Self {
+            source: PlaylistSource::Workspace,
+            interval_secs: 60,
+            running: false,
+            next_shuffle_at: None,
+            last_wallpaper: None,
         }
     }
 }
@@ -180,6 +230,8 @@ pub struct App {
     pub daemon_resources: Option<DaemonResourceUsage>,
     pub logs: Vec<String>,
     pub focus: Focus,
+    playlist_by_monitor: HashMap<String, PlaylistConfig>,
+    pub playlist_selected: usize,
     matcher: SkimMatcherV2,
     preview_request_tx: Sender<PreviewRequest>,
     preview_result_rx: Receiver<PreviewResult>,
@@ -222,6 +274,8 @@ impl fmt::Debug for App {
             .field("daemon_resources", &self.daemon_resources)
             .field("logs", &self.logs)
             .field("focus", &self.focus)
+            .field("playlist_by_monitor", &self.playlist_by_monitor)
+            .field("playlist_selected", &self.playlist_selected)
             .field("preview_request_seq", &self.preview_request_seq)
             .field("preview_last_key", &self.preview_last_key)
             .field("preview_status", &self.preview_status)
@@ -270,6 +324,8 @@ impl App {
             daemon_resources: None,
             logs: vec!["[INFO] Vellum TUI ready".to_string()],
             focus: Focus::Files,
+            playlist_by_monitor: HashMap::new(),
+            playlist_selected: 0,
             matcher: SkimMatcherV2::default(),
             preview_request_tx,
             preview_result_rx,
@@ -363,6 +419,26 @@ impl App {
                 self.start_or_refresh_daemon(backend);
                 false
             }
+            KeyCode::Char('r') => {
+                self.toggle_selected_playlist();
+                false
+            }
+            KeyCode::Char('m') => {
+                self.toggle_selected_playlist_source();
+                false
+            }
+            KeyCode::Char('+') | KeyCode::Char('=') => {
+                self.adjust_selected_playlist_interval(PLAYLIST_INTERVAL_STEP_SECS as i64);
+                false
+            }
+            KeyCode::Char('-') => {
+                self.adjust_selected_playlist_interval(-(PLAYLIST_INTERVAL_STEP_SECS as i64));
+                false
+            }
+            KeyCode::Char('n') => {
+                self.trigger_selected_playlist_now();
+                false
+            }
             KeyCode::Tab => {
                 self.focus = self.focus.next();
                 false
@@ -436,6 +512,11 @@ impl App {
                     self.selected_scaling_mode -= 1;
                 }
             }
+            Focus::Playlist => {
+                if self.playlist_selected > 0 {
+                    self.playlist_selected -= 1;
+                }
+            }
         }
     }
 
@@ -450,6 +531,11 @@ impl App {
             Focus::Scaling => {
                 if self.selected_scaling_mode + 1 < self.scaling_modes.len() {
                     self.selected_scaling_mode += 1;
+                }
+            }
+            Focus::Playlist => {
+                if self.playlist_selected + 1 < PLAYLIST_ITEM_COUNT {
+                    self.playlist_selected += 1;
                 }
             }
         }
@@ -478,7 +564,20 @@ impl App {
             return;
         }
 
+        if self.focus == Focus::Playlist {
+            self.activate_playlist_selection();
+            return;
+        }
+
         self.apply_wallpaper_from_selection(backend);
+    }
+
+    fn activate_playlist_selection(&mut self) {
+        match self.playlist_selected {
+            0 => self.toggle_selected_playlist(),
+            1 => self.toggle_selected_playlist_source(),
+            _ => self.adjust_selected_playlist_interval(PLAYLIST_INTERVAL_STEP_SECS as i64),
+        }
     }
 
     fn apply_wallpaper_from_selection(&mut self, backend: &mut Backend) {
@@ -754,6 +853,8 @@ impl App {
             self.backend_sync_tick = 0;
             self.sync_from_backend(backend);
         }
+
+        self.run_playlists_tick(backend);
     }
 
     pub fn update_preview_request(&mut self, target_width: u16, target_height_rows: u16) {
@@ -903,7 +1004,40 @@ impl App {
             } else if self.selected_monitor >= self.monitors.len() {
                 self.selected_monitor = 0;
             }
+
+            self.ensure_playlist_states();
         }
+    }
+
+    pub fn selected_playlist_running(&self) -> bool {
+        self.selected_playlist_config()
+            .map(|config| config.running)
+            .unwrap_or(false)
+    }
+
+    pub fn selected_playlist_source(&self) -> PlaylistSource {
+        self.selected_playlist_config()
+            .map(|config| config.source)
+            .unwrap_or(PlaylistSource::Workspace)
+    }
+
+    pub fn selected_playlist_interval_secs(&self) -> u64 {
+        self.selected_playlist_config()
+            .map(|config| config.interval_secs)
+            .unwrap_or(60)
+    }
+
+    pub fn selected_playlist_pool_size(&self) -> usize {
+        self.playlist_candidates(self.selected_playlist_source())
+            .len()
+    }
+
+    pub fn selected_playlist_next_eta_secs(&self) -> Option<u64> {
+        let now = Instant::now();
+        self.selected_playlist_config()
+            .and_then(|config| config.next_shuffle_at)
+            .and_then(|next| next.checked_duration_since(now))
+            .map(|dur| dur.as_secs())
     }
 
     fn push_log(&mut self, entry: String) {
@@ -912,6 +1046,199 @@ impl App {
         }
 
         self.logs.push(entry);
+    }
+
+    fn ensure_playlist_states(&mut self) {
+        self.playlist_by_monitor
+            .retain(|name, _| self.monitors.iter().any(|monitor| monitor.name == *name));
+
+        for monitor in &self.monitors {
+            self.playlist_by_monitor
+                .entry(monitor.name.clone())
+                .or_default();
+        }
+    }
+
+    fn selected_monitor_name(&self) -> Option<&str> {
+        self.selected_monitor_ref()
+            .map(|monitor| monitor.name.as_str())
+    }
+
+    fn selected_playlist_config(&self) -> Option<&PlaylistConfig> {
+        let monitor_name = self.selected_monitor_name()?;
+        self.playlist_by_monitor.get(monitor_name)
+    }
+
+    fn selected_playlist_config_mut(&mut self) -> Option<&mut PlaylistConfig> {
+        let monitor_name = self.selected_monitor_name()?.to_string();
+        self.playlist_by_monitor.get_mut(&monitor_name)
+    }
+
+    fn toggle_selected_playlist(&mut self) {
+        let Some(monitor_name) = self.selected_monitor_name().map(ToString::to_string) else {
+            self.push_log("[WARN] No monitor selected for playlist".to_string());
+            return;
+        };
+
+        let Some(config) = self.playlist_by_monitor.get_mut(&monitor_name) else {
+            return;
+        };
+
+        config.running = !config.running;
+        let running = config.running;
+        config.next_shuffle_at = if config.running {
+            Some(Instant::now())
+        } else {
+            None
+        };
+
+        let status = if running { "started" } else { "stopped" };
+
+        self.push_log(format!("[INFO] Playlist {} for {}", status, monitor_name));
+    }
+
+    fn toggle_selected_playlist_source(&mut self) {
+        let Some(config) = self.selected_playlist_config_mut() else {
+            self.push_log("[WARN] No monitor selected for playlist".to_string());
+            return;
+        };
+
+        config.source = config.source.toggle();
+        config.last_wallpaper = None;
+        let label = config.source.label().to_string();
+        self.push_log(format!("[INFO] Playlist source: {}", label));
+    }
+
+    fn adjust_selected_playlist_interval(&mut self, delta_secs: i64) {
+        let Some(config) = self.selected_playlist_config_mut() else {
+            self.push_log("[WARN] No monitor selected for playlist".to_string());
+            return;
+        };
+
+        let current = config.interval_secs as i64;
+        let next = (current + delta_secs).clamp(
+            PLAYLIST_INTERVAL_MIN_SECS as i64,
+            PLAYLIST_INTERVAL_MAX_SECS as i64,
+        ) as u64;
+        config.interval_secs = next;
+
+        self.push_log(format!("[INFO] Playlist interval set to {}s", next));
+    }
+
+    fn trigger_selected_playlist_now(&mut self) {
+        let Some(config) = self.selected_playlist_config_mut() else {
+            self.push_log("[WARN] No monitor selected for playlist".to_string());
+            return;
+        };
+
+        config.next_shuffle_at = Some(Instant::now());
+        self.push_log("[INFO] Playlist shuffled now".to_string());
+    }
+
+    fn run_playlists_tick(&mut self, backend: &mut Backend) {
+        let now = Instant::now();
+        let monitor_names = self
+            .monitors
+            .iter()
+            .map(|monitor| monitor.name.clone())
+            .collect::<Vec<_>>();
+
+        for monitor_name in monitor_names {
+            let Some(config) = self.playlist_by_monitor.get(&monitor_name) else {
+                continue;
+            };
+
+            if !config.running {
+                continue;
+            }
+
+            let due = config
+                .next_shuffle_at
+                .map(|next| next <= now)
+                .unwrap_or(true);
+            if !due {
+                continue;
+            }
+
+            let source = config.source;
+            let interval_secs = config.interval_secs;
+            let last_wallpaper = config.last_wallpaper.clone();
+
+            let candidates = self.playlist_candidates(source);
+            if candidates.is_empty() {
+                self.push_log(format!(
+                    "[WARN] Playlist {} has no {} images",
+                    monitor_name,
+                    source.label().to_ascii_lowercase()
+                ));
+                if let Some(config) = self.playlist_by_monitor.get_mut(&monitor_name) {
+                    config.next_shuffle_at = Some(now + Duration::from_secs(interval_secs));
+                }
+                continue;
+            }
+
+            let mut selected_index = fastrand::usize(..candidates.len());
+            if candidates.len() > 1
+                && last_wallpaper
+                    .as_ref()
+                    .is_some_and(|last| last == &candidates[selected_index])
+            {
+                selected_index = (selected_index + 1) % candidates.len();
+            }
+
+            let selected = candidates[selected_index].clone();
+            let mode = self.current_scaling_mode();
+
+            match backend.apply_wallpaper(&selected, &monitor_name, mode) {
+                Ok(()) => {
+                    if let Some(monitor) = self.monitors.iter_mut().find(|m| m.name == monitor_name)
+                    {
+                        monitor.wallpaper = Some(selected.clone());
+                    }
+
+                    self.push_action_log(
+                        "PLAYLIST",
+                        format!(
+                            "{} -> {} ({}, every {}s)",
+                            selected.display(),
+                            monitor_name,
+                            source.label(),
+                            interval_secs
+                        ),
+                    );
+
+                    if let Some(config) = self.playlist_by_monitor.get_mut(&monitor_name) {
+                        config.last_wallpaper = Some(selected);
+                        config.next_shuffle_at = Some(now + Duration::from_secs(interval_secs));
+                    }
+                }
+                Err(error) => {
+                    self.push_log(format!(
+                        "[ERROR] Playlist apply failed on {}: {}",
+                        monitor_name, error
+                    ));
+                    if let Some(config) = self.playlist_by_monitor.get_mut(&monitor_name) {
+                        config.next_shuffle_at = Some(now + Duration::from_secs(5));
+                    }
+                }
+            }
+        }
+    }
+
+    fn playlist_candidates(&self, source: PlaylistSource) -> Vec<PathBuf> {
+        match source {
+            PlaylistSource::Workspace => self
+                .visible_browser_items()
+                .filter(|(_, entry)| entry.kind == FileKind::File && entry.supported)
+                .map(|(_, entry)| entry.path.clone())
+                .collect(),
+            PlaylistSource::Favorites => self
+                .favorites
+                .iter()
+                .filter(|path| path.is_file() && is_supported_media(path.as_path()))
+                .cloned()
+                .collect(),
+        }
     }
 
     fn push_action_log(&mut self, tag: &str, message: String) {

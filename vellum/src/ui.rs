@@ -60,7 +60,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let [browser_area, settings_area, preview_logs_area] = middle_layout.areas(middle);
 
     draw_browser(frame, browser_area, app, app.focus == Focus::Files);
-    draw_settings_panel(frame, settings_area, app, app.focus == Focus::Scaling);
+    draw_settings_panel(
+        frame,
+        settings_area,
+        app,
+        matches!(app.focus, Focus::Scaling | Focus::Playlist),
+    );
     draw_preview_and_logs(frame, preview_logs_area, app);
 
     draw_keybinds(frame, bottom, app);
@@ -246,7 +251,116 @@ fn draw_browser(frame: &mut Frame, area: Rect, app: &App, active: bool) {
 }
 
 fn draw_settings_panel(frame: &mut Frame, area: Rect, app: &App, active: bool) {
-    draw_scaling_modes(frame, area, app, active);
+    let split = Layout::vertical([Constraint::Percentage(42), Constraint::Percentage(58)])
+        .spacing(1)
+        .split(area);
+    draw_scaling_modes(frame, split[0], app, active && app.focus == Focus::Scaling);
+    draw_playlist_panel(frame, split[1], app, active && app.focus == Focus::Playlist);
+}
+
+fn draw_playlist_panel(frame: &mut Frame, area: Rect, app: &App, active: bool) {
+    let status = if app.selected_playlist_running() {
+        "On"
+    } else {
+        "Off"
+    };
+
+    let block = panel_block(
+        Line::from(vec![
+            Span::styled(
+                " 󰲹 Playlist ",
+                Style::default()
+                    .fg(ACCENT_PRIMARY)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                status,
+                Style::default().fg(if app.selected_playlist_running() {
+                    GOOD
+                } else {
+                    TEXT_MUTED
+                }),
+            ),
+        ]),
+        active,
+    );
+
+    let items = vec![
+        ListItem::new(Line::from(vec![
+            Span::styled("󰐊 Status ", Style::default().fg(TEXT_MUTED)),
+            Span::styled(
+                if app.selected_playlist_running() {
+                    "On"
+                } else {
+                    "Off"
+                },
+                Style::default().fg(if app.selected_playlist_running() {
+                    GOOD
+                } else {
+                    WARN
+                }),
+            ),
+            Span::raw("  "),
+            Span::styled("Enter/r", Style::default().fg(TEXT_DIM)),
+        ])),
+        ListItem::new(Line::from(vec![
+            Span::styled("󰉋 Source ", Style::default().fg(TEXT_MUTED)),
+            Span::styled(
+                app.selected_playlist_source().label(),
+                Style::default().fg(ACCENT_SECONDARY),
+            ),
+            Span::raw("  "),
+            Span::styled("Enter/m", Style::default().fg(TEXT_DIM)),
+        ])),
+        ListItem::new(Line::from(vec![
+            Span::styled("󰔚 Interval ", Style::default().fg(TEXT_MUTED)),
+            Span::styled(
+                format!("{}s", app.selected_playlist_interval_secs()),
+                Style::default().fg(ACCENT_SECONDARY),
+            ),
+            Span::raw("  "),
+            Span::styled("+/-", Style::default().fg(TEXT_DIM)),
+        ])),
+    ];
+
+    let mut footer = vec![Line::from(vec![
+        Span::styled("󰛔 Pool ", Style::default().fg(TEXT_MUTED)),
+        Span::styled(
+            format!("{} file(s)", app.selected_playlist_pool_size()),
+            Style::default().fg(TEXT_SECONDARY),
+        ),
+        Span::raw("  "),
+        Span::styled("n = shuffle now", Style::default().fg(TEXT_DIM)),
+    ])];
+
+    if let Some(eta_secs) = app.selected_playlist_next_eta_secs() {
+        footer.push(Line::from(vec![
+            Span::styled("󱑃 Next in ", Style::default().fg(TEXT_MUTED)),
+            Span::styled(
+                format!("{}s", eta_secs),
+                Style::default().fg(TEXT_SECONDARY),
+            ),
+        ]));
+    }
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let [list_area, footer_area] =
+        Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(inner);
+
+    let list = List::new(items)
+        .highlight_symbol("▸ ")
+        .highlight_style(list_highlight_style(active))
+        .highlight_spacing(HighlightSpacing::Always);
+    let mut state = ListState::default();
+    state.select(Some(app.playlist_selected));
+    frame.render_stateful_widget(list, list_area, &mut state);
+
+    frame.render_widget(
+        Paragraph::new(Text::from(footer)).style(Style::default().fg(TEXT_SECONDARY)),
+        footer_area,
+    );
 }
 
 fn browser_filter_line(app: &App) -> Line<'static> {
@@ -704,6 +818,25 @@ fn draw_keybinds(frame: &mut Frame, area: Rect, app: &App) {
             key_span("q"),
             label_span(" Quit"),
         ],
+        Focus::Playlist => vec![
+            key_span("↑/↓ hjkl"),
+            label_span(" Select"),
+            Span::raw("  "),
+            key_span("Enter / r"),
+            label_span(" Toggle"),
+            Span::raw("  "),
+            key_span("m"),
+            label_span(" Source"),
+            Span::raw("  "),
+            key_span("+ / -"),
+            label_span(" Interval"),
+            Span::raw("  "),
+            key_span("n"),
+            label_span(" Shuffle"),
+            Span::raw("  "),
+            key_span("q"),
+            label_span(" Quit"),
+        ],
     }));
 
     let paragraph = Paragraph::new(Text::from(lines))
@@ -854,6 +987,7 @@ fn focus_label(focus: Focus) -> &'static str {
     match focus {
         Focus::Files => "󰉋 Files",
         Focus::Scaling => "󰆞 Scaling",
+        Focus::Playlist => "󰲹 Playlist",
     }
 }
 
