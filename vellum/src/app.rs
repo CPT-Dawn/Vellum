@@ -20,6 +20,8 @@ const PLAYLIST_INTERVAL_MIN_SECS: u64 = 10;
 const PLAYLIST_INTERVAL_MAX_SECS: u64 = 3600;
 const PLAYLIST_INTERVAL_STEP_SECS: u64 = 10;
 const PLAYLIST_ITEM_COUNT: usize = 3;
+const PLAYLIST_STATE_FILENAME: &str = "playlist-state-v1.txt";
+const FAVORITES_STATE_FILENAME: &str = "favorites-v1.txt";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalingMode {
@@ -341,7 +343,11 @@ impl App {
     }
 
     pub fn load_or_default() -> Self {
-        Self::new()
+        let mut app = Self::new();
+        app.load_favorites_state();
+        app.load_playlist_state();
+        app.refresh_browser_entries();
+        app
     }
 
     pub fn handle_event(&mut self, event: Event, backend: &mut Backend) -> bool {
@@ -687,6 +693,10 @@ impl App {
             }
 
             self.refresh_browser_entries();
+
+            if let Err(error) = self.save_favorites_state() {
+                self.push_log(format!("[WARN] Failed to save favorites: {error}"));
+            }
         }
     }
 
@@ -1057,6 +1067,10 @@ impl App {
                 .entry(monitor.name.clone())
                 .or_default();
         }
+
+        if let Err(error) = self.save_playlist_state() {
+            self.push_log(format!("[WARN] Failed to save playlist state: {error}"));
+        }
     }
 
     fn selected_monitor_name(&self) -> Option<&str> {
@@ -1095,6 +1109,10 @@ impl App {
         let status = if running { "started" } else { "stopped" };
 
         self.push_log(format!("[INFO] Playlist {} for {}", status, monitor_name));
+
+        if let Err(error) = self.save_playlist_state() {
+            self.push_log(format!("[WARN] Failed to save playlist state: {error}"));
+        }
     }
 
     fn toggle_selected_playlist_source(&mut self) {
@@ -1107,6 +1125,10 @@ impl App {
         config.last_wallpaper = None;
         let label = config.source.label().to_string();
         self.push_log(format!("[INFO] Playlist source: {}", label));
+
+        if let Err(error) = self.save_playlist_state() {
+            self.push_log(format!("[WARN] Failed to save playlist state: {error}"));
+        }
     }
 
     fn adjust_selected_playlist_interval(&mut self, delta_secs: i64) {
@@ -1123,6 +1145,10 @@ impl App {
         config.interval_secs = next;
 
         self.push_log(format!("[INFO] Playlist interval set to {}s", next));
+
+        if let Err(error) = self.save_playlist_state() {
+            self.push_log(format!("[WARN] Failed to save playlist state: {error}"));
+        }
     }
 
     fn trigger_selected_playlist_now(&mut self) {
@@ -1241,6 +1267,162 @@ impl App {
         }
     }
 
+    fn load_playlist_state(&mut self) {
+        let path = playlist_state_file_path();
+        let data = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => {
+                self.push_log(format!("[WARN] Failed to read playlist state: {error}"));
+                return;
+            }
+        };
+
+        for line in data.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            let mut fields = line.splitn(4, '\t');
+            let Some(monitor_name) = fields.next() else {
+                continue;
+            };
+            let Some(source_field) = fields.next() else {
+                continue;
+            };
+            let Some(interval_field) = fields.next() else {
+                continue;
+            };
+            let Some(running_field) = fields.next() else {
+                continue;
+            };
+
+            let source = match source_field {
+                "workspace" => PlaylistSource::Workspace,
+                "favorites" => PlaylistSource::Favorites,
+                _ => continue,
+            };
+
+            let interval_secs = match interval_field.parse::<u64>() {
+                Ok(value) => value.clamp(PLAYLIST_INTERVAL_MIN_SECS, PLAYLIST_INTERVAL_MAX_SECS),
+                Err(_) => continue,
+            };
+
+            let running = match running_field {
+                "1" => true,
+                "0" => false,
+                _ => continue,
+            };
+
+            self.playlist_by_monitor.insert(
+                monitor_name.to_string(),
+                PlaylistConfig {
+                    source,
+                    interval_secs,
+                    running,
+                    next_shuffle_at: if running { Some(Instant::now()) } else { None },
+                    last_wallpaper: None,
+                },
+            );
+        }
+
+        if !self.playlist_by_monitor.is_empty() {
+            self.push_log("[INFO] Loaded playlist settings".to_string());
+        }
+    }
+
+    fn load_favorites_state(&mut self) {
+        let path = favorites_state_file_path();
+        let data = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => {
+                self.push_log(format!("[WARN] Failed to read favorites: {error}"));
+                return;
+            }
+        };
+
+        let mut loaded = 0usize;
+        for line in data.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            let path = PathBuf::from(line);
+            if self.is_within_root(&path) {
+                self.favorites.insert(path);
+                loaded += 1;
+            }
+        }
+
+        if loaded > 0 {
+            self.push_log(format!("[INFO] Loaded {} favorite(s)", loaded));
+        }
+    }
+
+    fn save_favorites_state(&self) -> std::io::Result<()> {
+        let path = favorites_state_file_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let mut values = self
+            .favorites
+            .iter()
+            .map(|path| {
+                path.canonicalize()
+                    .unwrap_or_else(|_| path.to_path_buf())
+                    .display()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        values.sort();
+
+        let mut body = String::from("# absolute favorite paths, one per line\n");
+        if !values.is_empty() {
+            body.push_str(&values.join("\n"));
+            body.push('\n');
+        }
+
+        fs::write(path, body)
+    }
+
+    fn save_playlist_state(&self) -> std::io::Result<()> {
+        let path = playlist_state_file_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let mut lines = Vec::with_capacity(self.playlist_by_monitor.len() + 1);
+        lines.push("# monitor\tsource\tinterval_secs\trunning".to_string());
+
+        let mut entries = self.playlist_by_monitor.iter().collect::<Vec<_>>();
+        entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+        for (monitor_name, config) in entries {
+            let source = match config.source {
+                PlaylistSource::Workspace => "workspace",
+                PlaylistSource::Favorites => "favorites",
+            };
+
+            let running = if config.running { "1" } else { "0" };
+
+            lines.push(format!(
+                "{}\t{}\t{}\t{}",
+                monitor_name,
+                source,
+                config
+                    .interval_secs
+                    .clamp(PLAYLIST_INTERVAL_MIN_SECS, PLAYLIST_INTERVAL_MAX_SECS),
+                running
+            ));
+        }
+
+        fs::write(path, lines.join("\n"))
+    }
+
     fn push_action_log(&mut self, tag: &str, message: String) {
         self.push_log(format!(
             "[{}] [{}] {}",
@@ -1331,6 +1513,30 @@ fn pictures_dir() -> PathBuf {
         .or_else(|| env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."))
         .join("Pictures")
+}
+
+fn playlist_state_file_path() -> PathBuf {
+    state_file_path(PLAYLIST_STATE_FILENAME)
+}
+
+fn favorites_state_file_path() -> PathBuf {
+    state_file_path(FAVORITES_STATE_FILENAME)
+}
+
+fn state_file_path(filename: &str) -> PathBuf {
+    if let Some(path) = env::var_os("XDG_STATE_HOME") {
+        return PathBuf::from(path).join("vellum").join(filename);
+    }
+
+    if let Some(home) = env::var_os("HOME") {
+        return PathBuf::from(home)
+            .join(".local")
+            .join("state")
+            .join("vellum")
+            .join(filename);
+    }
+
+    PathBuf::from(filename)
 }
 
 #[cfg(test)]
