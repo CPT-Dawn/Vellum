@@ -139,6 +139,23 @@ impl Default for PlaylistConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PlaylistDraft {
+    source: PlaylistSource,
+    interval_secs: u64,
+    running: bool,
+}
+
+impl From<&PlaylistConfig> for PlaylistDraft {
+    fn from(value: &PlaylistConfig) -> Self {
+        Self {
+            source: value.source,
+            interval_secs: value.interval_secs,
+            running: value.running,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileKind {
     Directory,
     File,
@@ -234,6 +251,9 @@ pub struct App {
     pub focus: Focus,
     playlist_by_monitor: HashMap<String, PlaylistConfig>,
     pub playlist_selected: usize,
+    playlist_draft: Option<PlaylistDraft>,
+    playlist_draft_monitor: Option<String>,
+    playlist_draft_dirty: bool,
     matcher: SkimMatcherV2,
     preview_request_tx: Sender<PreviewRequest>,
     preview_result_rx: Receiver<PreviewResult>,
@@ -279,6 +299,9 @@ impl fmt::Debug for App {
             .field("focus", &self.focus)
             .field("playlist_by_monitor", &self.playlist_by_monitor)
             .field("playlist_selected", &self.playlist_selected)
+            .field("playlist_draft", &self.playlist_draft)
+            .field("playlist_draft_monitor", &self.playlist_draft_monitor)
+            .field("playlist_draft_dirty", &self.playlist_draft_dirty)
             .field("preview_request_seq", &self.preview_request_seq)
             .field("preview_last_key", &self.preview_last_key)
             .field("preview_status", &self.preview_status)
@@ -330,6 +353,9 @@ impl App {
             focus: Focus::Files,
             playlist_by_monitor: HashMap::new(),
             playlist_selected: 0,
+            playlist_draft: None,
+            playlist_draft_monitor: None,
+            playlist_draft_dirty: false,
             matcher: SkimMatcherV2::default(),
             preview_request_tx,
             preview_result_rx,
@@ -374,6 +400,9 @@ impl App {
         }
 
         if key.code == KeyCode::Char('q') {
+            if self.focus == Focus::Playlist {
+                self.apply_playlist_draft_if_dirty();
+            }
             return true;
         }
 
@@ -436,31 +465,54 @@ impl App {
                 false
             }
             KeyCode::Char('r') => {
-                self.toggle_selected_playlist();
+                if self.focus == Focus::Playlist {
+                    self.toggle_selected_playlist_running_draft();
+                }
                 false
             }
             KeyCode::Char('m') => {
-                self.toggle_selected_playlist_source();
+                if self.focus == Focus::Playlist {
+                    self.toggle_selected_playlist_source_draft();
+                }
                 false
             }
             KeyCode::Char('+') | KeyCode::Char('=') => {
-                self.adjust_selected_playlist_interval(1);
+                if self.focus == Focus::Playlist {
+                    self.adjust_selected_playlist_interval_draft(1);
+                }
                 false
             }
             KeyCode::Char('-') => {
-                self.adjust_selected_playlist_interval(-1);
+                if self.focus == Focus::Playlist {
+                    self.adjust_selected_playlist_interval_draft(-1);
+                }
                 false
             }
             KeyCode::Char('n') => {
+                if self.focus == Focus::Playlist {
+                    self.apply_playlist_draft_if_dirty();
+                }
                 self.trigger_selected_playlist_now();
                 false
             }
             KeyCode::Tab => {
+                if self.focus == Focus::Playlist {
+                    self.apply_playlist_draft_if_dirty();
+                }
                 self.focus = self.focus.next();
+                if self.focus == Focus::Playlist {
+                    self.ensure_playlist_draft_loaded();
+                }
                 false
             }
             KeyCode::BackTab => {
+                if self.focus == Focus::Playlist {
+                    self.apply_playlist_draft_if_dirty();
+                }
                 self.focus = self.focus.previous();
+                if self.focus == Focus::Playlist {
+                    self.ensure_playlist_draft_loaded();
+                }
                 false
             }
             KeyCode::Up | KeyCode::Char('k') => {
@@ -596,6 +648,7 @@ impl App {
             }
             Focus::Playlist => {
                 if self.playlist_selected > 0 {
+                    self.apply_playlist_draft_if_dirty();
                     self.playlist_selected -= 1;
                 }
             }
@@ -617,6 +670,7 @@ impl App {
             }
             Focus::Playlist => {
                 if self.playlist_selected + 1 < PLAYLIST_ITEM_COUNT {
+                    self.apply_playlist_draft_if_dirty();
                     self.playlist_selected += 1;
                 }
             }
@@ -633,6 +687,7 @@ impl App {
                 self.selected_scaling_mode = 0;
             }
             Focus::Playlist => {
+                self.apply_playlist_draft_if_dirty();
                 self.playlist_selected = 0;
             }
         }
@@ -648,6 +703,7 @@ impl App {
                 self.selected_scaling_mode = self.scaling_modes.len().saturating_sub(1);
             }
             Focus::Playlist => {
+                self.apply_playlist_draft_if_dirty();
                 self.playlist_selected = PLAYLIST_ITEM_COUNT.saturating_sub(1);
             }
         }
@@ -664,6 +720,7 @@ impl App {
                 self.selected_scaling_mode = self.selected_scaling_mode.saturating_sub(PAGE_STEP);
             }
             Focus::Playlist => {
+                self.apply_playlist_draft_if_dirty();
                 self.playlist_selected = self.playlist_selected.saturating_sub(1);
             }
         }
@@ -684,6 +741,7 @@ impl App {
             }
             Focus::Playlist => {
                 let max_index = PLAYLIST_ITEM_COUNT.saturating_sub(1);
+                self.apply_playlist_draft_if_dirty();
                 self.playlist_selected = (self.playlist_selected + 1).min(max_index);
             }
         }
@@ -721,26 +779,27 @@ impl App {
     }
 
     fn activate_playlist_selection(&mut self) {
-        match self.playlist_selected {
-            0 => self.toggle_selected_playlist(),
-            1 => self.toggle_selected_playlist_source(),
-            _ => self.adjust_selected_playlist_interval(1),
+        self.apply_playlist_draft_if_dirty();
+        if self.playlist_selected + 1 < PLAYLIST_ITEM_COUNT {
+            self.playlist_selected += 1;
+        } else {
+            self.playlist_selected = 0;
         }
     }
 
     fn handle_playlist_left_action(&mut self) {
         match self.playlist_selected {
-            0 => self.set_selected_playlist_running(false),
-            1 => self.set_selected_playlist_source(PlaylistSource::Workspace),
-            _ => self.adjust_selected_playlist_interval(-1),
+            0 => self.set_selected_playlist_running_draft(false),
+            1 => self.set_selected_playlist_source_draft(PlaylistSource::Workspace),
+            _ => self.adjust_selected_playlist_interval_draft(-1),
         }
     }
 
     fn handle_playlist_right_action(&mut self) {
         match self.playlist_selected {
-            0 => self.set_selected_playlist_running(true),
-            1 => self.set_selected_playlist_source(PlaylistSource::Favorites),
-            _ => self.adjust_selected_playlist_interval(1),
+            0 => self.set_selected_playlist_running_draft(true),
+            1 => self.set_selected_playlist_source_draft(PlaylistSource::Favorites),
+            _ => self.adjust_selected_playlist_interval_draft(1),
         }
     }
 
@@ -1256,18 +1315,30 @@ impl App {
     }
 
     pub fn selected_playlist_running(&self) -> bool {
+        if let Some(draft) = self.selected_playlist_draft() {
+            return draft.running;
+        }
+
         self.selected_playlist_config()
             .map(|config| config.running)
             .unwrap_or(false)
     }
 
     pub fn selected_playlist_source(&self) -> PlaylistSource {
+        if let Some(draft) = self.selected_playlist_draft() {
+            return draft.source;
+        }
+
         self.selected_playlist_config()
             .map(|config| config.source)
             .unwrap_or(PlaylistSource::Workspace)
     }
 
     pub fn selected_playlist_interval_secs(&self) -> u64 {
+        if let Some(draft) = self.selected_playlist_draft() {
+            return draft.interval_secs;
+        }
+
         self.selected_playlist_config()
             .map(|config| config.interval_secs)
             .unwrap_or(PLAYLIST_INTERVAL_DEFAULT_SECS)
@@ -1301,6 +1372,8 @@ impl App {
     }
 
     fn ensure_playlist_states(&mut self) {
+        self.apply_playlist_draft_if_dirty();
+
         self.playlist_by_monitor
             .retain(|name, _| self.monitors.iter().any(|monitor| monitor.name == *name));
 
@@ -1313,6 +1386,8 @@ impl App {
         if let Err(error) = self.save_playlist_state() {
             self.push_log(format!("[WARN] Failed to save playlist state: {error}"));
         }
+
+        self.ensure_playlist_draft_loaded();
     }
 
     fn selected_monitor_name(&self) -> Option<&str> {
@@ -1330,105 +1405,183 @@ impl App {
         self.playlist_by_monitor.get_mut(&monitor_name)
     }
 
-    fn toggle_selected_playlist(&mut self) {
+    fn ensure_playlist_draft_loaded(&mut self) {
         let Some(monitor_name) = self.selected_monitor_name().map(ToString::to_string) else {
-            self.push_log("[WARN] No monitor selected for playlist".to_string());
+            self.playlist_draft = None;
+            self.playlist_draft_monitor = None;
+            self.playlist_draft_dirty = false;
             return;
         };
 
-        let running = self
+        if self.playlist_draft_monitor.as_deref() == Some(monitor_name.as_str()) {
+            return;
+        }
+
+        let draft = self
             .playlist_by_monitor
             .get(&monitor_name)
-            .map(|cfg| !cfg.running)
-            .unwrap_or(false);
-        self.set_playlist_running_for_monitor(&monitor_name, running);
+            .map(PlaylistDraft::from)
+            .unwrap_or_else(|| PlaylistDraft::from(&PlaylistConfig::default()));
+
+        self.playlist_draft = Some(draft);
+        self.playlist_draft_monitor = Some(monitor_name);
+        self.playlist_draft_dirty = false;
     }
 
-    fn toggle_selected_playlist_source(&mut self) {
-        let Some(config) = self.selected_playlist_config_mut() else {
+    fn selected_playlist_draft(&self) -> Option<PlaylistDraft> {
+        let monitor_name = self.selected_monitor_name()?;
+        if self.playlist_draft_monitor.as_deref() == Some(monitor_name) {
+            self.playlist_draft
+        } else {
+            None
+        }
+    }
+
+    fn with_selected_playlist_draft_mut<F>(&mut self, mutator: F)
+    where
+        F: FnOnce(&mut PlaylistDraft) -> bool,
+    {
+        self.ensure_playlist_draft_loaded();
+
+        let Some(draft) = self.playlist_draft.as_mut() else {
             self.push_log("[WARN] No monitor selected for playlist".to_string());
             return;
         };
 
-        config.source = config.source.toggle();
-        config.last_wallpaper = None;
-        let label = config.source.label().to_string();
-        self.push_log(format!("[INFO] Playlist source: {}", label));
+        if mutator(draft) {
+            self.playlist_draft_dirty = true;
+        }
+    }
+
+    fn apply_playlist_draft_if_dirty(&mut self) {
+        if !self.playlist_draft_dirty {
+            return;
+        }
+
+        let Some(monitor_name) = self.playlist_draft_monitor.clone() else {
+            self.playlist_draft_dirty = false;
+            return;
+        };
+
+        let Some(draft) = self.playlist_draft else {
+            self.playlist_draft_dirty = false;
+            return;
+        };
+
+        let mut running_log = None;
+        let mut source_log = None;
+        let mut interval_log = None;
+
+        {
+            let Some(config) = self.playlist_by_monitor.get_mut(&monitor_name) else {
+                self.playlist_draft_dirty = false;
+                return;
+            };
+
+            let next_running = draft.running;
+            let next_source = draft.source;
+            let next_interval = draft
+                .interval_secs
+                .clamp(PLAYLIST_INTERVAL_MIN_SECS, PLAYLIST_INTERVAL_MAX_SECS);
+
+            if config.running != next_running {
+                config.running = next_running;
+                config.next_shuffle_at = if next_running {
+                    Some(Instant::now())
+                } else {
+                    None
+                };
+                running_log = Some(format!(
+                    "[INFO] Playlist {} for {}",
+                    if next_running { "started" } else { "stopped" },
+                    monitor_name
+                ));
+            }
+
+            if config.source != next_source {
+                config.source = next_source;
+                config.last_wallpaper = None;
+                source_log = Some(format!("[INFO] Playlist source: {}", next_source.label()));
+            }
+
+            if config.interval_secs != next_interval {
+                config.interval_secs = next_interval;
+                interval_log = Some(format!(
+                    "[INFO] Playlist interval set to {}s",
+                    next_interval
+                ));
+            }
+        }
+
+        if let Some(entry) = running_log {
+            self.push_log(entry);
+        }
+        if let Some(entry) = source_log {
+            self.push_log(entry);
+        }
+        if let Some(entry) = interval_log {
+            self.push_log(entry);
+        }
 
         if let Err(error) = self.save_playlist_state() {
             self.push_log(format!("[WARN] Failed to save playlist state: {error}"));
         }
+
+        self.playlist_draft_dirty = false;
     }
 
-    fn set_selected_playlist_running(&mut self, running: bool) {
-        let Some(monitor_name) = self.selected_monitor_name().map(ToString::to_string) else {
-            self.push_log("[WARN] No monitor selected for playlist".to_string());
-            return;
-        };
-
-        self.set_playlist_running_for_monitor(&monitor_name, running);
+    fn set_selected_playlist_running_draft(&mut self, running: bool) {
+        self.with_selected_playlist_draft_mut(|draft| {
+            if draft.running == running {
+                return false;
+            }
+            draft.running = running;
+            true
+        });
     }
 
-    fn set_playlist_running_for_monitor(&mut self, monitor_name: &str, running: bool) {
-        let Some(config) = self.playlist_by_monitor.get_mut(monitor_name) else {
-            return;
-        };
-
-        if config.running == running {
-            return;
-        }
-
-        config.running = running;
-        config.next_shuffle_at = if running { Some(Instant::now()) } else { None };
-
-        let status = if running { "started" } else { "stopped" };
-        self.push_log(format!("[INFO] Playlist {} for {}", status, monitor_name));
-
-        if let Err(error) = self.save_playlist_state() {
-            self.push_log(format!("[WARN] Failed to save playlist state: {error}"));
-        }
+    fn toggle_selected_playlist_running_draft(&mut self) {
+        self.with_selected_playlist_draft_mut(|draft| {
+            draft.running = !draft.running;
+            true
+        });
     }
 
-    fn set_selected_playlist_source(&mut self, source: PlaylistSource) {
-        let Some(config) = self.selected_playlist_config_mut() else {
-            self.push_log("[WARN] No monitor selected for playlist".to_string());
-            return;
-        };
-
-        if config.source == source {
-            return;
-        }
-
-        config.source = source;
-        config.last_wallpaper = None;
-        self.push_log(format!("[INFO] Playlist source: {}", source.label()));
-
-        if let Err(error) = self.save_playlist_state() {
-            self.push_log(format!("[WARN] Failed to save playlist state: {error}"));
-        }
+    fn set_selected_playlist_source_draft(&mut self, source: PlaylistSource) {
+        self.with_selected_playlist_draft_mut(|draft| {
+            if draft.source == source {
+                return false;
+            }
+            draft.source = source;
+            true
+        });
     }
 
-    fn adjust_selected_playlist_interval(&mut self, direction: i8) {
-        let Some(config) = self.selected_playlist_config_mut() else {
-            self.push_log("[WARN] No monitor selected for playlist".to_string());
-            return;
-        };
+    fn toggle_selected_playlist_source_draft(&mut self) {
+        self.with_selected_playlist_draft_mut(|draft| {
+            draft.source = draft.source.toggle();
+            true
+        });
+    }
 
-        let current = config
-            .interval_secs
-            .clamp(PLAYLIST_INTERVAL_MIN_SECS, PLAYLIST_INTERVAL_MAX_SECS);
-        let next = match direction.cmp(&0) {
-            std::cmp::Ordering::Greater => next_playlist_interval_step(current),
-            std::cmp::Ordering::Less => previous_playlist_interval_step(current),
-            std::cmp::Ordering::Equal => current,
-        };
-        config.interval_secs = next;
+    fn adjust_selected_playlist_interval_draft(&mut self, direction: i8) {
+        self.with_selected_playlist_draft_mut(|draft| {
+            let current = draft
+                .interval_secs
+                .clamp(PLAYLIST_INTERVAL_MIN_SECS, PLAYLIST_INTERVAL_MAX_SECS);
+            let next = match direction.cmp(&0) {
+                std::cmp::Ordering::Greater => next_playlist_interval_step(current),
+                std::cmp::Ordering::Less => previous_playlist_interval_step(current),
+                std::cmp::Ordering::Equal => current,
+            };
 
-        self.push_log(format!("[INFO] Playlist interval set to {}s", next));
+            if next == draft.interval_secs {
+                return false;
+            }
 
-        if let Err(error) = self.save_playlist_state() {
-            self.push_log(format!("[WARN] Failed to save playlist state: {error}"));
-        }
+            draft.interval_secs = next;
+            true
+        });
     }
 
     fn trigger_selected_playlist_now(&mut self) {
@@ -1743,6 +1896,8 @@ impl App {
     }
 
     fn select_monitor_hotkey(&mut self, key: char) -> bool {
+        self.apply_playlist_draft_if_dirty();
+
         let Some(digit) = key.to_digit(10) else {
             return false;
         };
@@ -1757,6 +1912,7 @@ impl App {
                 "[INFO] Selected monitor {}",
                 self.monitors[target_index].name
             ));
+            self.ensure_playlist_draft_loaded();
             return true;
         }
 

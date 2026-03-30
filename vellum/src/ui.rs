@@ -300,8 +300,6 @@ fn draw_playlist_panel(frame: &mut Frame, area: Rect, app: &App, active: bool) {
                     WARN
                 }),
             ),
-            Span::raw("  "),
-            Span::styled("← Off  → On", Style::default().fg(TEXT_DIM)),
         ])),
         ListItem::new(Line::from(vec![
             Span::styled("󰉋 Source ", Style::default().fg(TEXT_MUTED)),
@@ -309,8 +307,6 @@ fn draw_playlist_panel(frame: &mut Frame, area: Rect, app: &App, active: bool) {
                 app.selected_playlist_source().label(),
                 Style::default().fg(ACCENT_SECONDARY),
             ),
-            Span::raw("  "),
-            Span::styled("← Workspace  → Favorites", Style::default().fg(TEXT_DIM)),
         ])),
         ListItem::new(Line::from(vec![
             Span::styled("󰔚 Interval ", Style::default().fg(TEXT_MUTED)),
@@ -318,12 +314,18 @@ fn draw_playlist_panel(frame: &mut Frame, area: Rect, app: &App, active: bool) {
                 format!("{}s", app.selected_playlist_interval_secs()),
                 Style::default().fg(ACCENT_SECONDARY),
             ),
-            Span::raw("  "),
-            Span::styled("← / →", Style::default().fg(TEXT_DIM)),
         ])),
     ];
 
     let mut footer = vec![Line::from(vec![
+        Span::styled("↑/↓ select", Style::default().fg(TEXT_DIM)),
+        Span::raw("  "),
+        Span::styled("←/→ swap", Style::default().fg(TEXT_DIM)),
+        Span::raw("  "),
+        Span::styled("save on next setting", Style::default().fg(TEXT_MUTED)),
+    ])];
+
+    footer.push(Line::from(vec![
         Span::styled("󰛔 Pool ", Style::default().fg(TEXT_MUTED)),
         Span::styled(
             format!("{} file(s)", app.selected_playlist_pool_size()),
@@ -331,7 +333,7 @@ fn draw_playlist_panel(frame: &mut Frame, area: Rect, app: &App, active: bool) {
         ),
         Span::raw("  "),
         Span::styled("n = shuffle now", Style::default().fg(TEXT_DIM)),
-    ])];
+    ]));
 
     if let Some(eta_secs) = app.selected_playlist_next_eta_secs() {
         footer.push(Line::from(vec![
@@ -347,7 +349,7 @@ fn draw_playlist_panel(frame: &mut Frame, area: Rect, app: &App, active: bool) {
     frame.render_widget(block, area);
 
     let [list_area, footer_area] =
-        Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(inner);
+        Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).areas(inner);
 
     let list = List::new(items)
         .highlight_symbol("▸ ")
@@ -853,25 +855,16 @@ fn draw_keybinds(frame: &mut Frame, area: Rect, app: &App) {
         ],
         Focus::Playlist => vec![
             key_span("↑/↓ j/k"),
-            label_span(" Select"),
+            label_span(" Next setting + save"),
             Span::raw("  "),
             key_span("←/→ h/l"),
-            label_span(" Edit"),
+            label_span(" Swap value"),
             Span::raw("  "),
-            key_span("g / G"),
-            label_span(" Top/Bottom"),
+            key_span("Enter"),
+            label_span(" Save + next"),
             Span::raw("  "),
-            key_span("PgUp/PgDn"),
-            label_span(" Jump"),
-            Span::raw("  "),
-            key_span("Home/End"),
-            label_span(" Bounds"),
-            Span::raw("  "),
-            key_span("Enter/r/m"),
-            label_span(" Quick Actions"),
-            Span::raw("  "),
-            key_span("+ / -"),
-            label_span(" Interval"),
+            key_span("Tab / Shift+Tab"),
+            label_span(" Leave panel + save"),
             Span::raw("  "),
             key_span("n"),
             label_span(" Shuffle"),
