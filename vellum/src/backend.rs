@@ -17,6 +17,7 @@ use crate::imgproc::{self, ImgBuf, ResizeStrategy};
 pub struct DaemonResourceUsage {
     pub pid: u32,
     pub memory_kib: u64,
+    pub total_memory_kib: u64,
 }
 
 #[derive(Debug, Error)]
@@ -77,6 +78,7 @@ impl Backend {
         Some(DaemonResourceUsage {
             pid,
             memory_kib: process_memory_kib(pid)?,
+            total_memory_kib: system_total_memory_kib()?,
         })
     }
 
@@ -385,6 +387,15 @@ fn process_memory_kib(pid: u32) -> Option<u64> {
 
     status.lines().find_map(|line| {
         line.strip_prefix("VmRSS:")
+            .and_then(|value| value.split_whitespace().next())
+            .and_then(|value| value.parse::<u64>().ok())
+    })
+}
+
+fn system_total_memory_kib() -> Option<u64> {
+    let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
+    meminfo.lines().find_map(|line| {
+        line.strip_prefix("MemTotal:")
             .and_then(|value| value.split_whitespace().next())
             .and_then(|value| value.parse::<u64>().ok())
     })

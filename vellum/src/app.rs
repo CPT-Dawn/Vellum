@@ -362,9 +362,11 @@ impl App {
     }
 
     pub fn handle_key_event(&mut self, key: KeyEvent, backend: &mut Backend) -> bool {
-        if key.code == KeyCode::Char('q')
-            && (key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat)
-        {
+        if key.kind != KeyEventKind::Press && key.kind != KeyEventKind::Repeat {
+            return false;
+        }
+
+        if key.code == KeyCode::Char('q') {
             return true;
         }
 
@@ -466,6 +468,22 @@ impl App {
                 self.go_to_parent_directory();
                 false
             }
+            KeyCode::Home => {
+                self.move_to_start();
+                false
+            }
+            KeyCode::End => {
+                self.move_to_end();
+                false
+            }
+            KeyCode::PageUp => {
+                self.page_up();
+                false
+            }
+            KeyCode::PageDown => {
+                self.page_down();
+                false
+            }
             KeyCode::Enter => {
                 self.activate_selection(backend);
                 false
@@ -544,6 +562,72 @@ impl App {
                 if self.playlist_selected + 1 < PLAYLIST_ITEM_COUNT {
                     self.playlist_selected += 1;
                 }
+            }
+        }
+    }
+
+    fn move_to_start(&mut self) {
+        match self.focus {
+            Focus::Files => {
+                self.browser_selected = 0;
+                self.sync_browser_state();
+            }
+            Focus::Scaling => {
+                self.selected_scaling_mode = 0;
+            }
+            Focus::Playlist => {
+                self.playlist_selected = 0;
+            }
+        }
+    }
+
+    fn move_to_end(&mut self) {
+        match self.focus {
+            Focus::Files => {
+                self.browser_selected = self.browser_filtered_indices.len().saturating_sub(1);
+                self.sync_browser_state();
+            }
+            Focus::Scaling => {
+                self.selected_scaling_mode = self.scaling_modes.len().saturating_sub(1);
+            }
+            Focus::Playlist => {
+                self.playlist_selected = PLAYLIST_ITEM_COUNT.saturating_sub(1);
+            }
+        }
+    }
+
+    fn page_up(&mut self) {
+        const PAGE_STEP: usize = 8;
+        match self.focus {
+            Focus::Files => {
+                self.browser_selected = self.browser_selected.saturating_sub(PAGE_STEP);
+                self.sync_browser_state();
+            }
+            Focus::Scaling => {
+                self.selected_scaling_mode = self.selected_scaling_mode.saturating_sub(PAGE_STEP);
+            }
+            Focus::Playlist => {
+                self.playlist_selected = self.playlist_selected.saturating_sub(1);
+            }
+        }
+    }
+
+    fn page_down(&mut self) {
+        const PAGE_STEP: usize = 8;
+        match self.focus {
+            Focus::Files => {
+                let max_index = self.browser_filtered_indices.len().saturating_sub(1);
+                self.browser_selected = (self.browser_selected + PAGE_STEP).min(max_index);
+                self.sync_browser_state();
+            }
+            Focus::Scaling => {
+                let max_index = self.scaling_modes.len().saturating_sub(1);
+                self.selected_scaling_mode =
+                    (self.selected_scaling_mode + PAGE_STEP).min(max_index);
+            }
+            Focus::Playlist => {
+                let max_index = PLAYLIST_ITEM_COUNT.saturating_sub(1);
+                self.playlist_selected = (self.playlist_selected + 1).min(max_index);
             }
         }
     }
@@ -975,13 +1059,20 @@ impl App {
     pub fn daemon_resource_label(&self) -> String {
         self.daemon_resources
             .map(|resources| {
+                let used_mib = resources.memory_kib as f64 / 1024.0;
+                let total_mib = resources.total_memory_kib as f64 / 1024.0;
+                let percent = if resources.total_memory_kib > 0 {
+                    resources.memory_kib as f64 * 100.0 / resources.total_memory_kib as f64
+                } else {
+                    0.0
+                };
+
                 format!(
-                    "PID {} • RAM {:.1} MiB",
-                    resources.pid,
-                    resources.memory_kib as f64 / 1024.0
+                    "PID {} • RAM {:.1}/{:.0} MiB ({:.1}%)",
+                    resources.pid, used_mib, total_mib, percent
                 )
             })
-            .unwrap_or_else(|| "PID -- • RAM --".to_string())
+            .unwrap_or_else(|| "PID -- • RAM --/-- MiB".to_string())
     }
 
     pub fn visible_browser_items(&self) -> impl Iterator<Item = (usize, &FileEntry)> {
