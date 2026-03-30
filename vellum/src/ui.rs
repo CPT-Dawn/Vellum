@@ -778,8 +778,17 @@ fn draw_keybinds(frame: &mut Frame, area: Rect, app: &App) {
 
     lines.push(Line::from(match app.focus {
         Focus::Files => vec![
-            key_span("↑/↓ hjkl"),
+            key_span("↑/↓ j/k"),
             label_span(" Browse"),
+            Span::raw("  "),
+            key_span("← / h"),
+            label_span(" Back"),
+            Span::raw("  "),
+            key_span("→ / l"),
+            label_span(" Open/Favorite"),
+            Span::raw("  "),
+            key_span("gg / G"),
+            label_span(" Top/Bottom"),
             Span::raw("  "),
             key_span("PgUp/PgDn"),
             label_span(" Jump"),
@@ -791,7 +800,7 @@ fn draw_keybinds(frame: &mut Frame, area: Rect, app: &App) {
             label_span(" Next"),
             Span::raw("  "),
             key_span("Enter"),
-            label_span(" Apply"),
+            label_span(" Apply Wallpaper"),
             Span::raw("  "),
             key_span("/"),
             label_span(" Search"),
@@ -811,6 +820,9 @@ fn draw_keybinds(frame: &mut Frame, area: Rect, app: &App) {
         Focus::Scaling => vec![
             key_span("↑/↓ hjkl"),
             label_span(" Browse"),
+            Span::raw("  "),
+            key_span("g / G"),
+            label_span(" Top/Bottom"),
             Span::raw("  "),
             key_span("PgUp/PgDn"),
             label_span(" Jump"),
@@ -839,6 +851,9 @@ fn draw_keybinds(frame: &mut Frame, area: Rect, app: &App) {
         Focus::Playlist => vec![
             key_span("↑/↓ hjkl"),
             label_span(" Select"),
+            Span::raw("  "),
+            key_span("g / G"),
+            label_span(" Top/Bottom"),
             Span::raw("  "),
             key_span("PgUp/PgDn"),
             label_span(" Jump"),

@@ -129,7 +129,7 @@ pub struct PlaylistConfig {
 impl Default for PlaylistConfig {
     fn default() -> Self {
         Self {
-            source: PlaylistSource::Workspace,
+            source: PlaylistSource::Favorites,
             interval_secs: 60,
             running: false,
             next_shuffle_at: None,
@@ -242,6 +242,7 @@ pub struct App {
     preview_status: String,
     preview_image: Option<PreviewImage>,
     backend_sync_tick: u8,
+    awaiting_second_g: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -286,6 +287,7 @@ impl fmt::Debug for App {
                 &self.preview_image.as_ref().map(|_| "ready"),
             )
             .field("backend_sync_tick", &self.backend_sync_tick)
+            .field("awaiting_second_g", &self.awaiting_second_g)
             .finish()
     }
 }
@@ -336,6 +338,7 @@ impl App {
             preview_status: "Select an image file to preview".to_string(),
             preview_image: None,
             backend_sync_tick: 0,
+            awaiting_second_g: false,
         };
 
         app.refresh_browser_entries();
@@ -364,6 +367,10 @@ impl App {
     pub fn handle_key_event(&mut self, key: KeyEvent, backend: &mut Backend) -> bool {
         if key.kind != KeyEventKind::Press && key.kind != KeyEventKind::Repeat {
             return false;
+        }
+
+        if self.awaiting_second_g && key.code != KeyCode::Char('g') {
+            self.awaiting_second_g = false;
         }
 
         if key.code == KeyCode::Char('q') {
@@ -456,16 +463,66 @@ impl App {
                 self.focus = self.focus.previous();
                 false
             }
-            KeyCode::Up | KeyCode::Char('k') | KeyCode::Left | KeyCode::Char('h') => {
+            KeyCode::Up | KeyCode::Char('k') => {
                 self.move_previous();
                 false
             }
-            KeyCode::Down | KeyCode::Char('j') | KeyCode::Right | KeyCode::Char('l') => {
+            KeyCode::Down | KeyCode::Char('j') => {
                 self.move_next();
+                false
+            }
+            KeyCode::Left => {
+                if self.focus == Focus::Files {
+                    self.go_to_parent_directory();
+                } else {
+                    self.move_previous();
+                }
+                false
+            }
+            KeyCode::Right => {
+                if self.focus == Focus::Files {
+                    self.handle_files_right_action();
+                } else {
+                    self.move_next();
+                }
+                false
+            }
+            KeyCode::Char('h') => {
+                if self.focus == Focus::Files {
+                    self.go_to_parent_directory();
+                } else {
+                    self.move_previous();
+                }
+                false
+            }
+            KeyCode::Char('l') => {
+                if self.focus == Focus::Files {
+                    self.activate_selection(backend);
+                } else {
+                    self.move_next();
+                }
                 false
             }
             KeyCode::Backspace => {
                 self.go_to_parent_directory();
+                false
+            }
+            KeyCode::Char('g') => {
+                if self.focus == Focus::Files {
+                    if self.awaiting_second_g {
+                        self.move_to_start();
+                        self.awaiting_second_g = false;
+                    } else {
+                        self.awaiting_second_g = true;
+                    }
+                } else {
+                    self.move_to_start();
+                    self.awaiting_second_g = false;
+                }
+                false
+            }
+            KeyCode::Char('G') => {
+                self.move_to_end();
                 false
             }
             KeyCode::Home => {
@@ -668,6 +725,45 @@ impl App {
             0 => self.toggle_selected_playlist(),
             1 => self.toggle_selected_playlist_source(),
             _ => self.adjust_selected_playlist_interval(PLAYLIST_INTERVAL_STEP_SECS as i64),
+        }
+    }
+
+    fn handle_files_right_action(&mut self) {
+        if let Some(entry) = self.selected_browser_entry().cloned() {
+            match entry.kind {
+                FileKind::Directory => {
+                    if self.is_within_root(&entry.path) {
+                        self.current_path = entry.path;
+                        self.push_log(format!("[INFO] Opened {}", self.current_path.display()));
+                        self.refresh_browser_entries();
+                    } else {
+                        self.push_log(format!(
+                            "[WARN] Refusing to open directory outside Pictures: {}",
+                            entry.path.display()
+                        ));
+                    }
+                }
+                FileKind::File => {
+                    if !entry.supported {
+                        self.push_log(format!(
+                            "[WARN] Unsupported file cannot be favorited: {}",
+                            entry.path.display()
+                        ));
+                        return;
+                    }
+
+                    if self.favorites.insert(entry.path.clone()) {
+                        self.push_log(format!("[INFO] Favorited {}", entry.path.display()));
+                        self.refresh_browser_entries();
+
+                        if let Err(error) = self.save_favorites_state() {
+                            self.push_log(format!("[WARN] Failed to save favorites: {error}"));
+                        }
+                    } else {
+                        self.push_log(format!("[INFO] Already favorited {}", entry.path.display()));
+                    }
+                }
+            }
         }
     }
 
