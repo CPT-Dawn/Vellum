@@ -1,7 +1,16 @@
-include!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../vellum/src/imgproc.rs"
-));
+#[path = "shared_imgproc.rs"]
+mod shared_imgproc;
+
+pub use shared_imgproc::*;
+
+#[inline(always)]
+fn touch_shared_imgproc_symbols() {
+    let _ = ResizeStrategy::as_str;
+    let _ = ImgBuf::as_frames;
+    let _ = RasterImage::is_animated;
+    let _ = RasterImage::as_frames;
+    let _ = compress_frames;
+}
 
 pub fn load_wallpaper_bytes(
     path: &std::path::Path,
@@ -9,7 +18,10 @@ pub fn load_wallpaper_bytes(
     pixel_format: common::ipc::PixelFormat,
     resize: ResizeStrategy,
 ) -> Result<Box<[u8]>, String> {
+    touch_shared_imgproc_symbols();
+
     let img_buf = ImgBuf::new(path)?;
+    let _ = img_buf.is_animated();
 
     match img_buf.decode_prepare() {
         DecodeBuffer::RasterImage(imgbuf) => {

@@ -156,10 +156,9 @@ impl RequestSend {
 }
 
 impl RequestRecv {
-    #[must_use]
     #[inline]
-    pub fn receive(msg: RawMsg) -> Self {
-        msg.into()
+    pub fn receive(msg: RawMsg) -> Result<Self, IpcError> {
+        msg.try_into()
     }
 }
 
@@ -174,9 +173,8 @@ impl Answer {
         stream.send(self.try_into()?)
     }
 
-    #[must_use]
     #[inline]
-    pub fn receive(msg: RawMsg) -> Self {
-        msg.into()
+    pub fn receive(msg: RawMsg) -> Result<Self, IpcError> {
+        msg.try_into()
     }
 }

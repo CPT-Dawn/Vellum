@@ -156,7 +156,13 @@ impl Daemon {
                 return;
             }
         };
-        let request = RequestRecv::receive(bytes);
+        let request = match RequestRecv::receive(bytes) {
+            Ok(request) => request,
+            Err(e) => {
+                error!("received malformed IPC request: {e}");
+                return;
+            }
+        };
         let answer = match request {
             RequestRecv::Clear(clear) => {
                 let wallpapers = self.find_wallpapers_by_names(&clear.outputs);
@@ -374,21 +380,12 @@ impl wayland::wl_shm::EvHandler for Daemon {
             Format::argb8888 => debug!("available shm format: Argb"),
             Format::abgr8888 => {
                 debug!("available shm format: Xbgr");
-                //if !self.forced_shm_format && self.pixel_format == PixelFormat::Argb {
-                //    self.pixel_format = PixelFormat::Abgr;
-                //}
             }
             Format::rgb888 => {
                 debug!("available shm format: Rbg");
-                //if !self.forced_shm_format && self.pixel_format != PixelFormat::Bgr {
-                //    self.pixel_format = PixelFormat::Rgb
-                //}
             }
             Format::bgr888 => {
                 debug!("available shm format: Bgr");
-                //if !self.forced_shm_format {
-                //    self.pixel_format = PixelFormat::Bgr
-                //}
             }
             _ => (),
         }
@@ -618,10 +615,12 @@ enum WaylandObject {
     FractionalScale,
 }
 
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[unsafe(no_mangle)]
 #[cfg(not(test))]
-pub extern "C" fn main(
+/// # Safety
+///
+/// `argv` must point to `argc` valid pointers for the entire duration of this function call.
+pub unsafe extern "C" fn main(
     argc: core::ffi::c_long,
     argv: *const *const core::ffi::c_char,
 ) -> core::ffi::c_long {
@@ -631,6 +630,8 @@ pub extern "C" fn main(
         Ok(Some(cli)) => cli,
         Ok(None) => return 0,
         Err(e) => {
+            // SAFETY: writing to process stderr is valid for the daemon process lifetime.
+            #[allow(unused_unsafe)]
             let stderr = unsafe { rustix::stdio::stderr() };
             let msg = e.to_string();
             let bufs = [
@@ -688,9 +689,8 @@ pub extern "C" fn main(
             );
         },
     ) {
-        // use panic here to force Display formatting, instead of Debug
-        // it both looks nicer and uses less code in the final binary
-        panic!("Roundtrip failed: {e}");
+        error!("Wayland roundtrip failed during startup: {e}");
+        return -1;
     }
 
     // create the socket listener and setup the signal handlers
@@ -712,7 +712,10 @@ pub extern "C" fn main(
         use rustix::event::{PollFd, PollFlags};
         use wayland::*;
 
-        daemon.backend.flush().unwrap();
+        if let Err(e) = daemon.backend.flush() {
+            error!("failed to flush wayland backend: {e}");
+            break;
+        }
 
         let mut fds = [
             PollFd::new(&daemon.backend.wayland_fd, PollFlags::IN),
@@ -724,7 +727,10 @@ pub extern "C" fn main(
         match rustix::event::poll(&mut fds, daemon.poll_time.as_ref()) {
             Ok(_) => (),
             Err(rustix::io::Errno::INTR | rustix::io::Errno::WOULDBLOCK) => continue,
-            Err(e) => panic!("{e}"),
+            Err(e) => {
+                error!("poll failed: {e}");
+                break;
+            }
         }
 
         clock::reset();
@@ -733,7 +739,13 @@ pub extern "C" fn main(
         let socket_event = !fds[1].revents().is_empty();
 
         if wayland_event {
-            let mut msgs = receiver.recv(&daemon.backend.wayland_fd).unwrap();
+            let mut msgs = match receiver.recv(&daemon.backend.wayland_fd) {
+                Ok(msgs) => msgs,
+                Err(e) => {
+                    error!("failed receiving wayland events: {e}");
+                    break;
+                }
+            };
             while let Some(sender_id) = msgs.next() {
                 let sender_id = match sender_id {
                     Ok(sender_id) => sender_id,
@@ -785,7 +797,10 @@ pub extern "C" fn main(
             match rustix::net::accept(&listener.fd) {
                 Ok(stream) => daemon.recv_socket_msg(IpcSocket::new(stream)),
                 Err(rustix::io::Errno::INTR | rustix::io::Errno::WOULDBLOCK) => continue,
-                Err(e) => panic!("{e}"),
+                Err(e) => {
+                    error!("failed to accept socket connection: {e}");
+                    break;
+                }
             }
         }
 
@@ -905,10 +920,10 @@ pub fn is_daemon_running(namespace: &str) -> Result<bool, IpcError> {
     };
 
     RequestSend::Ping.send(&sock)?;
-    let answer = Answer::receive(sock.recv()?);
+    let answer = Answer::receive(sock.recv()?)?;
     match answer {
         Answer::Ping(_) => Ok(true),
-        _ => panic!("Daemon did not return Answer::Ping, as expected"),
+        _ => Ok(false),
     }
 }
 

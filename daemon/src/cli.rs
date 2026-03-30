@@ -101,11 +101,15 @@ Options:
     -q|--quiet    will only log errors
     -h|--help     print help
     -V|--version  print version\n";
+                    // SAFETY: writing to process stdout is valid for the daemon process lifetime.
+                    #[allow(unused_unsafe)]
                     let stdout = unsafe { rustix::stdio::stdout() };
                     _ = rustix::io::write(stdout, msg);
                     return Ok(None);
                 }
                 b"-V" | b"--version" => {
+                    // SAFETY: writing to process stdout is valid for the daemon process lifetime.
+                    #[allow(unused_unsafe)]
                     let stdout = unsafe { rustix::stdio::stdout() };
                     let bufs = [
                         rustix::io::IoSlice::new(b"vellum-daemon "),

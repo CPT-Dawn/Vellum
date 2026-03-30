@@ -86,17 +86,11 @@ fn draw_monitor_header(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled("selected target", Style::default().fg(TEXT_MUTED)),
     ]);
 
-    let lines = if app.monitors.is_empty() {
-        vec![
-            Line::from(vec![Span::styled(
-                " 󰖪 No monitors detected",
-                Style::default().fg(WARN).add_modifier(Modifier::BOLD),
-            )]),
-            Line::from(vec![
-                Span::styled(" 󰁔 Outputs ", Style::default().fg(TEXT_MUTED)),
-                Span::styled("0", Style::default().fg(TEXT_DIM)),
-            ]),
-        ]
+    let mut lines = if app.monitors.is_empty() {
+        vec![Line::from(vec![Span::styled(
+            " 󰖪 No monitors detected",
+            Style::default().fg(WARN).add_modifier(Modifier::BOLD),
+        )])]
     } else {
         let selected_index = app.selected_monitor.saturating_add(1);
         let selected_has_wallpaper = app
@@ -104,44 +98,32 @@ fn draw_monitor_header(frame: &mut Frame, area: Rect, app: &App) {
             .and_then(|monitor| monitor.wallpaper.as_ref())
             .is_some();
 
-        vec![
-            Line::from(vec![
-                Span::styled(" 󰨈 Selected ", Style::default().fg(TEXT_MUTED)),
-                Span::styled(
-                    format!(" {}. {} ", selected_index, app.selected_monitor_label()),
-                    Style::default()
-                        .fg(CURSOR_TEXT)
-                        .bg(HIGHLIGHT_BG)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw("  "),
-                Span::styled(
-                    if selected_has_wallpaper {
-                        "󰄬 applied"
-                    } else {
-                        "󰄱 empty"
-                    },
-                    Style::default().fg(if selected_has_wallpaper {
-                        GOOD
-                    } else {
-                        TEXT_MUTED
-                    }),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(" 󰍹 ", Style::default().fg(TEXT_MUTED)),
-                Span::styled(
-                    app.selected_monitor_metrics_label(),
-                    Style::default().fg(TEXT_SECONDARY),
-                ),
-                Span::raw("  "),
-                Span::styled(
-                    format!("{} output(s)", app.monitors.len()),
-                    Style::default().fg(TEXT_MUTED),
-                ),
-            ]),
-        ]
+        vec![Line::from(vec![
+            Span::styled(" 󰨈 Selected ", Style::default().fg(TEXT_MUTED)),
+            Span::styled(
+                format!(" {}. {} ", selected_index, app.selected_monitor_label()),
+                Style::default()
+                    .fg(CURSOR_TEXT)
+                    .bg(HIGHLIGHT_BG)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                if selected_has_wallpaper {
+                    "󰄬 applied"
+                } else {
+                    "󰄱 empty"
+                },
+                Style::default().fg(if selected_has_wallpaper {
+                    GOOD
+                } else {
+                    TEXT_MUTED
+                }),
+            ),
+        ])]
     };
+
+    lines.push(monitor_hotkey_line(app));
 
     let paragraph = Paragraph::new(Text::from(lines))
         .block(header_panel_block(title, false))
@@ -387,7 +369,21 @@ fn draw_preview_and_logs(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn draw_preview_panel(frame: &mut Frame, area: Rect, app: &mut App, active: bool) {
-    let block = panel_block("", active);
+    let block = panel_block(
+        Line::from(vec![
+            Span::styled(
+                " 󰋩 Preiview ",
+                Style::default()
+                    .fg(ACCENT_PRIMARY)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                selected_monitor_preview_label(app),
+                Style::default().fg(TEXT_MUTED),
+            ),
+        ]),
+        active,
+    );
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -423,6 +419,12 @@ fn draw_preview_panel(frame: &mut Frame, area: Rect, app: &mut App, active: bool
             }
         }
     }
+}
+
+fn selected_monitor_preview_label(app: &App) -> String {
+    app.selected_monitor_ref()
+        .map(|monitor| format!("{} • {}x{}", monitor.name, monitor.width, monitor.height))
+        .unwrap_or_else(|| "no monitor selected".to_string())
 }
 
 fn render_bar(frame: &mut Frame, area: Rect, glyph: &str, color: Color) {
@@ -652,15 +654,21 @@ fn draw_keybinds(frame: &mut Frame, area: Rect, app: &App) {
             format!("󰍉 {}", search_hint_label(app)),
             Style::default().fg(TEXT_DIM),
         ),
+        Span::raw("  "),
+        Span::styled("󰁔 ", Style::default().fg(TEXT_MUTED)),
+        Span::styled(
+            format!("{} output(s)", app.monitors.len()),
+            Style::default().fg(TEXT_SECONDARY),
+        ),
     ])];
 
     lines.push(Line::from(match app.focus {
         Focus::Files => vec![
             key_span("↑/↓ hjkl"),
-            label_span(" Navigate files"),
+            label_span(" Browse"),
             Span::raw("  "),
             key_span("Tab"),
-            label_span(" Next panel"),
+            label_span(" Next"),
             Span::raw("  "),
             key_span("Enter"),
             label_span(" Apply"),
@@ -671,7 +679,7 @@ fn draw_keybinds(frame: &mut Frame, area: Rect, app: &App) {
             key_span("f"),
             label_span(" Favorite"),
             Span::raw("  "),
-            key_span("1..n"),
+            monitor_key_span(app.monitors.len()),
             label_span(" Monitors"),
             Span::raw("  "),
             key_span("q"),
@@ -679,10 +687,10 @@ fn draw_keybinds(frame: &mut Frame, area: Rect, app: &App) {
         ],
         Focus::Scaling => vec![
             key_span("↑/↓ hjkl"),
-            label_span(" Navigate settings"),
+            label_span(" Browse"),
             Span::raw("  "),
             key_span("Tab"),
-            label_span(" Next panel"),
+            label_span(" Next"),
             Span::raw("  "),
             key_span("[ / ]"),
             label_span(" Scaling"),
@@ -690,7 +698,7 @@ fn draw_keybinds(frame: &mut Frame, area: Rect, app: &App) {
             key_span("o / v"),
             label_span(" Filters"),
             Span::raw("  "),
-            key_span("1..n"),
+            monitor_key_span(app.monitors.len()),
             label_span(" Monitors"),
             Span::raw("  "),
             key_span("q"),
@@ -699,24 +707,111 @@ fn draw_keybinds(frame: &mut Frame, area: Rect, app: &App) {
     }));
 
     let paragraph = Paragraph::new(Text::from(lines))
-        .block(
-            panel_block(
-                Line::from(vec![
-                    Span::styled(
-                        " 󰌌 Interaction ",
-                        Style::default()
-                            .fg(ACCENT_PRIMARY)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled("live controls", Style::default().fg(TEXT_MUTED)),
-                ]),
-                false,
-            )
-            .padding(Padding::horizontal(1)),
-        )
+        .block(header_panel_block(
+            Line::from(vec![
+                Span::styled(
+                    " 󰌌 Interaction ",
+                    Style::default()
+                        .fg(ACCENT_PRIMARY)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("live controls", Style::default().fg(TEXT_MUTED)),
+            ]),
+            false,
+        ))
         .style(Style::default().fg(TEXT_PRIMARY));
 
     frame.render_widget(paragraph, area);
+}
+
+fn monitor_hotkey_line(app: &App) -> Line<'static> {
+    let mut spans = Vec::new();
+    let hotkey_count = app.monitors.len().min(9);
+
+    if hotkey_count == 0 {
+        spans.push(Span::styled("none", Style::default().fg(TEXT_DIM)));
+        return Line::from(spans);
+    }
+
+    for (index, monitor) in app.monitors.iter().take(hotkey_count).enumerate() {
+        let is_selected = index == app.selected_monitor;
+        let key_style = if is_selected {
+            Style::default()
+                .fg(CURSOR_TEXT)
+                .bg(HIGHLIGHT_BG)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(ACCENT_SECONDARY)
+                .add_modifier(Modifier::BOLD)
+        };
+
+        let name_style = if is_selected {
+            Style::default()
+                .fg(CURSOR_TEXT)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(TEXT_SECONDARY)
+        };
+
+        spans.push(Span::styled(format!("[{}]", index + 1), key_style));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            truncate_for_header(&monitor.name, 12),
+            name_style,
+        ));
+
+        if index + 1 < hotkey_count {
+            spans.push(Span::raw("  "));
+        }
+    }
+
+    if app.monitors.len() > hotkey_count {
+        spans.push(Span::styled(
+            format!("  +{} more", app.monitors.len() - hotkey_count),
+            Style::default().fg(TEXT_MUTED),
+        ));
+    }
+
+    Line::from(spans)
+}
+
+fn truncate_for_header(value: &str, max_chars: usize) -> String {
+    let char_count = value.chars().count();
+    if char_count <= max_chars {
+        return value.to_string();
+    }
+
+    if max_chars <= 3 {
+        return ".".repeat(max_chars);
+    }
+
+    let keep = max_chars - 3;
+    let mut out = value.chars().take(keep).collect::<String>();
+    out.push_str("...");
+    out
+}
+
+fn monitor_key_span(monitor_count: usize) -> Span<'static> {
+    let range = monitor_hotkey_range_label(monitor_count);
+    let style = if monitor_count == 0 {
+        Style::default().fg(TEXT_MUTED)
+    } else {
+        Style::default()
+            .fg(ACCENT_SECONDARY)
+            .add_modifier(Modifier::BOLD)
+    };
+
+    Span::styled(format!("[{}]", range), style)
+}
+
+fn monitor_hotkey_range_label(monitor_count: usize) -> String {
+    let capped = monitor_count.min(9);
+    match capped {
+        0 => "--".to_string(),
+        1 => "1".to_string(),
+        _ => format!("1..{capped}"),
+    }
 }
 
 fn search_hint_label(app: &App) -> String {

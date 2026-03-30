@@ -378,10 +378,6 @@ impl Wallpaper {
         self.output_name == name
     }
 
-    pub fn output_name(&self) -> u32 {
-        self.output_name
-    }
-
     pub fn has_layer_surface(&self, layer_surface: ObjectId) -> bool {
         self.layer_surface == layer_surface
     }

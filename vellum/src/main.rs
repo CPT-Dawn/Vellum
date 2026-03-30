@@ -45,7 +45,7 @@ fn run(
         let should_quit = match event {
             AppEvent::Input(input) => app.handle_event(input, backend),
             AppEvent::Tick => {
-                app.poll_preview_results();
+                app.handle_tick(backend);
                 false
             }
         };

@@ -158,7 +158,7 @@ impl Backend {
         let socket = IpcSocket::client(&self.namespace)?;
         RequestSend::Img(request).send(&socket)?;
 
-        match Answer::receive(socket.recv()?) {
+        match Answer::receive(socket.recv()?)? {
             Answer::Ok => Ok(()),
             _ => Err(BackendError::Message(
                 "daemon returned an unexpected response".to_string(),
@@ -177,7 +177,7 @@ impl Backend {
 
         RequestSend::Clear(request).send(&socket)?;
 
-        match Answer::receive(socket.recv()?) {
+        match Answer::receive(socket.recv()?)? {
             Answer::Ok => Ok(()),
             _ => Err(BackendError::Message(
                 "daemon returned an unexpected response".to_string(),
@@ -189,7 +189,7 @@ impl Backend {
         let socket = IpcSocket::client(&self.namespace)?;
         RequestSend::Pause.send(&socket)?;
 
-        match Answer::receive(socket.recv()?) {
+        match Answer::receive(socket.recv()?)? {
             Answer::Ok => Ok(()),
             _ => Err(BackendError::Message(
                 "daemon returned an unexpected response".to_string(),
@@ -204,7 +204,7 @@ impl Backend {
         };
 
         RequestSend::Ping.send(&socket)?;
-        match Answer::receive(socket.recv()?) {
+        match Answer::receive(socket.recv()?)? {
             Answer::Ping(_) => Ok(true),
             _ => Err(BackendError::Message(
                 "daemon returned an unexpected response".to_string(),
@@ -216,7 +216,7 @@ impl Backend {
         let socket = IpcSocket::client(&self.namespace)?;
         RequestSend::Query.send(&socket)?;
 
-        match Answer::receive(socket.recv()?) {
+        match Answer::receive(socket.recv()?)? {
             Answer::Info(infos) => Ok(infos.into_vec()),
             _ => Err(BackendError::Message(
                 "daemon returned an unexpected response".to_string(),

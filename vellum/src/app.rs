@@ -15,6 +15,7 @@ use crate::backend::DaemonResourceUsage;
 use crate::preview::{self, PreviewImage, PreviewRequest, PreviewResult};
 
 const LOG_CAPACITY: usize = 128;
+const BACKEND_SYNC_INTERVAL_TICKS: u8 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalingMode {
@@ -126,7 +127,6 @@ pub struct Monitor {
     pub name: String,
     pub width: u16,
     pub height: u16,
-    pub scale: f32,
     pub wallpaper: Option<PathBuf>,
 }
 
@@ -136,7 +136,6 @@ impl Monitor {
             name: name.to_string(),
             width,
             height,
-            scale: 1.0,
             wallpaper: None,
         }
     }
@@ -148,13 +147,11 @@ impl Monitor {
 
 impl From<BgInfo> for Monitor {
     fn from(value: BgInfo) -> Self {
-        let scale = value.scale_factor.to_f32();
         let (width, height) = value.dim;
         Self {
             name: value.name.into(),
             width: width.min(u16::MAX as u32) as u16,
             height: height.min(u16::MAX as u32) as u16,
-            scale,
             wallpaper: match value.img {
                 common::ipc::BgImg::Img(path) => Some(PathBuf::from(path.as_ref())),
                 common::ipc::BgImg::Color(_) => None,
@@ -190,6 +187,7 @@ pub struct App {
     preview_last_key: Option<PreviewRequestKey>,
     preview_status: String,
     preview_image: Option<PreviewImage>,
+    backend_sync_tick: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -198,6 +196,9 @@ struct PreviewRequestKey {
     scaling: ScalingMode,
     width: u16,
     height: u16,
+    monitor_name: String,
+    monitor_width: u16,
+    monitor_height: u16,
 }
 
 impl fmt::Debug for App {
@@ -228,6 +229,7 @@ impl fmt::Debug for App {
                 "preview_image",
                 &self.preview_image.as_ref().map(|_| "ready"),
             )
+            .field("backend_sync_tick", &self.backend_sync_tick)
             .finish()
     }
 }
@@ -275,6 +277,7 @@ impl App {
             preview_last_key: None,
             preview_status: "Select an image file to preview".to_string(),
             preview_image: None,
+            backend_sync_tick: 0,
         };
 
         app.refresh_browser_entries();
@@ -743,6 +746,16 @@ impl App {
         self.preview_image.as_ref()
     }
 
+    pub fn handle_tick(&mut self, backend: &mut Backend) {
+        self.poll_preview_results();
+
+        self.backend_sync_tick = self.backend_sync_tick.saturating_add(1);
+        if self.backend_sync_tick >= BACKEND_SYNC_INTERVAL_TICKS {
+            self.backend_sync_tick = 0;
+            self.sync_from_backend(backend);
+        }
+    }
+
     pub fn update_preview_request(&mut self, target_width: u16, target_height_rows: u16) {
         self.poll_preview_results();
 
@@ -783,11 +796,19 @@ impl App {
             return;
         }
 
+        let (monitor_name, monitor_width, monitor_height) = self
+            .selected_monitor_ref()
+            .map(|monitor| (monitor.name.clone(), monitor.width, monitor.height))
+            .unwrap_or_else(|| (String::new(), 0, 0));
+
         let key = PreviewRequestKey {
             path: entry_path,
             scaling: self.current_scaling_mode(),
             width: target_width,
             height: target_height_rows,
+            monitor_name,
+            monitor_width,
+            monitor_height,
         };
 
         if self.preview_last_key.as_ref() == Some(&key) {
@@ -804,6 +825,9 @@ impl App {
             scaling: key.scaling,
             target_width: key.width,
             target_height_rows: key.height,
+            monitor_name: key.monitor_name,
+            monitor_width: key.monitor_width,
+            monitor_height: key.monitor_height,
         };
 
         if let Err(error) = self.preview_request_tx.send(request) {
@@ -834,20 +858,6 @@ impl App {
         self.selected_monitor_ref()
             .map(|monitor| monitor.name.clone())
             .unwrap_or_else(|| "No monitors".to_string())
-    }
-
-    pub fn selected_monitor_metrics_label(&self) -> String {
-        self.selected_monitor_ref()
-            .map(|monitor| {
-                format!(
-                    "{}x{} @{} {}",
-                    monitor.width,
-                    monitor.height,
-                    monitor.scale,
-                    self.current_scaling_mode()
-                )
-            })
-            .unwrap_or_else(|| "No active monitor".to_string())
     }
 
     pub fn daemon_resource_label(&self) -> String {

@@ -82,32 +82,62 @@ impl TryFrom<Answer> for RawMsg {
     }
 }
 
-// TODO: remove this ugly mess
-impl From<RawMsg> for RequestRecv {
-    fn from(value: RawMsg) -> Self {
+impl TryFrom<RawMsg> for RequestRecv {
+    type Error = IpcError;
+
+    fn try_from(value: RawMsg) -> Result<Self, Self::Error> {
         match value.code {
-            Code::ReqPing => Self::Ping,
-            Code::ReqQuery => Self::Query,
+            Code::ReqPing => Ok(Self::Ping),
+            Code::ReqQuery => Ok(Self::Query),
             Code::ReqClear => {
-                let mmap = value.shm.unwrap();
+                let mmap = value
+                    .shm
+                    .ok_or(Errno::BADMSG)
+                    .context(IpcErrorKind::MalformedMsg)?;
                 let bytes = mmap.slice();
-                let len = bytes[0] as usize;
+                let len = *bytes
+                    .first()
+                    .ok_or(Errno::BADMSG)
+                    .context(IpcErrorKind::MalformedMsg)? as usize;
+
                 let mut outputs = Vec::with_capacity(len);
                 let mut i = 1;
                 for _ in 0..len {
-                    let output = MmappedStr::new(&mmap, &bytes[i..]);
+                    let rest = bytes
+                        .get(i..)
+                        .ok_or(Errno::BADMSG)
+                        .context(IpcErrorKind::MalformedMsg)?;
+                    let output = MmappedStr::new(&mmap, rest);
                     i += 4 + output.str().len();
                     outputs.push(output);
                 }
-                let color = [bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]];
-                Self::Clear(ClearReq {
+
+                let color_slice = bytes
+                    .get(i..i + 4)
+                    .ok_or(Errno::BADMSG)
+                    .context(IpcErrorKind::MalformedMsg)?;
+                let color = [
+                    color_slice[0],
+                    color_slice[1],
+                    color_slice[2],
+                    color_slice[3],
+                ];
+
+                Ok(Self::Clear(ClearReq {
                     color,
                     outputs: outputs.into(),
-                })
+                }))
             }
             Code::ReqImg => {
-                let mmap = value.shm.unwrap();
+                let mmap = value
+                    .shm
+                    .ok_or(Errno::BADMSG)
+                    .context(IpcErrorKind::MalformedMsg)?;
                 let bytes = mmap.slice();
+                if bytes.len() < 52 {
+                    return Err(Errno::BADMSG).context(IpcErrorKind::MalformedMsg);
+                }
+
                 let transition = Transition::deserialize(&bytes[0..]);
                 let len = bytes[51] as usize;
 
@@ -117,30 +147,55 @@ impl From<RawMsg> for RequestRecv {
 
                 let mut i = 52;
                 for _ in 0..len {
-                    let (img, offset) = ImgReq::deserialize(&mmap, &bytes[i..]);
+                    let img_bytes = bytes
+                        .get(i..)
+                        .ok_or(Errno::BADMSG)
+                        .context(IpcErrorKind::MalformedMsg)?;
+                    let (img, offset) = ImgReq::deserialize(&mmap, img_bytes);
                     i += offset;
                     imgs.push(img);
 
-                    let n_outputs = bytes[i] as usize;
+                    let n_outputs = *bytes
+                        .get(i)
+                        .ok_or(Errno::BADMSG)
+                        .context(IpcErrorKind::MalformedMsg)?
+                        as usize;
                     i += 1;
                     let mut out = Vec::with_capacity(n_outputs);
                     for _ in 0..n_outputs {
-                        let output = MmappedStr::new(&mmap, &bytes[i..]);
+                        let rest = bytes
+                            .get(i..)
+                            .ok_or(Errno::BADMSG)
+                            .context(IpcErrorKind::MalformedMsg)?;
+                        let output = MmappedStr::new(&mmap, rest);
                         i += 4 + output.str().len();
                         out.push(output);
                     }
                     outputs.push(out.into());
 
-                    if bytes[i] == 1 {
-                        let (animation, offset) =
-                            Animation::deserialize(&mmap, &bytes[i + 1..]).unwrap();
-                        i += offset;
-                        animations.push(animation);
+                    match *bytes
+                        .get(i)
+                        .ok_or(Errno::BADMSG)
+                        .context(IpcErrorKind::MalformedMsg)?
+                    {
+                        0 => i += 1,
+                        1 => {
+                            let animation_bytes = bytes
+                                .get(i + 1..)
+                                .ok_or(Errno::BADMSG)
+                                .context(IpcErrorKind::MalformedMsg)?;
+                            let (animation, offset) =
+                                Animation::deserialize(&mmap, animation_bytes)
+                                    .ok_or(Errno::BADMSG)
+                                    .context(IpcErrorKind::MalformedMsg)?;
+                            i += 1 + offset;
+                            animations.push(animation);
+                        }
+                        _ => return Err(Errno::BADMSG).context(IpcErrorKind::MalformedMsg),
                     }
-                    i += 1;
                 }
 
-                Self::Img(ImageReq {
+                Ok(Self::Img(ImageReq {
                     transition,
                     imgs,
                     outputs,
@@ -149,41 +204,53 @@ impl From<RawMsg> for RequestRecv {
                     } else {
                         Some(animations)
                     },
-                })
+                }))
             }
-            Code::ReqPause => Self::Pause,
-            Code::ReqKill => Self::Kill,
-            _ => Self::Kill,
+            Code::ReqPause => Ok(Self::Pause),
+            Code::ReqKill => Ok(Self::Kill),
+            _ => Err(Errno::BADMSG).context(IpcErrorKind::MalformedMsg),
         }
     }
 }
 
-impl From<RawMsg> for Answer {
-    fn from(value: RawMsg) -> Self {
+impl TryFrom<RawMsg> for Answer {
+    type Error = IpcError;
+
+    fn try_from(value: RawMsg) -> Result<Self, Self::Error> {
         match value.code {
-            Code::ResOk => Self::Ok,
-            Code::ResConfigured => Self::Ping(true),
-            Code::ResAwait => Self::Ping(false),
+            Code::ResOk => Ok(Self::Ok),
+            Code::ResConfigured => Ok(Self::Ping(true)),
+            Code::ResAwait => Ok(Self::Ping(false)),
             Code::ResInfo => {
-                let mmap = value.shm.unwrap();
+                let mmap = value
+                    .shm
+                    .ok_or(Errno::BADMSG)
+                    .context(IpcErrorKind::MalformedMsg)?;
                 let bytes = mmap.slice();
-                let len = bytes[0] as usize;
+                let len = *bytes
+                    .first()
+                    .ok_or(Errno::BADMSG)
+                    .context(IpcErrorKind::MalformedMsg)? as usize;
                 let mut bg_infos = Vec::with_capacity(len);
 
                 let mut i = 1;
                 for _ in 0..len {
-                    let (info, offset) = BgInfo::deserialize(&bytes[i..]);
+                    let (info, offset) = BgInfo::deserialize(
+                        bytes
+                            .get(i..)
+                            .ok_or(Errno::BADMSG)
+                            .context(IpcErrorKind::MalformedMsg)?,
+                    );
                     i += offset;
                     bg_infos.push(info);
                 }
 
-                Self::Info(bg_infos.into())
+                Ok(Self::Info(bg_infos.into()))
             }
-            _ => panic!("Received malformed answer from daemon"),
+            _ => Err(Errno::BADMSG).context(IpcErrorKind::MalformedMsg),
         }
     }
 }
-// TODO: end remove ugly mess block
 
 macro_rules! code {
     ($($name:ident $num:literal),* $(,)?) => {
@@ -249,8 +316,9 @@ impl TryFrom<u64> for Code {
     }
 }
 
-// TODO: this along with `RawMsg` should be implementation detail
 impl IpcSocket {
+    // RawMsg is intentionally exposed here to keep a single transport implementation used by
+    // both daemon and client crates.
     pub fn send(&self, msg: RawMsg) -> Result<(), IpcError> {
         const FLAGS: net::SendFlags = net::SendFlags::empty();
 

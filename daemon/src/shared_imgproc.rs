@@ -1,0 +1,608 @@
+use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
+use image::{
+    AnimationDecoder, DynamicImage, Frames, GenericImageView, ImageError, ImageFormat,
+    codecs::{gif::GifDecoder, png::PngDecoder, webp::WebPDecoder},
+};
+use resvg::usvg::{Options, Tree};
+
+use std::{
+    io::{Cursor, Read, stdin},
+    path::Path,
+};
+
+use common::{
+    compression::{BitPack, Compressor},
+    ipc::{Nanos, PixelFormat},
+};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ResizeStrategy {
+    #[default]
+    Crop,
+    Fit,
+    Stretch,
+    No,
+}
+
+impl ResizeStrategy {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::No => "no",
+            Self::Crop => "crop",
+            Self::Fit => "fit",
+            Self::Stretch => "stretch",
+        }
+    }
+}
+
+impl core::str::FromStr for ResizeStrategy {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "no" => Ok(Self::No),
+            "crop" => Ok(Self::Crop),
+            "fit" => Ok(Self::Fit),
+            "stretch" => Ok(Self::Stretch),
+            _ => Err(
+                "unrecognized resize strategy. Valid resize strategies are: no | crop | fit | stretch",
+            ),
+        }
+    }
+}
+
+pub enum Format {
+    Image(ImageFormat),
+    JpegXL,
+    Svg(Box<Tree>),
+}
+
+impl core::fmt::Debug for Format {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Image(arg0) => f.debug_tuple("Image").field(arg0).finish(),
+            Self::JpegXL => f.debug_tuple("JpegXL").finish(),
+            Self::Svg(_) => f.debug_tuple("Svg").finish(),
+        }
+    }
+}
+
+pub struct ImgBuf {
+    bytes: Box<[u8]>,
+    format: Format,
+    is_animated: bool,
+}
+
+impl ImgBuf {
+    /// Create a new ImgBuf from a given path. Use `-` for stdin.
+    pub fn new(path: &Path) -> Result<Self, String> {
+        let bytes = if let Some("-") = path.to_str() {
+            let mut bytes = Vec::new();
+            stdin()
+                .read_to_end(&mut bytes)
+                .map_err(|e| format!("failed to read standard input: {e}"))?;
+            bytes
+        } else {
+            std::fs::read(path).map_err(|e| format!("failed to read file: {e}"))?
+        };
+
+        let reader = image::ImageReader::new(Cursor::new(&bytes))
+            .with_guessed_format()
+            .map_err(|e| format!("failed to read image: {e}"))?;
+
+        let format = reader.format();
+        let is_animated = match format {
+            Some(ImageFormat::Gif) => true,
+            Some(ImageFormat::WebP) => WebPDecoder::new(Cursor::new(&bytes))
+                .map_err(|e| format!("failed to decode Webp image: {e}"))?
+                .has_animation(),
+            Some(ImageFormat::Png) => PngDecoder::new(Cursor::new(&bytes))
+                .map_err(|e| format!("failed to decode Png image: {e}"))?
+                .is_apng()
+                .map_err(|e| format!("failed to detect if Png is animated: {e}"))?,
+            None => match reader.into_dimensions() {
+                Ok(_) => {
+                    return Ok(Self {
+                        format: Format::JpegXL,
+                        bytes: bytes.into_boxed_slice(),
+                        is_animated: false,
+                    });
+                }
+                Err(e) => match e {
+                    ImageError::Unsupported(_) => {
+                        match Tree::from_data(&bytes, &Options::default()) {
+                            Ok(tree) => {
+                                return Ok(Self {
+                                    format: Format::Svg(Box::new(tree)),
+                                    bytes: bytes.into_boxed_slice(),
+                                    is_animated: false,
+                                });
+                            }
+                            Err(e) => {
+                                return Err(format!(
+                                    "unrecognized format by `image` crate. Also failed to decode as `svg`: {e}."
+                                ));
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(format!(
+                            "format recognized by `image` crate but another error occurred: {e}."
+                        ));
+                    }
+                },
+            },
+            _ => false,
+        };
+
+        Ok(Self {
+            format: Format::Image(format.unwrap()),
+            bytes: bytes.into_boxed_slice(),
+            is_animated,
+        })
+    }
+
+    pub fn is_animated(&self) -> bool {
+        self.is_animated
+    }
+
+    /// Decode the ImgBuf into an RGB or RGBA image.
+    pub fn decode_prepare(&'_ self) -> DecodeBuffer<'_> {
+        match &self.format {
+            Format::Image(_) | Format::JpegXL => DecodeBuffer::RasterImage(RasterImage(self)),
+            Format::Svg(tree) => DecodeBuffer::VectorImage(VectorImage(tree)),
+        }
+    }
+
+    /// Convert this ImgBuf into animation frames.
+    pub fn as_frames(&'_ self) -> Result<Frames<'_>, String> {
+        match self.format {
+            Format::Image(ImageFormat::Gif) => Ok(GifDecoder::new(Cursor::new(&self.bytes))
+                .map_err(|e| format!("failed to decode gif during animation: {e}"))?
+                .into_frames()),
+            Format::Image(ImageFormat::WebP) => Ok(WebPDecoder::new(Cursor::new(&self.bytes))
+                .map_err(|e| format!("failed to decode webp during animation: {e}"))?
+                .into_frames()),
+            Format::Image(ImageFormat::Png) => Ok(PngDecoder::new(Cursor::new(&self.bytes))
+                .map_err(|e| format!("failed to decode png during animation: {e}"))?
+                .apng()
+                .unwrap()
+                .into_frames()),
+            _ => Err(format!(
+                "requested format has no decoder: {:#?}",
+                self.format
+            )),
+        }
+    }
+}
+
+pub struct RasterImage<'a>(&'a ImgBuf);
+pub struct VectorImage<'a>(&'a Tree);
+
+impl RasterImage<'_> {
+    pub fn decode(&self, format: PixelFormat) -> Result<Image, String> {
+        let imgbuf = self.0;
+        let reader = image::ImageReader::new(Cursor::new(&imgbuf.bytes))
+            .with_guessed_format()
+            .map_err(|e| format!("failed to read image: {e}"))?;
+        let dynimage = reader
+            .decode()
+            .map_err(|e| format!("failed to decode image: {e}"))?;
+
+        let width = dynimage.width();
+        let height = dynimage.height();
+
+        let bytes = {
+            let mut img = if format.channels() == 3 {
+                dynimage.into_rgb8().into_raw().into_boxed_slice()
+            } else {
+                dynimage.into_rgba8().into_raw().into_boxed_slice()
+            };
+
+            if format.must_swap_r_and_b_channels() {
+                for pixel in img.chunks_exact_mut(format.channels() as usize) {
+                    pixel.swap(0, 2);
+                }
+            }
+            img
+        };
+
+        Ok(Image {
+            width,
+            height,
+            format,
+            bytes,
+        })
+    }
+
+    pub fn is_animated(&self) -> bool {
+        self.0.is_animated()
+    }
+
+    pub fn as_frames(&self) -> Result<Frames<'_>, String> {
+        self.0.as_frames()
+    }
+}
+
+impl VectorImage<'_> {
+    pub fn decode(&self, format: PixelFormat, width: u32, height: u32) -> Result<Image, String> {
+        use resvg::{tiny_skia::PixmapMut, usvg::Transform};
+
+        let tree = self.0;
+        let scale = {
+            let size = tree.size();
+            let ratio = size.width() / size.height();
+            let w = width as f32;
+            let h = height as f32;
+            let img_r = w / h;
+            if ratio < img_r {
+                h / size.height()
+            } else {
+                w / size.width()
+            }
+        };
+        let transform = Transform::from_scale(scale, scale);
+
+        let (width, height) = (
+            (tree.size().width() * scale) as u32,
+            (tree.size().height() * scale) as u32,
+        );
+        let mut bytes = vec![0; (width * height * 4) as usize];
+        let mut pixmap = match PixmapMut::from_bytes(&mut bytes, width, height) {
+            Some(pixmap) => pixmap,
+            None => return Err("failed to create pixmap to render svg".to_string()),
+        };
+        resvg::render(tree, transform, &mut pixmap);
+        let dynimage =
+            DynamicImage::ImageRgba8(image::RgbaImage::from_raw(width, height, bytes).unwrap());
+
+        let bytes = {
+            let mut img = if format.channels() == 3 {
+                dynimage.into_rgb8().into_raw().into_boxed_slice()
+            } else {
+                dynimage.into_rgba8().into_raw().into_boxed_slice()
+            };
+
+            if format.must_swap_r_and_b_channels() {
+                for pixel in img.chunks_exact_mut(format.channels() as usize) {
+                    pixel.swap(0, 2);
+                }
+            }
+            img
+        };
+
+        Ok(Image {
+            width,
+            height,
+            format,
+            bytes,
+        })
+    }
+}
+
+pub enum DecodeBuffer<'a> {
+    RasterImage(RasterImage<'a>),
+    VectorImage(VectorImage<'a>),
+}
+
+/// Created by decoding a RasterImage or a VectorImage.
+pub struct Image {
+    width: u32,
+    height: u32,
+    format: PixelFormat,
+    bytes: Box<[u8]>,
+}
+
+impl Image {
+    #[must_use]
+    fn crop(&self, x: u32, y: u32, width: u32, height: u32) -> Self {
+        let x = x.min(self.width) as usize;
+        let y = y.min(self.height) as usize;
+        let width = (width as usize).min(self.width as usize - x);
+        let height = (height as usize).min(self.height as usize - y);
+
+        let mut bytes = Vec::with_capacity(width * height * self.format.channels() as usize);
+
+        let begin = ((y * self.width as usize) + x) * self.format.channels() as usize;
+        let stride = self.width as usize * self.format.channels() as usize;
+        let row_size = width * self.format.channels() as usize;
+
+        for row_index in 0..height {
+            let row = begin + row_index * stride;
+            bytes.extend_from_slice(&self.bytes[row..row + row_size]);
+        }
+
+        Self {
+            width: width as u32,
+            height: height as u32,
+            bytes: bytes.into_boxed_slice(),
+            format: self.format,
+        }
+    }
+
+    fn from_frame(frame: image::Frame, format: PixelFormat) -> Self {
+        let dynimage = DynamicImage::ImageRgba8(frame.into_buffer());
+        let (width, height) = dynimage.dimensions();
+
+        let format = match format {
+            PixelFormat::Bgr | PixelFormat::Abgr => PixelFormat::Bgr,
+            PixelFormat::Rgb | PixelFormat::Argb => PixelFormat::Rgb,
+        };
+
+        let mut bytes = dynimage.into_rgb8().into_raw().into_boxed_slice();
+        if format.must_swap_r_and_b_channels() {
+            for pixel in bytes.chunks_exact_mut(3) {
+                pixel.swap(0, 2);
+            }
+        }
+
+        Self {
+            width,
+            height,
+            format,
+            bytes,
+        }
+    }
+}
+
+pub fn compress_frames(
+    mut frames: Frames,
+    dim: (u32, u32),
+    format: PixelFormat,
+    filter: FilterType,
+    resize: ResizeStrategy,
+    color: [u8; 4],
+) -> Result<Vec<(BitPack, Nanos)>, String> {
+    let mut compressor = Compressor::new();
+    let mut compressed_frames = Vec::new();
+
+    let first = frames.next().unwrap().unwrap();
+    let first_duration = first.delay().numer_denom_ms();
+    let mut first_duration = Nanos::from_millis((first_duration.0 / first_duration.1).into());
+    let first_img = Image::from_frame(first, format);
+    let first_img = match resize {
+        ResizeStrategy::No => img_pad(&first_img, dim, color),
+        ResizeStrategy::Crop => img_resize_crop(&first_img, dim, filter)?,
+        ResizeStrategy::Fit => img_resize_fit(&first_img, dim, filter, color)?,
+        ResizeStrategy::Stretch => img_resize_stretch(&first_img, dim, filter)?,
+    };
+
+    let mut canvas: Option<Box<[u8]>> = None;
+    while let Some(Ok(frame)) = frames.next() {
+        let (dur_num, dur_div) = frame.delay().numer_denom_ms();
+        let duration = Nanos::from_millis((dur_num / dur_div).into());
+
+        let img = Image::from_frame(frame, format);
+        let img = match resize {
+            ResizeStrategy::No => img_pad(&img, dim, color),
+            ResizeStrategy::Crop => img_resize_crop(&img, dim, filter)?,
+            ResizeStrategy::Fit => img_resize_fit(&img, dim, filter, color)?,
+            ResizeStrategy::Stretch => img_resize_stretch(&img, dim, filter)?,
+        };
+
+        if let Some(canvas) = canvas.as_ref() {
+            match compressor.compress(canvas, &img, format) {
+                Some(bytes) => compressed_frames.push((bytes, duration)),
+                None => match compressed_frames.last_mut() {
+                    Some(last) => last.1 += duration,
+                    None => first_duration += duration,
+                },
+            }
+        } else {
+            match compressor.compress(&first_img, &img, format) {
+                Some(bytes) => compressed_frames.push((bytes, duration)),
+                None => first_duration += duration,
+            }
+        }
+        canvas = Some(img);
+    }
+
+    if let Some(canvas) = canvas.as_ref() {
+        match compressor.compress(canvas, &first_img, format) {
+            Some(bytes) => compressed_frames.push((bytes, first_duration)),
+            None => match compressed_frames.last_mut() {
+                Some(last) => last.1 += first_duration,
+                None => first_duration += first_duration,
+            },
+        }
+    }
+
+    Ok(compressed_frames)
+}
+
+pub fn img_pad(img: &Image, dimensions: (u32, u32), color: [u8; 4]) -> Box<[u8]> {
+    let channels = img.format.channels() as usize;
+
+    let mut color4 = color.to_owned();
+    let mut color3 = [color[0], color[1], color[2]];
+    let color: &mut [u8] = if channels == 3 {
+        &mut color3
+    } else {
+        &mut color4
+    };
+
+    if img.format.must_swap_r_and_b_channels() {
+        color.swap(0, 2);
+    }
+    let (padded_w, padded_h) = dimensions;
+    let (padded_w, padded_h) = (padded_w as usize, padded_h as usize);
+    let mut padded = Vec::with_capacity(padded_h * padded_w * channels);
+
+    let img = if img.width > dimensions.0 || img.height > dimensions.1 {
+        let left = (img.width - dimensions.0) / 2;
+        let top = (img.height - dimensions.1) / 2;
+        img.crop(left, top, dimensions.0, dimensions.1)
+    } else {
+        img.crop(0, 0, dimensions.0, dimensions.1)
+    };
+
+    let (img_w, img_h) = (
+        (img.width as usize).min(padded_w),
+        (img.height as usize).min(padded_h),
+    );
+
+    for _ in 0..(((padded_h - img_h) / 2) * padded_w) {
+        padded.extend_from_slice(color);
+    }
+
+    let left_border_w = (padded_w - img_w) / 2;
+    let right_border_w = left_border_w + (img_w % 2);
+
+    for row in 0..img_h {
+        for _ in 0..left_border_w {
+            padded.extend_from_slice(color);
+        }
+
+        padded.extend_from_slice(
+            &img.bytes[(row * img_w * channels)..((row + 1) * img_w * channels)],
+        );
+
+        for _ in 0..right_border_w {
+            padded.extend_from_slice(color);
+        }
+    }
+
+    while padded.len() < (padded_h * padded_w * channels) {
+        padded.extend_from_slice(color);
+    }
+
+    padded.into_boxed_slice()
+}
+
+pub fn img_resize_fit(
+    img: &Image,
+    dimensions: (u32, u32),
+    filter: FilterType,
+    padding_color: [u8; 4],
+) -> Result<Box<[u8]>, String> {
+    let (width, height) = dimensions;
+    if (img.width, img.height) == (width, height) {
+        Ok(img.bytes.clone())
+    } else {
+        if img.width == width || img.height == height {
+            return Ok(img_pad(img, dimensions, padding_color));
+        }
+
+        let ratio = width as f32 / height as f32;
+        let img_r = img.width as f32 / img.height as f32;
+
+        let (trg_w, trg_h) = if ratio > img_r {
+            let scale = height as f32 / img.height as f32;
+            ((img.width as f32 * scale) as u32, height)
+        } else {
+            let scale = width as f32 / img.width as f32;
+            (width, (img.height as f32 * scale) as u32)
+        };
+
+        let pixel_type = if img.format.channels() == 3 {
+            PixelType::U8x3
+        } else {
+            PixelType::U8x4
+        };
+        let src = match fast_image_resize::images::ImageRef::new(
+            img.width,
+            img.height,
+            img.bytes.as_ref(),
+            pixel_type,
+        ) {
+            Ok(i) => i,
+            Err(e) => return Err(e.to_string()),
+        };
+
+        let mut dst = fast_image_resize::images::Image::new(trg_w, trg_h, pixel_type);
+        let mut resizer = Resizer::new();
+        let options = ResizeOptions::new().resize_alg(ResizeAlg::Convolution(filter));
+
+        if let Err(e) = resizer.resize(&src, &mut dst, Some(&options)) {
+            return Err(e.to_string());
+        }
+
+        let img = Image {
+            width: trg_w,
+            height: trg_h,
+            format: img.format,
+            bytes: dst.into_vec().into_boxed_slice(),
+        };
+        Ok(img_pad(&img, dimensions, padding_color))
+    }
+}
+
+pub fn img_resize_stretch(
+    img: &Image,
+    dimensions: (u32, u32),
+    filter: FilterType,
+) -> Result<Box<[u8]>, String> {
+    let (width, height) = dimensions;
+    let resized_img = if (img.width, img.height) == (width, height) {
+        img.bytes.clone()
+    } else {
+        let pixel_type = if img.format.channels() == 3 {
+            PixelType::U8x3
+        } else {
+            PixelType::U8x4
+        };
+
+        let src = match fast_image_resize::images::ImageRef::new(
+            img.width,
+            img.height,
+            img.bytes.as_ref(),
+            pixel_type,
+        ) {
+            Ok(i) => i,
+            Err(e) => return Err(e.to_string()),
+        };
+
+        let mut dst = fast_image_resize::images::Image::new(width, height, pixel_type);
+        let mut resizer = Resizer::new();
+        let options = ResizeOptions::new().resize_alg(ResizeAlg::Convolution(filter));
+
+        if let Err(e) = resizer.resize(&src, &mut dst, Some(&options)) {
+            return Err(e.to_string());
+        }
+
+        dst.into_vec().into_boxed_slice()
+    };
+
+    Ok(resized_img)
+}
+
+pub fn img_resize_crop(
+    img: &Image,
+    dimensions: (u32, u32),
+    filter: FilterType,
+) -> Result<Box<[u8]>, String> {
+    let (width, height) = dimensions;
+    let resized_img = if (img.width, img.height) == (width, height) {
+        img.bytes.clone()
+    } else {
+        let pixel_type = if img.format.channels() == 3 {
+            PixelType::U8x3
+        } else {
+            PixelType::U8x4
+        };
+        let src = match fast_image_resize::images::ImageRef::new(
+            img.width,
+            img.height,
+            img.bytes.as_ref(),
+            pixel_type,
+        ) {
+            Ok(i) => i,
+            Err(e) => return Err(e.to_string()),
+        };
+
+        let mut dst = fast_image_resize::images::Image::new(width, height, pixel_type);
+        let mut resizer = Resizer::new();
+        let options = ResizeOptions::new()
+            .resize_alg(ResizeAlg::Convolution(filter))
+            .fit_into_destination(Some((0.5, 0.5)));
+
+        if let Err(e) = resizer.resize(&src, &mut dst, Some(&options)) {
+            return Err(e.to_string());
+        }
+
+        dst.into_vec().into_boxed_slice()
+    };
+
+    Ok(resized_img)
+}

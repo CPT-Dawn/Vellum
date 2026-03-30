@@ -46,6 +46,10 @@ unsafe extern "C" {
     fn LZ4_compressBound(input_size: c_int) -> c_int;
 }
 
+type PackBytesFn = unsafe fn(&[u8], &[u8], &mut Vec<u8>);
+type Decomp4ChannelsFn = unsafe fn(&mut [u8], &[u8]) -> Result<(), DecompressionError>;
+type Decomp4ChannelsUnsafeFn = unsafe fn(&mut [u8], &[u8]);
+
 enum Inner {
     Boxed(Box<[u8]>),
     Mmapped(MmappedBytes),
@@ -111,15 +115,14 @@ impl BitPack {
 /// speed up compression
 pub struct Compressor {
     buf: Vec<u8>,
-    pack_bytes: unsafe fn(&[u8], &[u8], &mut Vec<u8>),
+    pack_bytes: PackBytesFn,
 }
 
 impl Compressor {
     #[inline]
-    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         #[allow(unused_labels)]
-        let pack_bytes: unsafe fn(&[u8], &[u8], &mut Vec<u8>) = 'brk: {
+        let pack_bytes: PackBytesFn = 'brk: {
             // use the most efficient implementation available:
             #[cfg(not(test))] // when testing, we want to use the specific implementation
             {
@@ -216,13 +219,20 @@ impl Compressor {
     }
 }
 
+impl Default for Compressor {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct Decompressor {
     /// this pointer stores an inner buffer we need to speed up decompression
     /// note we explicitly do not care about its length
     ptr: core::ptr::NonNull<u8>,
     cap: usize,
-    decomp_4channels: unsafe fn(&mut [u8], &[u8]) -> Result<(), DecompressionError>,
-    decomp_4channels_unsafe: unsafe fn(&mut [u8], &[u8]),
+    decomp_4channels: Decomp4ChannelsFn,
+    decomp_4channels_unsafe: Decomp4ChannelsUnsafeFn,
 }
 
 impl Drop for Decompressor {
@@ -236,14 +246,12 @@ impl Drop for Decompressor {
 }
 
 impl Decompressor {
-    #[allow(clippy::new_without_default)]
     #[inline]
     pub fn new() -> Self {
         #[allow(unused_labels)]
-        #[allow(clippy::type_complexity)]
         let (decomp_4channels, decomp_4channels_unsafe): (
-            unsafe fn(&mut [u8], &[u8]) -> Result<(), DecompressionError>,
-            unsafe fn(&mut [u8], &[u8]),
+            Decomp4ChannelsFn,
+            Decomp4ChannelsUnsafeFn,
         ) = 'brk: {
             // use the most efficient implementation available:
             #[cfg(not(test))] // when testing, we want to use the specific implementation
@@ -392,6 +400,13 @@ impl Decompressor {
         } else {
             (self.decomp_4channels_unsafe)(buf, v)
         }
+    }
+}
+
+impl Default for Decompressor {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
     }
 }
 

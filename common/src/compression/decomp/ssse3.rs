@@ -59,6 +59,7 @@ pub(crate) unsafe fn unpack_bytes_4channels(
 
 #[inline]
 #[target_feature(enable = "ssse3")]
+#[cfg(not(test))]
 pub(crate) unsafe fn unpack_unsafe_bytes_4channels(buf: &mut [u8], diff: &[u8]) {
     #[cfg(target_arch = "x86")]
     use core::arch::x86 as intr;

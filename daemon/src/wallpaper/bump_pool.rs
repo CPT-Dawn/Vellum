@@ -12,18 +12,30 @@ struct Buffer {
     released: bool,
 }
 
+struct BufferSpec {
+    pool_id: ObjectId,
+    offset: i32,
+    width: i32,
+    height: i32,
+    stride: i32,
+    format: wl_shm::Format,
+}
+
 impl Buffer {
-    #[allow(clippy::too_many_arguments)]
     fn new(
         backend: &mut Waybackend,
         objman: &mut ObjectManager<WaylandObject>,
-        pool_id: ObjectId,
-        offset: i32,
-        width: i32,
-        height: i32,
-        stride: i32,
-        format: wl_shm::Format,
+        spec: BufferSpec,
     ) -> Self {
+        let BufferSpec {
+            pool_id,
+            offset,
+            width,
+            height,
+            stride,
+            format,
+        } = spec;
+
         let object_id = objman.create(WaylandObject::Buffer);
         log::debug!("Creating buffer with id: {object_id}");
         wl_shm_pool::req::create_buffer(
@@ -162,12 +174,14 @@ impl BumpPool {
         self.buffers.push(Buffer::new(
             backend,
             objman,
-            self.pool_id,
-            self.buffer_offset(new_buffer_index, pixel_format) as i32,
-            self.width,
-            self.height,
-            self.width * pixel_format.channels() as i32,
-            wl_shm_format(pixel_format),
+            BufferSpec {
+                pool_id: self.pool_id,
+                offset: self.buffer_offset(new_buffer_index, pixel_format) as i32,
+                width: self.width,
+                height: self.height,
+                stride: self.width * pixel_format.channels() as i32,
+                format: wl_shm_format(pixel_format),
+            },
         ));
 
         log::info!(

@@ -57,6 +57,7 @@ pub(crate) unsafe fn unpack_bytes_4channels(
 }
 
 #[target_feature(enable = "avx512f,avx512bw,avx512vbmi2")]
+#[cfg(not(test))]
 pub(crate) unsafe fn unpack_unsafe_bytes_4channels(buf: &mut [u8], diff: &[u8]) {
     const MASK: u64 = 0b0111011101110111011101110111011101110111011101110111011101110111;
 

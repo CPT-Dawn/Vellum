@@ -6,17 +6,14 @@ edition.workspace = true
 rust-version.workspace = true
 license-file.workspace = true
 
-[lints]
-workspace = true
-
 [dependencies]
-crossterm = "0.29"
-fuzzy-matcher = "0.3"
-ratatui = "0.30"
+crossterm = "0.29.0"
+fuzzy-matcher = "0.3.7"
+ratatui = "0.30.0"
 common = { workspace = true }
-fast_image_resize = "6.0"
-fastrand = { version = "2.3", default-features = false, features = ["std"] }
-image = { version = "0.25", default-features = false, features = [
+fast_image_resize = "6.0.0"
+fastrand = { version = "2.3.0", default-features = false, features = ["std"] }
+image = { version = "0.25.10", default-features = false, features = [
     "bmp",
     "dds",
     "exr",
@@ -32,9 +29,9 @@ image = { version = "0.25", default-features = false, features = [
     "tiff",
     "webp",
 ] }
-resvg = { version = "0.47" }
-thiserror = "2"
-jxl-oxide = { version = "0.12", features = ["image"], optional = true }
+resvg = { version = "0.47.0" }
+thiserror = "2.0.18"
+jxl-oxide = { version = "0.12.5", features = ["image"], optional = true }
 
 [features]
 all-formats = ["avif", "jxl"]

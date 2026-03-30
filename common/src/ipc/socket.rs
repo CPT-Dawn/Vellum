@@ -42,8 +42,6 @@ pub struct IpcSocket {
 
 impl IpcSocket {
     /// Creates new [`IpcSocket`] from provided [`OwnedFd`]
-    ///
-    /// TODO: remove external ability to construct [`Self`] from random file descriptors
     #[must_use]
     pub fn new(fd: OwnedFd) -> Self {
         Self { fd }
