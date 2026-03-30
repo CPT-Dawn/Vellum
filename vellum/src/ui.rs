@@ -311,7 +311,7 @@ fn draw_playlist_panel(frame: &mut Frame, area: Rect, app: &App, active: bool) {
         ListItem::new(Line::from(vec![
             Span::styled("󰔚 Interval ", Style::default().fg(TEXT_MUTED)),
             Span::styled(
-                format!("{}s", app.selected_playlist_interval_secs()),
+                format_playlist_interval_label(app.selected_playlist_interval_secs()),
                 Style::default().fg(ACCENT_SECONDARY),
             ),
         ])),
@@ -363,6 +363,16 @@ fn draw_playlist_panel(frame: &mut Frame, area: Rect, app: &App, active: bool) {
         Paragraph::new(Text::from(footer)).style(Style::default().fg(TEXT_SECONDARY)),
         footer_area,
     );
+}
+
+fn format_playlist_interval_label(interval_secs: u64) -> String {
+    if interval_secs < 60 {
+        format!("{}s", interval_secs)
+    } else if interval_secs < 3600 {
+        format!("{}m", interval_secs / 60)
+    } else {
+        format!("{}h", interval_secs / 3600)
+    }
 }
 
 fn browser_filter_line(app: &App) -> Line<'static> {

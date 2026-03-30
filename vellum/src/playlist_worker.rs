@@ -14,7 +14,7 @@ const FAVORITES_STATE_FILENAME: &str = "favorites-v1.txt";
 const TUI_ACTIVE_FILENAME: &str = "tui-active-v1.lock";
 const WORKER_PID_FILENAME: &str = "playlist-worker-v1.pid";
 const POLL_SLEEP: Duration = Duration::from_secs(1);
-const PLAYLIST_INTERVAL_MIN_SECS: u64 = 10;
+const PLAYLIST_INTERVAL_MIN_SECS: u64 = 1;
 const PLAYLIST_INTERVAL_MAX_SECS: u64 = 99 * 3600;
 
 #[derive(Clone, Copy)]
@@ -211,7 +211,7 @@ fn load_playlist_state() -> io::Result<Vec<PlaylistEntry>> {
         };
 
         let interval_secs = match interval_field.parse::<u64>() {
-            Ok(value) => value.clamp(PLAYLIST_INTERVAL_MIN_SECS, PLAYLIST_INTERVAL_MAX_SECS),
+            Ok(value) => normalize_playlist_interval_secs(value),
             Err(_) => continue,
         };
 
@@ -272,6 +272,20 @@ fn collect_workspace_candidates() -> Vec<PathBuf> {
     }
 
     out
+}
+
+fn normalize_playlist_interval_secs(value: u64) -> u64 {
+    if value <= 59 {
+        value.clamp(PLAYLIST_INTERVAL_MIN_SECS, 59)
+    } else if value < 3600 {
+        value.saturating_div(60).clamp(1, 59).saturating_mul(60)
+    } else {
+        value
+            .saturating_div(3600)
+            .clamp(1, 99)
+            .saturating_mul(3600)
+            .clamp(3600, PLAYLIST_INTERVAL_MAX_SECS)
+    }
 }
 
 fn is_supported_media(path: &Path) -> bool {

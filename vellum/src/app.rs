@@ -16,7 +16,7 @@ use crate::preview::{self, PreviewImage, PreviewRequest, PreviewResult};
 
 const LOG_CAPACITY: usize = 128;
 const BACKEND_SYNC_INTERVAL_TICKS: u8 = 5;
-const PLAYLIST_INTERVAL_MIN_SECS: u64 = 10;
+const PLAYLIST_INTERVAL_MIN_SECS: u64 = 1;
 const PLAYLIST_INTERVAL_MAX_SECS: u64 = 99 * 3600;
 const PLAYLIST_INTERVAL_DEFAULT_SECS: u64 = 30 * 60;
 const PLAYLIST_ITEM_COUNT: usize = 3;
@@ -149,7 +149,7 @@ impl From<&PlaylistConfig> for PlaylistDraft {
     fn from(value: &PlaylistConfig) -> Self {
         Self {
             source: value.source,
-            interval_secs: value.interval_secs,
+            interval_secs: normalize_playlist_interval_secs(value.interval_secs),
             running: value.running,
         }
     }
@@ -345,8 +345,8 @@ impl App {
             ],
             selected_monitor: 0,
             scaling_modes: ScalingMode::ALL.to_vec(),
-            selected_scaling_mode: 1,
-            applied_scaling_mode: 1,
+            selected_scaling_mode: 0,
+            applied_scaling_mode: 0,
             daemon_status: DaemonStatus::Stopped,
             daemon_resources: None,
             logs: vec!["[INFO] Vellum TUI ready".to_string()],
@@ -1336,11 +1336,11 @@ impl App {
 
     pub fn selected_playlist_interval_secs(&self) -> u64 {
         if let Some(draft) = self.selected_playlist_draft() {
-            return draft.interval_secs;
+            return normalize_playlist_interval_secs(draft.interval_secs);
         }
 
         self.selected_playlist_config()
-            .map(|config| config.interval_secs)
+            .map(|config| normalize_playlist_interval_secs(config.interval_secs))
             .unwrap_or(PLAYLIST_INTERVAL_DEFAULT_SECS)
     }
 
@@ -1480,9 +1480,8 @@ impl App {
 
             let next_running = draft.running;
             let next_source = draft.source;
-            let next_interval = draft
-                .interval_secs
-                .clamp(PLAYLIST_INTERVAL_MIN_SECS, PLAYLIST_INTERVAL_MAX_SECS);
+            let next_interval = draft.interval_secs;
+            let next_interval = normalize_playlist_interval_secs(next_interval);
 
             if config.running != next_running {
                 config.running = next_running;
@@ -1566,9 +1565,7 @@ impl App {
 
     fn adjust_selected_playlist_interval_draft(&mut self, direction: i8) {
         self.with_selected_playlist_draft_mut(|draft| {
-            let current = draft
-                .interval_secs
-                .clamp(PLAYLIST_INTERVAL_MIN_SECS, PLAYLIST_INTERVAL_MAX_SECS);
+            let current = normalize_playlist_interval_secs(draft.interval_secs);
             let next = match direction.cmp(&0) {
                 std::cmp::Ordering::Greater => next_playlist_interval_step(current),
                 std::cmp::Ordering::Less => previous_playlist_interval_step(current),
@@ -1738,7 +1735,7 @@ impl App {
             };
 
             let interval_secs = match interval_field.parse::<u64>() {
-                Ok(value) => value.clamp(PLAYLIST_INTERVAL_MIN_SECS, PLAYLIST_INTERVAL_MAX_SECS),
+                Ok(value) => normalize_playlist_interval_secs(value),
                 Err(_) => continue,
             };
 
@@ -1846,9 +1843,7 @@ impl App {
                 "{}\t{}\t{}\t{}",
                 monitor_name,
                 source,
-                config
-                    .interval_secs
-                    .clamp(PLAYLIST_INTERVAL_MIN_SECS, PLAYLIST_INTERVAL_MAX_SECS),
+                normalize_playlist_interval_secs(config.interval_secs),
                 running
             ));
         }
@@ -1921,24 +1916,50 @@ impl App {
 }
 
 fn next_playlist_interval_step(current: u64) -> u64 {
+    let current = normalize_playlist_interval_secs(current);
+
     if current < 59 {
-        (current + 1).min(59)
+        current + 1
+    } else if current == 59 {
+        60
     } else if current < 59 * 60 {
-        (current + 60).min(59 * 60)
+        current + 60
+    } else if current == 59 * 60 {
+        3600
     } else {
         (current + 3600).min(PLAYLIST_INTERVAL_MAX_SECS)
     }
 }
 
 fn previous_playlist_interval_step(current: u64) -> u64 {
+    let current = normalize_playlist_interval_secs(current);
+
     if current > 3600 {
-        current.saturating_sub(3600).max(59 * 60)
+        current - 3600
+    } else if current == 3600 {
+        59 * 60
     } else if current > 60 {
-        current.saturating_sub(60).max(60)
+        current - 60
+    } else if current == 60 {
+        59
     } else if current > PLAYLIST_INTERVAL_MIN_SECS {
-        current.saturating_sub(1).max(PLAYLIST_INTERVAL_MIN_SECS)
+        current - 1
     } else {
         PLAYLIST_INTERVAL_MIN_SECS
+    }
+}
+
+fn normalize_playlist_interval_secs(value: u64) -> u64 {
+    if value <= 59 {
+        value.clamp(PLAYLIST_INTERVAL_MIN_SECS, 59)
+    } else if value < 3600 {
+        value.saturating_div(60).clamp(1, 59).saturating_mul(60)
+    } else {
+        value
+            .saturating_div(3600)
+            .clamp(1, 99)
+            .saturating_mul(3600)
+            .clamp(3600, PLAYLIST_INTERVAL_MAX_SECS)
     }
 }
 
