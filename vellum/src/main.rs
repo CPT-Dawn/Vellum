@@ -2,9 +2,11 @@ mod app;
 mod backend;
 mod events;
 mod imgproc;
+mod playlist_worker;
 mod preview;
 mod ui;
 
+use std::env;
 use std::io;
 use std::time::Duration;
 
@@ -17,6 +19,14 @@ use crate::backend::Backend;
 use crate::events::{AppEvent, spawn_event_thread};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut args = env::args().skip(1);
+    if matches!(args.next().as_deref(), Some("--playlist-worker")) {
+        let namespace = args.next().unwrap_or_default();
+        return playlist_worker::run(namespace);
+    }
+
+    let _ = playlist_worker::mark_tui_active();
+
     let mut terminal = ratatui::init();
     execute!(io::stdout(), EnableMouseCapture)?;
 
@@ -29,6 +39,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     execute!(io::stdout(), DisableMouseCapture)?;
     ratatui::restore();
+
+    playlist_worker::clear_tui_active_marker();
+
+    if app.has_running_playlists() {
+        let _ = playlist_worker::spawn_background_worker("");
+    }
 
     run_result.map_err(Into::into)
 }

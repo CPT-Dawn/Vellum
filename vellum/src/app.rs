@@ -352,11 +352,7 @@ impl App {
 
     pub fn handle_event(&mut self, event: Event, backend: &mut Backend) -> bool {
         match event {
-            Event::Key(key)
-                if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat =>
-            {
-                self.handle_key_event(key, backend)
-            }
+            Event::Key(key) => self.handle_key_event(key, backend),
             Event::Resize(_, _) => {
                 self.push_log("[INFO] Terminal resized".to_string());
                 false
@@ -366,12 +362,17 @@ impl App {
     }
 
     pub fn handle_key_event(&mut self, key: KeyEvent, backend: &mut Backend) -> bool {
+        if key.code == KeyCode::Char('q')
+            && (key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat)
+        {
+            return true;
+        }
+
         if self.search_active {
             return self.handle_search_key(key);
         }
 
         match key.code {
-            KeyCode::Char('q') => true,
             KeyCode::Char('/') => {
                 self.search_active = true;
                 self.search_buffer.clear();
@@ -1048,6 +1049,12 @@ impl App {
             .and_then(|config| config.next_shuffle_at)
             .and_then(|next| next.checked_duration_since(now))
             .map(|dur| dur.as_secs())
+    }
+
+    pub fn has_running_playlists(&self) -> bool {
+        self.playlist_by_monitor
+            .values()
+            .any(|config| config.running)
     }
 
     fn push_log(&mut self, entry: String) {
