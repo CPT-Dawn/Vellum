@@ -17,8 +17,8 @@ use crate::preview::{self, PreviewImage, PreviewRequest, PreviewResult};
 const LOG_CAPACITY: usize = 128;
 const BACKEND_SYNC_INTERVAL_TICKS: u8 = 5;
 const PLAYLIST_INTERVAL_MIN_SECS: u64 = 10;
-const PLAYLIST_INTERVAL_MAX_SECS: u64 = 3600;
-const PLAYLIST_INTERVAL_STEP_SECS: u64 = 10;
+const PLAYLIST_INTERVAL_MAX_SECS: u64 = 99 * 3600;
+const PLAYLIST_INTERVAL_DEFAULT_SECS: u64 = 30 * 60;
 const PLAYLIST_ITEM_COUNT: usize = 3;
 const PLAYLIST_STATE_FILENAME: &str = "playlist-state-v1.txt";
 const FAVORITES_STATE_FILENAME: &str = "favorites-v1.txt";
@@ -130,7 +130,7 @@ impl Default for PlaylistConfig {
     fn default() -> Self {
         Self {
             source: PlaylistSource::Favorites,
-            interval_secs: 60,
+            interval_secs: PLAYLIST_INTERVAL_DEFAULT_SECS,
             running: false,
             next_shuffle_at: None,
             last_wallpaper: None,
@@ -444,11 +444,11 @@ impl App {
                 false
             }
             KeyCode::Char('+') | KeyCode::Char('=') => {
-                self.adjust_selected_playlist_interval(PLAYLIST_INTERVAL_STEP_SECS as i64);
+                self.adjust_selected_playlist_interval(1);
                 false
             }
             KeyCode::Char('-') => {
-                self.adjust_selected_playlist_interval(-(PLAYLIST_INTERVAL_STEP_SECS as i64));
+                self.adjust_selected_playlist_interval(-1);
                 false
             }
             KeyCode::Char('n') => {
@@ -472,34 +472,34 @@ impl App {
                 false
             }
             KeyCode::Left => {
-                if self.focus == Focus::Files {
-                    self.go_to_parent_directory();
-                } else {
-                    self.move_previous();
+                match self.focus {
+                    Focus::Files => self.go_to_parent_directory(),
+                    Focus::Scaling => self.previous_scaling_mode(),
+                    Focus::Playlist => self.handle_playlist_left_action(),
                 }
                 false
             }
             KeyCode::Right => {
-                if self.focus == Focus::Files {
-                    self.handle_files_right_action();
-                } else {
-                    self.move_next();
+                match self.focus {
+                    Focus::Files => self.handle_files_right_action(),
+                    Focus::Scaling => self.next_scaling_mode(),
+                    Focus::Playlist => self.handle_playlist_right_action(),
                 }
                 false
             }
             KeyCode::Char('h') => {
-                if self.focus == Focus::Files {
-                    self.go_to_parent_directory();
-                } else {
-                    self.move_previous();
+                match self.focus {
+                    Focus::Files => self.go_to_parent_directory(),
+                    Focus::Scaling => self.previous_scaling_mode(),
+                    Focus::Playlist => self.handle_playlist_left_action(),
                 }
                 false
             }
             KeyCode::Char('l') => {
-                if self.focus == Focus::Files {
-                    self.activate_selection(backend);
-                } else {
-                    self.move_next();
+                match self.focus {
+                    Focus::Files => self.activate_selection(backend),
+                    Focus::Scaling => self.next_scaling_mode(),
+                    Focus::Playlist => self.handle_playlist_right_action(),
                 }
                 false
             }
@@ -724,7 +724,23 @@ impl App {
         match self.playlist_selected {
             0 => self.toggle_selected_playlist(),
             1 => self.toggle_selected_playlist_source(),
-            _ => self.adjust_selected_playlist_interval(PLAYLIST_INTERVAL_STEP_SECS as i64),
+            _ => self.adjust_selected_playlist_interval(1),
+        }
+    }
+
+    fn handle_playlist_left_action(&mut self) {
+        match self.playlist_selected {
+            0 => self.set_selected_playlist_running(false),
+            1 => self.set_selected_playlist_source(PlaylistSource::Workspace),
+            _ => self.adjust_selected_playlist_interval(-1),
+        }
+    }
+
+    fn handle_playlist_right_action(&mut self) {
+        match self.playlist_selected {
+            0 => self.set_selected_playlist_running(true),
+            1 => self.set_selected_playlist_source(PlaylistSource::Favorites),
+            _ => self.adjust_selected_playlist_interval(1),
         }
     }
 
@@ -752,15 +768,21 @@ impl App {
                         return;
                     }
 
-                    if self.favorites.insert(entry.path.clone()) {
+                    let changed = if self.favorites.insert(entry.path.clone()) {
                         self.push_log(format!("[INFO] Favorited {}", entry.path.display()));
+                        true
+                    } else {
+                        self.favorites.remove(&entry.path);
+                        self.push_log(format!("[INFO] Removed favorite {}", entry.path.display()));
+                        true
+                    };
+
+                    if changed {
                         self.refresh_browser_entries();
 
                         if let Err(error) = self.save_favorites_state() {
                             self.push_log(format!("[WARN] Failed to save favorites: {error}"));
                         }
-                    } else {
-                        self.push_log(format!("[INFO] Already favorited {}", entry.path.display()));
                     }
                 }
             }
@@ -796,6 +818,7 @@ impl App {
         match backend.apply_wallpaper(&wallpaper, &monitor_name, mode) {
             Ok(()) => {
                 self.applied_scaling_mode = self.selected_scaling_mode;
+                self.stop_playlist_for_monitor(&monitor_name);
                 self.push_action_log(
                     "SUCCESS",
                     format!(
@@ -810,6 +833,31 @@ impl App {
             Err(error) => {
                 self.push_log(format!("[ERROR] Failed to apply wallpaper: {error}"));
             }
+        }
+    }
+
+    fn stop_playlist_for_monitor(&mut self, monitor_name: &str) {
+        let mut stopped = false;
+
+        if let Some(config) = self.playlist_by_monitor.get_mut(monitor_name)
+            && config.running
+        {
+            config.running = false;
+            config.next_shuffle_at = None;
+            stopped = true;
+        }
+
+        if !stopped {
+            return;
+        }
+
+        self.push_log(format!(
+            "[INFO] Playlist stopped for {} due to manual wallpaper selection",
+            monitor_name
+        ));
+
+        if let Err(error) = self.save_playlist_state() {
+            self.push_log(format!("[WARN] Failed to save playlist state: {error}"));
         }
     }
 
@@ -1222,7 +1270,7 @@ impl App {
     pub fn selected_playlist_interval_secs(&self) -> u64 {
         self.selected_playlist_config()
             .map(|config| config.interval_secs)
-            .unwrap_or(60)
+            .unwrap_or(PLAYLIST_INTERVAL_DEFAULT_SECS)
     }
 
     pub fn selected_playlist_pool_size(&self) -> usize {
@@ -1288,25 +1336,12 @@ impl App {
             return;
         };
 
-        let Some(config) = self.playlist_by_monitor.get_mut(&monitor_name) else {
-            return;
-        };
-
-        config.running = !config.running;
-        let running = config.running;
-        config.next_shuffle_at = if config.running {
-            Some(Instant::now())
-        } else {
-            None
-        };
-
-        let status = if running { "started" } else { "stopped" };
-
-        self.push_log(format!("[INFO] Playlist {} for {}", status, monitor_name));
-
-        if let Err(error) = self.save_playlist_state() {
-            self.push_log(format!("[WARN] Failed to save playlist state: {error}"));
-        }
+        let running = self
+            .playlist_by_monitor
+            .get(&monitor_name)
+            .map(|cfg| !cfg.running)
+            .unwrap_or(false);
+        self.set_playlist_running_for_monitor(&monitor_name, running);
     }
 
     fn toggle_selected_playlist_source(&mut self) {
@@ -1325,17 +1360,68 @@ impl App {
         }
     }
 
-    fn adjust_selected_playlist_interval(&mut self, delta_secs: i64) {
+    fn set_selected_playlist_running(&mut self, running: bool) {
+        let Some(monitor_name) = self.selected_monitor_name().map(ToString::to_string) else {
+            self.push_log("[WARN] No monitor selected for playlist".to_string());
+            return;
+        };
+
+        self.set_playlist_running_for_monitor(&monitor_name, running);
+    }
+
+    fn set_playlist_running_for_monitor(&mut self, monitor_name: &str, running: bool) {
+        let Some(config) = self.playlist_by_monitor.get_mut(monitor_name) else {
+            return;
+        };
+
+        if config.running == running {
+            return;
+        }
+
+        config.running = running;
+        config.next_shuffle_at = if running { Some(Instant::now()) } else { None };
+
+        let status = if running { "started" } else { "stopped" };
+        self.push_log(format!("[INFO] Playlist {} for {}", status, monitor_name));
+
+        if let Err(error) = self.save_playlist_state() {
+            self.push_log(format!("[WARN] Failed to save playlist state: {error}"));
+        }
+    }
+
+    fn set_selected_playlist_source(&mut self, source: PlaylistSource) {
         let Some(config) = self.selected_playlist_config_mut() else {
             self.push_log("[WARN] No monitor selected for playlist".to_string());
             return;
         };
 
-        let current = config.interval_secs as i64;
-        let next = (current + delta_secs).clamp(
-            PLAYLIST_INTERVAL_MIN_SECS as i64,
-            PLAYLIST_INTERVAL_MAX_SECS as i64,
-        ) as u64;
+        if config.source == source {
+            return;
+        }
+
+        config.source = source;
+        config.last_wallpaper = None;
+        self.push_log(format!("[INFO] Playlist source: {}", source.label()));
+
+        if let Err(error) = self.save_playlist_state() {
+            self.push_log(format!("[WARN] Failed to save playlist state: {error}"));
+        }
+    }
+
+    fn adjust_selected_playlist_interval(&mut self, direction: i8) {
+        let Some(config) = self.selected_playlist_config_mut() else {
+            self.push_log("[WARN] No monitor selected for playlist".to_string());
+            return;
+        };
+
+        let current = config
+            .interval_secs
+            .clamp(PLAYLIST_INTERVAL_MIN_SECS, PLAYLIST_INTERVAL_MAX_SECS);
+        let next = match direction.cmp(&0) {
+            std::cmp::Ordering::Greater => next_playlist_interval_step(current),
+            std::cmp::Ordering::Less => previous_playlist_interval_step(current),
+            std::cmp::Ordering::Equal => current,
+        };
         config.interval_secs = next;
 
         self.push_log(format!("[INFO] Playlist interval set to {}s", next));
@@ -1675,6 +1761,28 @@ impl App {
         }
 
         false
+    }
+}
+
+fn next_playlist_interval_step(current: u64) -> u64 {
+    if current < 59 {
+        (current + 1).min(59)
+    } else if current < 59 * 60 {
+        (current + 60).min(59 * 60)
+    } else {
+        (current + 3600).min(PLAYLIST_INTERVAL_MAX_SECS)
+    }
+}
+
+fn previous_playlist_interval_step(current: u64) -> u64 {
+    if current > 3600 {
+        current.saturating_sub(3600).max(59 * 60)
+    } else if current > 60 {
+        current.saturating_sub(60).max(60)
+    } else if current > PLAYLIST_INTERVAL_MIN_SECS {
+        current.saturating_sub(1).max(PLAYLIST_INTERVAL_MIN_SECS)
+    } else {
+        PLAYLIST_INTERVAL_MIN_SECS
     }
 }
 

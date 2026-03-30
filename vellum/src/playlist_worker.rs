@@ -14,6 +14,8 @@ const FAVORITES_STATE_FILENAME: &str = "favorites-v1.txt";
 const TUI_ACTIVE_FILENAME: &str = "tui-active-v1.lock";
 const WORKER_PID_FILENAME: &str = "playlist-worker-v1.pid";
 const POLL_SLEEP: Duration = Duration::from_secs(1);
+const PLAYLIST_INTERVAL_MIN_SECS: u64 = 10;
+const PLAYLIST_INTERVAL_MAX_SECS: u64 = 99 * 3600;
 
 #[derive(Clone, Copy)]
 enum PlaylistSource {
@@ -209,7 +211,7 @@ fn load_playlist_state() -> io::Result<Vec<PlaylistEntry>> {
         };
 
         let interval_secs = match interval_field.parse::<u64>() {
-            Ok(value) => value.clamp(10, 3600),
+            Ok(value) => value.clamp(PLAYLIST_INTERVAL_MIN_SECS, PLAYLIST_INTERVAL_MAX_SECS),
             Err(_) => continue,
         };
 
