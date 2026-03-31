@@ -575,16 +575,16 @@ impl App {
 
     fn handle_playlist_left_action(&mut self) {
         match self.playlist_selected {
-            0 => self.set_selected_playlist_running_draft(false),
-            1 => self.set_selected_playlist_source_draft(PlaylistSource::Workspace),
+            0 => self.cycle_selected_playlist_running_draft(-1),
+            1 => self.cycle_selected_playlist_source_draft(-1),
             _ => self.adjust_selected_playlist_interval_draft(-1),
         }
     }
 
     fn handle_playlist_right_action(&mut self) {
         match self.playlist_selected {
-            0 => self.set_selected_playlist_running_draft(true),
-            1 => self.set_selected_playlist_source_draft(PlaylistSource::Favorites),
+            0 => self.cycle_selected_playlist_running_draft(1),
+            1 => self.cycle_selected_playlist_source_draft(1),
             _ => self.adjust_selected_playlist_interval_draft(1),
         }
     }
@@ -1269,22 +1269,19 @@ impl App {
         self.playlist_draft_dirty = false;
     }
 
-    fn set_selected_playlist_running_draft(&mut self, running: bool) {
+    fn cycle_selected_playlist_running_draft(&mut self, _direction: i8) {
         self.with_selected_playlist_draft_mut(|draft| {
-            if draft.running == running {
-                return false;
-            }
-            draft.running = running;
+            draft.running = !draft.running;
             true
         });
     }
 
-    fn set_selected_playlist_source_draft(&mut self, source: PlaylistSource) {
+    fn cycle_selected_playlist_source_draft(&mut self, _direction: i8) {
         self.with_selected_playlist_draft_mut(|draft| {
-            if draft.source == source {
-                return false;
-            }
-            draft.source = source;
+            draft.source = match draft.source {
+                PlaylistSource::Workspace => PlaylistSource::Favorites,
+                PlaylistSource::Favorites => PlaylistSource::Workspace,
+            };
             true
         });
     }
