@@ -8,6 +8,7 @@ mod ui;
 
 use std::env;
 use std::io;
+use std::io::IsTerminal;
 use std::time::Duration;
 
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
@@ -19,10 +20,17 @@ use crate::backend::Backend;
 use crate::events::{AppEvent, spawn_event_thread};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args = env::args().skip(1);
-    if matches!(args.next().as_deref(), Some("--playlist-worker")) {
-        let namespace = args.next().unwrap_or_default();
+    let args = env::args().skip(1).collect::<Vec<_>>();
+
+    if matches!(args.first().map(String::as_str), Some("--playlist-worker")) {
+        let namespace = args.get(1).cloned().unwrap_or_default();
         return playlist_worker::run(namespace);
+    }
+
+    let bootstrap_requested = args.iter().any(|arg| arg == "--bootstrap");
+    let has_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
+    if bootstrap_requested || !has_tty {
+        return run_session_bootstrap("");
     }
 
     let _ = playlist_worker::mark_tui_active();
@@ -47,6 +55,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     run_result.map_err(Into::into)
+}
+
+fn run_session_bootstrap(namespace: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut backend = Backend::new(namespace);
+    let _ = backend.restart_or_start_daemon()?;
+
+    if let Err(error) = playlist_worker::spawn_background_worker(namespace) {
+        eprintln!("[WARN] failed to start playlist worker: {error}");
+    }
+
+    Ok(())
 }
 
 fn run(
