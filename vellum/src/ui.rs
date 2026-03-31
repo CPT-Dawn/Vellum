@@ -42,7 +42,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     );
 
     let vertical = Layout::vertical([
-        Constraint::Length(5),
+        Constraint::Length(3),
         Constraint::Min(12),
         Constraint::Length(4),
     ])
