@@ -142,6 +142,12 @@ impl Backend {
         Ok(DaemonStatus::Crashed)
     }
 
+    pub fn restart_or_start_daemon(&mut self) -> Result<DaemonStatus, BackendError> {
+        // Best-effort stop so `r` can recover from stale sockets or existing daemon processes.
+        let _ = self.stop_daemon();
+        self.start_daemon()
+    }
+
     pub fn apply_wallpaper(
         &self,
         wallpaper: &Path,
@@ -168,28 +174,28 @@ impl Backend {
         }
     }
 
-    pub fn clear_wallpaper(&self, monitor_name: &str) -> Result<(), BackendError> {
+    pub fn clear_daemon_data(&mut self) -> Result<(), BackendError> {
+        if self.ping().unwrap_or(false) {
+            self.send_clear_request(Vec::new())?;
+        }
+
+        match cache::clean() {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(BackendError::Io(error.into())),
+        }
+    }
+
+    fn send_clear_request(&self, outputs: Vec<String>) -> Result<(), BackendError> {
         let socket = IpcSocket::client(&self.namespace)?;
         let request = ClearSend {
             color: [0, 0, 0, 255],
-            outputs: vec![monitor_name.to_string()].into_boxed_slice(),
+            outputs: outputs.into_boxed_slice(),
         }
         .create_request()
         .map_err(|error| BackendError::Message(error.to_string()))?;
 
         RequestSend::Clear(request).send(&socket)?;
-
-        match Answer::receive(socket.recv()?)? {
-            Answer::Ok => Ok(()),
-            _ => Err(BackendError::Message(
-                "daemon returned an unexpected response".to_string(),
-            )),
-        }
-    }
-
-    pub fn toggle_pause(&self) -> Result<(), BackendError> {
-        let socket = IpcSocket::client(&self.namespace)?;
-        RequestSend::Pause.send(&socket)?;
 
         match Answer::receive(socket.recv()?)? {
             Answer::Ok => Ok(()),

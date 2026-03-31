@@ -85,14 +85,6 @@ impl Focus {
             Self::Playlist => Self::Files,
         }
     }
-
-    fn previous(self) -> Self {
-        match self {
-            Self::Files => Self::Scaling,
-            Self::Scaling => Self::Files,
-            Self::Playlist => Self::Scaling,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,13 +94,6 @@ pub enum PlaylistSource {
 }
 
 impl PlaylistSource {
-    pub fn toggle(self) -> Self {
-        match self {
-            Self::Workspace => Self::Favorites,
-            Self::Favorites => Self::Workspace,
-        }
-    }
-
     pub fn label(self) -> &'static str {
         match self {
             Self::Workspace => "Workspace",
@@ -262,7 +247,6 @@ pub struct App {
     preview_status: String,
     preview_image: Option<PreviewImage>,
     backend_sync_tick: u8,
-    awaiting_second_g: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -310,7 +294,6 @@ impl fmt::Debug for App {
                 &self.preview_image.as_ref().map(|_| "ready"),
             )
             .field("backend_sync_tick", &self.backend_sync_tick)
-            .field("awaiting_second_g", &self.awaiting_second_g)
             .finish()
     }
 }
@@ -364,7 +347,6 @@ impl App {
             preview_status: "Select an image file to preview".to_string(),
             preview_image: None,
             backend_sync_tick: 0,
-            awaiting_second_g: false,
         };
 
         app.refresh_browser_entries();
@@ -395,10 +377,6 @@ impl App {
             return false;
         }
 
-        if self.awaiting_second_g && key.code != KeyCode::Char('g') {
-            self.awaiting_second_g = false;
-        }
-
         if key.code == KeyCode::Char('q') {
             if self.focus == Focus::Playlist {
                 self.apply_playlist_draft_if_dirty();
@@ -427,72 +405,18 @@ impl App {
                 false
             }
             KeyCode::Char('c') => {
-                self.clear_selected_monitor(backend);
-                false
-            }
-            KeyCode::Char('p') => {
-                self.toggle_pause(backend);
-                false
-            }
-            KeyCode::Char('v') => {
-                self.hide_unsupported = !self.hide_unsupported;
-                self.push_log(format!(
-                    "[INFO] Unsupported formats {}",
-                    if self.hide_unsupported {
-                        "hidden"
-                    } else {
-                        "visible"
-                    }
-                ));
-                self.refresh_browser_entries();
-                false
-            }
-            KeyCode::Char('o') => {
-                self.favorites_only = !self.favorites_only;
-                self.push_log(format!(
-                    "[INFO] Favorites filter {}",
-                    if self.favorites_only {
-                        "enabled"
-                    } else {
-                        "disabled"
-                    }
-                ));
-                self.refresh_browser_entries();
-                false
-            }
-            KeyCode::Char('s') => {
-                self.start_or_refresh_daemon(backend);
+                self.clear_daemon_data(backend);
                 false
             }
             KeyCode::Char('r') => {
-                if self.focus == Focus::Playlist {
-                    self.toggle_selected_playlist_running_draft();
-                }
-                false
-            }
-            KeyCode::Char('m') => {
-                if self.focus == Focus::Playlist {
-                    self.toggle_selected_playlist_source_draft();
-                }
-                false
-            }
-            KeyCode::Char('+') | KeyCode::Char('=') => {
-                if self.focus == Focus::Playlist {
-                    self.adjust_selected_playlist_interval_draft(1);
-                }
-                false
-            }
-            KeyCode::Char('-') => {
-                if self.focus == Focus::Playlist {
-                    self.adjust_selected_playlist_interval_draft(-1);
-                }
+                self.restart_or_reload_daemon(backend);
                 false
             }
             KeyCode::Char('n') => {
                 if self.focus == Focus::Playlist {
                     self.apply_playlist_draft_if_dirty();
+                    self.trigger_selected_playlist_now();
                 }
-                self.trigger_selected_playlist_now();
                 false
             }
             KeyCode::Tab => {
@@ -500,16 +424,6 @@ impl App {
                     self.apply_playlist_draft_if_dirty();
                 }
                 self.focus = self.focus.next();
-                if self.focus == Focus::Playlist {
-                    self.ensure_playlist_draft_loaded();
-                }
-                false
-            }
-            KeyCode::BackTab => {
-                if self.focus == Focus::Playlist {
-                    self.apply_playlist_draft_if_dirty();
-                }
-                self.focus = self.focus.previous();
                 if self.focus == Focus::Playlist {
                     self.ensure_playlist_draft_loaded();
                 }
@@ -526,7 +440,7 @@ impl App {
             KeyCode::Left => {
                 match self.focus {
                     Focus::Files => self.go_to_parent_directory(),
-                    Focus::Scaling => self.previous_scaling_mode(),
+                    Focus::Scaling => {}
                     Focus::Playlist => self.handle_playlist_left_action(),
                 }
                 false
@@ -534,7 +448,7 @@ impl App {
             KeyCode::Right => {
                 match self.focus {
                     Focus::Files => self.handle_files_right_action(),
-                    Focus::Scaling => self.next_scaling_mode(),
+                    Focus::Scaling => {}
                     Focus::Playlist => self.handle_playlist_right_action(),
                 }
                 false
@@ -542,67 +456,21 @@ impl App {
             KeyCode::Char('h') => {
                 match self.focus {
                     Focus::Files => self.go_to_parent_directory(),
-                    Focus::Scaling => self.previous_scaling_mode(),
+                    Focus::Scaling => {}
                     Focus::Playlist => self.handle_playlist_left_action(),
                 }
                 false
             }
             KeyCode::Char('l') => {
                 match self.focus {
-                    Focus::Files => self.activate_selection(backend),
-                    Focus::Scaling => self.next_scaling_mode(),
+                    Focus::Files => self.handle_files_right_action(),
+                    Focus::Scaling => {}
                     Focus::Playlist => self.handle_playlist_right_action(),
                 }
                 false
             }
-            KeyCode::Backspace => {
-                self.go_to_parent_directory();
-                false
-            }
-            KeyCode::Char('g') => {
-                if self.focus == Focus::Files {
-                    if self.awaiting_second_g {
-                        self.move_to_start();
-                        self.awaiting_second_g = false;
-                    } else {
-                        self.awaiting_second_g = true;
-                    }
-                } else {
-                    self.move_to_start();
-                    self.awaiting_second_g = false;
-                }
-                false
-            }
-            KeyCode::Char('G') => {
-                self.move_to_end();
-                false
-            }
-            KeyCode::Home => {
-                self.move_to_start();
-                false
-            }
-            KeyCode::End => {
-                self.move_to_end();
-                false
-            }
-            KeyCode::PageUp => {
-                self.page_up();
-                false
-            }
-            KeyCode::PageDown => {
-                self.page_down();
-                false
-            }
             KeyCode::Enter => {
                 self.activate_selection(backend);
-                false
-            }
-            KeyCode::Char('[') => {
-                self.previous_scaling_mode();
-                false
-            }
-            KeyCode::Char(']') => {
-                self.next_scaling_mode();
                 false
             }
             _ => false,
@@ -677,76 +545,6 @@ impl App {
         }
     }
 
-    fn move_to_start(&mut self) {
-        match self.focus {
-            Focus::Files => {
-                self.browser_selected = 0;
-                self.sync_browser_state();
-            }
-            Focus::Scaling => {
-                self.selected_scaling_mode = 0;
-            }
-            Focus::Playlist => {
-                self.apply_playlist_draft_if_dirty();
-                self.playlist_selected = 0;
-            }
-        }
-    }
-
-    fn move_to_end(&mut self) {
-        match self.focus {
-            Focus::Files => {
-                self.browser_selected = self.browser_filtered_indices.len().saturating_sub(1);
-                self.sync_browser_state();
-            }
-            Focus::Scaling => {
-                self.selected_scaling_mode = self.scaling_modes.len().saturating_sub(1);
-            }
-            Focus::Playlist => {
-                self.apply_playlist_draft_if_dirty();
-                self.playlist_selected = PLAYLIST_ITEM_COUNT.saturating_sub(1);
-            }
-        }
-    }
-
-    fn page_up(&mut self) {
-        const PAGE_STEP: usize = 8;
-        match self.focus {
-            Focus::Files => {
-                self.browser_selected = self.browser_selected.saturating_sub(PAGE_STEP);
-                self.sync_browser_state();
-            }
-            Focus::Scaling => {
-                self.selected_scaling_mode = self.selected_scaling_mode.saturating_sub(PAGE_STEP);
-            }
-            Focus::Playlist => {
-                self.apply_playlist_draft_if_dirty();
-                self.playlist_selected = self.playlist_selected.saturating_sub(1);
-            }
-        }
-    }
-
-    fn page_down(&mut self) {
-        const PAGE_STEP: usize = 8;
-        match self.focus {
-            Focus::Files => {
-                let max_index = self.browser_filtered_indices.len().saturating_sub(1);
-                self.browser_selected = (self.browser_selected + PAGE_STEP).min(max_index);
-                self.sync_browser_state();
-            }
-            Focus::Scaling => {
-                let max_index = self.scaling_modes.len().saturating_sub(1);
-                self.selected_scaling_mode =
-                    (self.selected_scaling_mode + PAGE_STEP).min(max_index);
-            }
-            Focus::Playlist => {
-                let max_index = PLAYLIST_ITEM_COUNT.saturating_sub(1);
-                self.apply_playlist_draft_if_dirty();
-                self.playlist_selected = (self.playlist_selected + 1).min(max_index);
-            }
-        }
-    }
-
     fn activate_selection(&mut self, backend: &mut Backend) {
         if self.focus == Focus::Files {
             if let Some(entry) = self.selected_browser_entry().cloned() {
@@ -771,20 +569,12 @@ impl App {
         }
 
         if self.focus == Focus::Playlist {
-            self.activate_playlist_selection();
+            self.apply_playlist_draft_if_dirty();
+            self.push_log("[INFO] Playlist changes applied".to_string());
             return;
         }
 
         self.apply_wallpaper_from_selection(backend);
-    }
-
-    fn activate_playlist_selection(&mut self) {
-        self.apply_playlist_draft_if_dirty();
-        if self.playlist_selected + 1 < PLAYLIST_ITEM_COUNT {
-            self.playlist_selected += 1;
-        } else {
-            self.playlist_selected = 0;
-        }
     }
 
     fn handle_playlist_left_action(&mut self) {
@@ -920,54 +710,29 @@ impl App {
         }
     }
 
-    fn clear_selected_monitor(&mut self, backend: &mut Backend) {
-        if self.monitors.is_empty() {
-            self.push_log("[WARN] No monitors available".to_string());
-            return;
-        }
-
-        let monitor_name = self.monitors[self.selected_monitor].name.clone();
-        match backend.clear_wallpaper(&monitor_name) {
+    fn clear_daemon_data(&mut self, backend: &mut Backend) {
+        match backend.clear_daemon_data() {
             Ok(()) => {
-                self.push_log(format!("[INFO] Cleared {}", monitor_name));
                 self.sync_from_backend(backend);
+                self.push_log("[INFO] Cleared daemon outputs and cache".to_string());
             }
             Err(error) => {
-                self.push_log(format!("[ERROR] Failed to clear wallpaper: {error}"));
+                self.push_log(format!("[ERROR] Failed to clear daemon data: {error}"));
             }
         }
     }
 
-    fn toggle_pause(&mut self, backend: &mut Backend) {
-        match backend.toggle_pause() {
-            Ok(()) => {
-                self.push_log("[INFO] Daemon pause toggled".to_string());
+    fn restart_or_reload_daemon(&mut self, backend: &mut Backend) {
+        match backend.restart_or_start_daemon() {
+            Ok(status) => {
+                self.daemon_status = status;
                 self.sync_from_backend(backend);
+                self.push_log("[INFO] Daemon restart/refresh complete".to_string());
             }
             Err(error) => {
-                self.push_log(format!("[ERROR] Failed to toggle pause: {error}"));
+                self.daemon_status = DaemonStatus::Crashed;
+                self.push_log(format!("[ERROR] Failed to restart daemon: {error}"));
             }
-        }
-    }
-
-    fn start_or_refresh_daemon(&mut self, backend: &mut Backend) {
-        match backend.status() {
-            DaemonStatus::Running => {
-                self.daemon_status = DaemonStatus::Running;
-                self.sync_from_backend(backend);
-                self.push_log("[INFO] Daemon refreshed".to_string());
-            }
-            DaemonStatus::Stopped | DaemonStatus::Crashed => match backend.start_daemon() {
-                Ok(status) => {
-                    self.daemon_status = status;
-                    self.sync_from_backend(backend);
-                    self.push_log(format!("[INFO] Daemon {}", self.daemon_status));
-                }
-                Err(error) => {
-                    self.daemon_status = DaemonStatus::Crashed;
-                    self.push_log(format!("[ERROR] Failed to start daemon: {error}"));
-                }
-            },
         }
     }
 
@@ -1530,26 +1295,12 @@ impl App {
         });
     }
 
-    fn toggle_selected_playlist_running_draft(&mut self) {
-        self.with_selected_playlist_draft_mut(|draft| {
-            draft.running = !draft.running;
-            true
-        });
-    }
-
     fn set_selected_playlist_source_draft(&mut self, source: PlaylistSource) {
         self.with_selected_playlist_draft_mut(|draft| {
             if draft.source == source {
                 return false;
             }
             draft.source = source;
-            true
-        });
-    }
-
-    fn toggle_selected_playlist_source_draft(&mut self) {
-        self.with_selected_playlist_draft_mut(|draft| {
-            draft.source = draft.source.toggle();
             true
         });
     }
@@ -1866,18 +1617,6 @@ impl App {
         match path.canonicalize() {
             Ok(candidate) => candidate.starts_with(&root),
             Err(_) => false,
-        }
-    }
-
-    fn next_scaling_mode(&mut self) {
-        if self.selected_scaling_mode + 1 < self.scaling_modes.len() {
-            self.selected_scaling_mode += 1;
-        }
-    }
-
-    fn previous_scaling_mode(&mut self) {
-        if self.selected_scaling_mode > 0 {
-            self.selected_scaling_mode -= 1;
         }
     }
 
