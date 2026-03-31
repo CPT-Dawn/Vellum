@@ -680,6 +680,20 @@ fn draw_logs(frame: &mut Frame, area: Rect, app: &App) {
                 ("󰀦", Style::default().fg(WARN))
             } else if log.contains("[SUCCESS]") {
                 ("󰄬", Style::default().fg(GOOD))
+            } else if log.contains("[DAEMON]") {
+                (
+                    "󰒋",
+                    Style::default()
+                        .fg(ACCENT_SECONDARY)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else if log.contains("[PLAYLIST]") {
+                (
+                    "󰲹",
+                    Style::default()
+                        .fg(ACCENT_PRIMARY)
+                        .add_modifier(Modifier::BOLD),
+                )
             } else if log.contains("[ACTION]") {
                 ("󰑮", Style::default().fg(ACCENT_SECONDARY))
             } else {

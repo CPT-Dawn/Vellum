@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Vellum Daemon
-Comment=Start the Vellum wallpaper daemon
-Exec=/usr/bin/vellum-daemon
-TryExec=/usr/bin/vellum-daemon
-Terminal=false
-NoDisplay=true

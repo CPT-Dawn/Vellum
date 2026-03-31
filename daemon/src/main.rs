@@ -163,6 +163,22 @@ impl Daemon {
                 return;
             }
         };
+
+        match &request {
+            RequestRecv::Ping => trace!("ipc request: ping"),
+            RequestRecv::Query => trace!("ipc request: query outputs"),
+            RequestRecv::Kill => info!("ipc request: kill daemon"),
+            RequestRecv::Pause => info!("ipc request: toggle pause"),
+            RequestRecv::Clear(clear) => {
+                info!("ipc request: clear outputs (count={})", clear.outputs.len())
+            }
+            RequestRecv::Img(img) => info!(
+                "ipc request: apply image batch (images={}, output-groups={})",
+                img.imgs.len(),
+                img.outputs.len()
+            ),
+        }
+
         let answer = match request {
             RequestRecv::Clear(clear) => {
                 let wallpapers = self.find_wallpapers_by_names(&clear.outputs);
@@ -702,6 +718,17 @@ pub unsafe extern "C" fn main(
     // use the initializer to create the Daemon, then drop it to free up the memory
     let mut daemon = Daemon::new(backend, objman, cli, pending_outputs);
 
+    info!(
+        "vellum-daemon started (namespace='{}', outputs={}, cache={})",
+        daemon.namespace,
+        daemon.pending_outputs.len(),
+        if daemon.use_cache {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+
     if let Err(e) = systemd::notify() {
         error!("Error sending status update to systemd: {e}");
     }
@@ -811,7 +838,7 @@ pub unsafe extern "C" fn main(
 
     drop(daemon);
     drop(listener);
-    info!("Goodbye!");
+    info!("vellum-daemon stopped");
     0
 }
 
@@ -832,7 +859,7 @@ fn setup_signals() {
     for signal in [libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGHUP] {
         let ret = unsafe { libc::sigaction(signal, ptr::addr_of!(sigaction), ptr::null_mut()) };
         if ret != 0 {
-            error!("Failed to install signal handler!");
+            error!("failed to install signal handler for signal {}", signal);
         }
     }
 
@@ -848,7 +875,7 @@ fn setup_signals() {
     let signal = libc::SIGCHLD;
     let ret = unsafe { libc::sigaction(signal, ptr::addr_of!(sigaction), ptr::null_mut()) };
     if ret != 0 {
-        error!("Failed to install signal handler!");
+        error!("failed to install signal handler for signal {}", signal);
     }
 
     debug!("Finished setting up signal handlers");

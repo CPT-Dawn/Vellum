@@ -87,6 +87,18 @@ impl Focus {
     }
 }
 
+impl fmt::Display for Focus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            Self::Files => "Files",
+            Self::Scaling => "Scaling",
+            Self::Playlist => "Playlist",
+        };
+
+        f.write_str(label)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaylistSource {
     Workspace,
@@ -393,7 +405,7 @@ impl App {
                 self.search_active = true;
                 self.search_buffer.clear();
                 self.focus = Focus::Files;
-                self.push_log("[INFO] Search activated".to_string());
+                self.push_log("[INFO] Search mode enabled (type to filter files)".to_string());
                 false
             }
             KeyCode::Char('f') => {
@@ -423,6 +435,7 @@ impl App {
                 if self.focus == Focus::Playlist {
                     self.ensure_playlist_draft_loaded();
                 }
+                self.push_log(format!("[INFO] Focus changed to {}", self.focus));
                 false
             }
             KeyCode::Up | KeyCode::Char('k') => {
@@ -477,7 +490,14 @@ impl App {
         match key.code {
             KeyCode::Esc | KeyCode::Enter => {
                 self.search_active = false;
-                self.push_log(format!("[INFO] Search applied: {}", self.search_buffer));
+                if self.search_buffer.trim().is_empty() {
+                    self.push_log("[INFO] Search cleared".to_string());
+                } else {
+                    self.push_log(format!(
+                        "[INFO] Search query set to '{}'",
+                        self.search_buffer
+                    ));
+                }
                 self.refresh_browser_entries();
                 false
             }
@@ -565,8 +585,13 @@ impl App {
         }
 
         if self.focus == Focus::Playlist {
+            let had_pending_changes = self.playlist_draft_dirty;
             self.apply_playlist_draft_if_dirty();
-            self.push_log("[INFO] Playlist changes applied".to_string());
+            if had_pending_changes {
+                self.push_log("[INFO] Playlist settings applied".to_string());
+            } else {
+                self.push_log("[INFO] No playlist changes to apply".to_string());
+            }
             return;
         }
 
@@ -707,11 +732,17 @@ impl App {
     }
 
     fn restart_or_reload_daemon(&mut self, backend: &mut Backend) {
+        let previous_status = self.daemon_status;
+        self.push_action_log(
+            "DAEMON",
+            format!("Restart requested (previous status: {previous_status})"),
+        );
+
         match backend.restart_or_start_daemon() {
             Ok(status) => {
                 self.daemon_status = status;
                 self.sync_from_backend(backend);
-                self.push_log("[INFO] Daemon restart/refresh complete".to_string());
+                self.push_action_log("SUCCESS", format!("Daemon is now {}", self.daemon_status));
             }
             Err(error) => {
                 self.daemon_status = DaemonStatus::Crashed;
