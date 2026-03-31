@@ -720,29 +720,10 @@ fn draw_logs(frame: &mut Frame, area: Rect, app: &App) {
 fn draw_keybinds(frame: &mut Frame, area: Rect, app: &App) {
     let focus_chip = Span::styled(
         format!(" {} ", focus_label(app.focus)),
-        Style::default()
-            .fg(CURSOR_TEXT)
-            .bg(ACCENT_SECONDARY)
-            .add_modifier(Modifier::BOLD),
+        Style::default().fg(ACCENT_SECONDARY),
     );
 
-    let mut lines = vec![Line::from(vec![
-        Span::styled(" 󰌌 Active Panel ", Style::default().fg(TEXT_MUTED)),
-        focus_chip,
-        Span::raw("  "),
-        Span::styled(
-            format!("󰍉 {}", search_hint_label(app)),
-            Style::default().fg(TEXT_DIM),
-        ),
-        Span::raw("  "),
-        Span::styled("󰁔 ", Style::default().fg(TEXT_MUTED)),
-        Span::styled(
-            format!("{} output(s)", app.monitors.len()),
-            Style::default().fg(TEXT_SECONDARY),
-        ),
-    ])];
-
-    lines.push(Line::from(match app.focus {
+    let lines = vec![Line::from(match app.focus {
         Focus::Files => vec![
             key_span("↑/↓ j/k"),
             label_span(" Browse"),
@@ -815,18 +796,18 @@ fn draw_keybinds(frame: &mut Frame, area: Rect, app: &App) {
             key_span("q"),
             label_span(" Quit"),
         ],
-    }));
+    })];
 
     let paragraph = Paragraph::new(Text::from(lines))
         .block(header_panel_block(
             Line::from(vec![
                 Span::styled(
-                    " 󰌌 Interaction ",
+                    " 󰌌 Interaction",
                     Style::default()
                         .fg(ACCENT_PRIMARY)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("live controls", Style::default().fg(TEXT_MUTED)),
+                focus_chip,
             ]),
             false,
         ))
@@ -922,18 +903,6 @@ fn monitor_hotkey_range_label(monitor_count: usize) -> String {
         0 => "--".to_string(),
         1 => "1".to_string(),
         _ => format!("1..{capped}"),
-    }
-}
-
-fn search_hint_label(app: &App) -> String {
-    if app.search_active {
-        if app.search_buffer.is_empty() {
-            "type to search".to_string()
-        } else {
-            app.search_buffer.clone()
-        }
-    } else {
-        "inactive".to_string()
     }
 }
 
