@@ -256,7 +256,6 @@ pub struct App {
     preview_result_rx: Receiver<PreviewResult>,
     preview_request_seq: u64,
     preview_last_key: Option<PreviewRequestKey>,
-    preview_status: String,
     preview_image: Option<PreviewImage>,
     backend_sync_tick: u8,
 }
@@ -300,7 +299,6 @@ impl fmt::Debug for App {
             .field("playlist_draft_dirty", &self.playlist_draft_dirty)
             .field("preview_request_seq", &self.preview_request_seq)
             .field("preview_last_key", &self.preview_last_key)
-            .field("preview_status", &self.preview_status)
             .field(
                 "preview_image",
                 &self.preview_image.as_ref().map(|_| "ready"),
@@ -356,7 +354,6 @@ impl App {
             preview_result_rx,
             preview_request_seq: 0,
             preview_last_key: None,
-            preview_status: "Select an image file to preview".to_string(),
             preview_image: None,
             backend_sync_tick: 0,
         };
@@ -939,37 +936,27 @@ impl App {
         self.poll_preview_results();
 
         if target_width < 1 || target_height_rows < 1 {
-            self.preview_status = "Preview area too small".to_string();
             self.preview_image = None;
             self.preview_last_key = None;
             return;
         }
 
-        let Some((entry_path, entry_name, entry_kind, entry_supported)) =
-            self.selected_browser_entry().map(|entry| {
-                (
-                    entry.path.clone(),
-                    entry.name.clone(),
-                    entry.kind,
-                    entry.supported,
-                )
-            })
+        let Some((entry_path, entry_kind, entry_supported)) = self
+            .selected_browser_entry()
+            .map(|entry| (entry.path.clone(), entry.kind, entry.supported))
         else {
-            self.preview_status = "Select an image file to preview".to_string();
             self.preview_image = None;
             self.preview_last_key = None;
             return;
         };
 
         if entry_kind != FileKind::File {
-            self.preview_status = "Directories cannot be previewed".to_string();
             self.preview_image = None;
             self.preview_last_key = None;
             return;
         }
 
         if !entry_supported {
-            self.preview_status = "Unsupported format for preview".to_string();
             self.preview_image = None;
             self.preview_last_key = None;
             return;
@@ -996,7 +983,6 @@ impl App {
 
         self.preview_request_seq = self.preview_request_seq.saturating_add(1);
         self.preview_last_key = Some(key.clone());
-        self.preview_status = format!("Loading {}", entry_name);
 
         let request = PreviewRequest {
             seq: self.preview_request_seq,
@@ -1010,7 +996,8 @@ impl App {
         };
 
         if let Err(error) = self.preview_request_tx.send(request) {
-            self.preview_status = format!("Preview worker unavailable: {error}");
+            self.preview_image = None;
+            self.push_log(format!("[WARN] Preview worker unavailable: {error}"));
         }
     }
 
@@ -1022,12 +1009,11 @@ impl App {
 
             match result.image {
                 Ok(image) => {
-                    self.preview_status = "Preview ready".to_string();
                     self.preview_image = Some(image);
                 }
                 Err(error) => {
-                    self.preview_status = format!("Preview error: {error}");
                     self.preview_image = None;
+                    self.push_log(format!("[WARN] Preview error: {error}"));
                 }
             }
         }

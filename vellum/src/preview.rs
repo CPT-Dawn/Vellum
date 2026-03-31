@@ -3,10 +3,13 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 
+use common::ipc::PixelFormat;
+use fast_image_resize::FilterType as FirFilterType;
 use image::imageops::FilterType;
-use image::{DynamicImage, ImageBuffer, ImageReader, Rgb, RgbImage};
+use image::{DynamicImage, RgbImage};
 
 use crate::app::ScalingMode;
+use crate::imgproc::{self, ImgBuf, ResizeStrategy};
 
 #[derive(Debug, Clone)]
 pub struct PreviewRequest {
@@ -33,7 +36,6 @@ pub struct PreviewImage {
     pub pixels_rgb: Vec<u8>,
 }
 
-const SOURCE_CACHE_LIMIT: usize = 8;
 const RENDER_CACHE_LIMIT: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -66,8 +68,6 @@ pub fn spawn_preview_worker(
     result_tx: Sender<PreviewResult>,
 ) {
     thread::spawn(move || {
-        let mut source_cache: HashMap<PathBuf, RgbImage> = HashMap::new();
-        let mut source_lru: VecDeque<PathBuf> = VecDeque::new();
         let mut render_cache: HashMap<PreviewRenderKey, PreviewImage> = HashMap::new();
         let mut render_lru: VecDeque<PreviewRenderKey> = VecDeque::new();
 
@@ -81,7 +81,7 @@ pub fn spawn_preview_worker(
                 touch_lru(&mut render_lru, &render_key);
                 Ok(cached)
             } else {
-                let rendered = build_preview_image(&request, &mut source_cache, &mut source_lru);
+                let rendered = build_preview_image(&request);
                 if let Ok(ref preview_image) = rendered {
                     insert_lru(
                         &mut render_cache,
@@ -107,147 +107,90 @@ pub fn spawn_preview_worker(
     });
 }
 
-fn build_preview_image(
-    request: &PreviewRequest,
-    source_cache: &mut HashMap<PathBuf, RgbImage>,
-    source_lru: &mut VecDeque<PathBuf>,
-) -> Result<PreviewImage, String> {
+fn build_preview_image(request: &PreviewRequest) -> Result<PreviewImage, String> {
     if request.target_width < 1 || request.target_height_rows < 1 {
         return Err("preview area too small".to_string());
     }
 
     let target_width = request.target_width as u32;
     let target_height_px = request.target_height_rows.saturating_mul(2) as u32;
-
-    if !source_cache.contains_key(&request.path) {
-        let source = ImageReader::open(&request.path)
-            .map_err(|error| format!("failed to open image: {error}"))?
-            .decode()
-            .map_err(|error| format!("failed to decode image: {error}"))?
-            .to_rgb8();
-
-        insert_lru(
-            source_cache,
-            source_lru,
-            request.path.clone(),
-            source,
-            SOURCE_CACHE_LIMIT,
-        );
-    }
-
-    touch_lru(source_lru, &request.path);
-    trim_lru(source_cache, source_lru, SOURCE_CACHE_LIMIT);
-
-    let source = source_cache
-        .get(&request.path)
-        .ok_or_else(|| "preview source cache miss".to_string())?;
-
-    let rendered = match request.scaling {
-        ScalingMode::Fit => render_fit(source, target_width, target_height_px),
-        ScalingMode::Fill => render_stretch(source, target_width, target_height_px),
-        ScalingMode::Crop => render_crop_center(source, target_width, target_height_px),
-        ScalingMode::Center => render_center(source, target_width, target_height_px),
-        ScalingMode::Tile => render_stretch(source, target_width, target_height_px),
-    };
+    let monitor_dimensions = resolved_monitor_dimensions(request, target_width, target_height_px);
+    let source_render = render_like_backend(request, monitor_dimensions)?;
+    let panel_render =
+        if source_render.width() == target_width && source_render.height() == target_height_px {
+            source_render
+        } else {
+            DynamicImage::ImageRgb8(source_render)
+                .resize_exact(target_width, target_height_px, FilterType::Lanczos3)
+                .to_rgb8()
+        };
 
     Ok(PreviewImage {
-        width: rendered.width() as u16,
-        height_px: rendered.height() as u16,
-        pixels_rgb: rendered.into_raw(),
+        width: panel_render.width() as u16,
+        height_px: panel_render.height() as u16,
+        pixels_rgb: panel_render.into_raw(),
     })
 }
 
-fn blank_canvas(width: u32, height: u32) -> RgbImage {
-    ImageBuffer::from_pixel(width, height, Rgb([0, 0, 0]))
-}
+fn render_like_backend(
+    request: &PreviewRequest,
+    dimensions: (u32, u32),
+) -> Result<RgbImage, String> {
+    let img_buf = ImgBuf::new(&request.path)?;
+    let resize = resize_strategy_for_scaling_mode(request.scaling);
+    let filter = FirFilterType::Lanczos3;
 
-fn render_fit(source: &RgbImage, target_width: u32, target_height: u32) -> RgbImage {
-    let resized = DynamicImage::ImageRgb8(source.clone())
-        .resize(target_width, target_height, FilterType::Lanczos3)
-        .to_rgb8();
-
-    let mut canvas = blank_canvas(target_width, target_height);
-    let offset_x = (target_width.saturating_sub(resized.width())) / 2;
-    let offset_y = (target_height.saturating_sub(resized.height())) / 2;
-
-    blit(
-        &resized,
-        &mut canvas,
-        (0, 0),
-        (offset_x, offset_y),
-        (resized.width(), resized.height()),
-    );
-
-    canvas
-}
-
-fn render_stretch(source: &RgbImage, target_width: u32, target_height: u32) -> RgbImage {
-    DynamicImage::ImageRgb8(source.clone())
-        .resize_exact(target_width, target_height, FilterType::Lanczos3)
-        .to_rgb8()
-}
-
-fn render_crop_center(source: &RgbImage, target_width: u32, target_height: u32) -> RgbImage {
-    DynamicImage::ImageRgb8(source.clone())
-        .resize_to_fill(target_width, target_height, FilterType::Lanczos3)
-        .to_rgb8()
-}
-
-fn render_center(source: &RgbImage, target_width: u32, target_height: u32) -> RgbImage {
-    let mut canvas = blank_canvas(target_width, target_height);
-
-    let src_start_x = if source.width() > target_width {
-        (source.width() - target_width) / 2
-    } else {
-        0
-    };
-    let src_start_y = if source.height() > target_height {
-        (source.height() - target_height) / 2
-    } else {
-        0
-    };
-
-    let dst_start_x = if target_width > source.width() {
-        (target_width - source.width()) / 2
-    } else {
-        0
-    };
-    let dst_start_y = if target_height > source.height() {
-        (target_height - source.height()) / 2
-    } else {
-        0
-    };
-
-    let copy_width = source.width().min(target_width);
-    let copy_height = source.height().min(target_height);
-
-    blit(
-        source,
-        &mut canvas,
-        (src_start_x, src_start_y),
-        (dst_start_x, dst_start_y),
-        (copy_width, copy_height),
-    );
-
-    canvas
-}
-
-fn blit(
-    source: &RgbImage,
-    destination: &mut RgbImage,
-    src_origin: (u32, u32),
-    dst_origin: (u32, u32),
-    size: (u32, u32),
-) {
-    let (src_x, src_y) = src_origin;
-    let (dst_x, dst_y) = dst_origin;
-    let (width, height) = size;
-
-    for row in 0..height {
-        for col in 0..width {
-            let pixel = source.get_pixel(src_x + col, src_y + row);
-            destination.put_pixel(dst_x + col, dst_y + row, *pixel);
+    let bytes = match img_buf.decode_prepare() {
+        imgproc::DecodeBuffer::RasterImage(imgbuf) => {
+            let decoded = imgbuf.decode(PixelFormat::Rgb)?;
+            resize_with_strategy(&decoded, resize, dimensions, filter)?
         }
+        imgproc::DecodeBuffer::VectorImage(imgbuf) => {
+            let decoded = imgbuf.decode(PixelFormat::Rgb, dimensions.0, dimensions.1)?;
+            resize_with_strategy(&decoded, resize, dimensions, filter)?
+        }
+    };
+
+    RgbImage::from_raw(dimensions.0, dimensions.1, bytes.into_vec())
+        .ok_or_else(|| "failed to build preview RGB image from resized bytes".to_string())
+}
+
+fn resize_with_strategy(
+    image: &imgproc::Image,
+    resize: ResizeStrategy,
+    dimensions: (u32, u32),
+    filter: FirFilterType,
+) -> Result<Box<[u8]>, String> {
+    match resize {
+        ResizeStrategy::No => Ok(imgproc::img_pad(image, dimensions, [0, 0, 0, 255])),
+        ResizeStrategy::Crop => imgproc::img_resize_crop(image, dimensions, filter),
+        ResizeStrategy::Fit => imgproc::img_resize_fit(image, dimensions, filter, [0, 0, 0, 255]),
+        ResizeStrategy::Stretch => imgproc::img_resize_stretch(image, dimensions, filter),
+    }
+}
+
+fn resolved_monitor_dimensions(
+    request: &PreviewRequest,
+    fallback_width: u32,
+    fallback_height: u32,
+) -> (u32, u32) {
+    let width = u32::from(request.monitor_width);
+    let height = u32::from(request.monitor_height);
+
+    if width > 0 && height > 0 {
+        (width, height)
+    } else {
+        (fallback_width.max(1), fallback_height.max(1))
+    }
+}
+
+fn resize_strategy_for_scaling_mode(mode: ScalingMode) -> ResizeStrategy {
+    match mode {
+        ScalingMode::Fill => ResizeStrategy::Stretch,
+        ScalingMode::Fit => ResizeStrategy::Fit,
+        ScalingMode::Crop => ResizeStrategy::Crop,
+        ScalingMode::Center => ResizeStrategy::No,
+        ScalingMode::Tile => ResizeStrategy::Stretch,
     }
 }
 
