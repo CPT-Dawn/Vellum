@@ -84,7 +84,7 @@ fn draw_monitor_header(frame: &mut Frame, area: Rect, app: &App) {
     let selected_index = app.selected_monitor.saturating_add(1);
     let title = Line::from(vec![
         Span::styled(
-            " 󰍹 Monitor ",
+            " 󰍹 Monitor",
             Style::default()
                 .fg(ACCENT_PRIMARY)
                 .add_modifier(Modifier::BOLD),
@@ -271,13 +271,7 @@ fn draw_playlist_panel(frame: &mut Frame, area: Rect, app: &App, active: bool) {
         ])),
     ];
 
-    let mut footer = vec![Line::from(vec![
-        Span::styled("↑/↓ select", Style::default().fg(TEXT_DIM)),
-        Span::raw("  "),
-        Span::styled("←/→ swap", Style::default().fg(TEXT_DIM)),
-        Span::raw("  "),
-        Span::styled("save on next setting", Style::default().fg(TEXT_MUTED)),
-    ])];
+    let mut footer = vec![Line::from(vec![])];
 
     footer.push(Line::from(vec![
         Span::styled("󰛔 Pool ", Style::default().fg(TEXT_MUTED)),
@@ -285,8 +279,6 @@ fn draw_playlist_panel(frame: &mut Frame, area: Rect, app: &App, active: bool) {
             format!("{} file(s)", app.selected_playlist_pool_size()),
             Style::default().fg(TEXT_SECONDARY),
         ),
-        Span::raw("  "),
-        Span::styled("n = shuffle now", Style::default().fg(TEXT_DIM)),
     ]));
 
     if let Some(eta_secs) = app.selected_playlist_next_eta_secs() {
@@ -426,7 +418,7 @@ fn browser_item(entry: &FileEntry, is_applied: bool) -> ListItem<'static> {
 
     if is_applied {
         spans.push(Span::styled(
-            "  󰄬 applied",
+            "  󰄬 Applied",
             Style::default().fg(GOOD).add_modifier(Modifier::BOLD),
         ));
     } else if entry.kind == FileKind::File && !entry.supported {
@@ -642,7 +634,7 @@ fn draw_scaling_modes(frame: &mut Frame, area: Rect, app: &App, active: bool) {
 
             if is_applied {
                 spans.push(Span::styled(
-                    "  • applied",
+                    "  • Applied",
                     Style::default().fg(GOOD).add_modifier(Modifier::BOLD),
                 ));
             }
@@ -654,12 +646,12 @@ fn draw_scaling_modes(frame: &mut Frame, area: Rect, app: &App, active: bool) {
     let block = panel_block(
         Line::from(vec![
             Span::styled(
-                " 󰆞 Scaling Modes ",
+                " 󰆞 Scaling ",
                 Style::default()
                     .fg(ACCENT_PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("active strategy", Style::default().fg(TEXT_MUTED)),
+            Span::styled("Mode", Style::default().fg(TEXT_MUTED)),
         ]),
         active,
     );
@@ -709,7 +701,7 @@ fn draw_logs(frame: &mut Frame, area: Rect, app: &App) {
                     .fg(ACCENT_PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("event stream", Style::default().fg(TEXT_MUTED)),
+            Span::styled("Logs", Style::default().fg(TEXT_MUTED)),
         ]),
         false,
     ));
