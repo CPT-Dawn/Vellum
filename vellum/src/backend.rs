@@ -226,17 +226,7 @@ fn build_image_request(
     let filter = fast_image_resize::FilterType::Lanczos3;
     let path_string = canonical_wallpaper_path(wallpaper)?;
     let output_names = vec![info.name.to_string()];
-    let transition = Transition {
-        transition_type: TransitionType::None,
-        duration: 0.0,
-        step: core::num::NonZeroU8::MAX,
-        fps: 30,
-        angle: 0.0,
-        pos: Position::new(Coord::Pixel(0.0), Coord::Pixel(0.0)),
-        bezier: (0.0, 0.0, 0.0, 0.0),
-        wave: (0.0, 0.0),
-        invert_y: false,
-    };
+    let transition = default_wallpaper_transition();
 
     let mut builder = ipc::ImageRequestBuilder::new(transition)
         .map_err(|error| BackendError::Message(error.to_string()))?;
@@ -333,6 +323,20 @@ fn build_image_request(
     }
 
     Ok(builder.build())
+}
+
+fn default_wallpaper_transition() -> Transition {
+    Transition {
+        transition_type: TransitionType::Wave,
+        duration: 0.8,
+        step: core::num::NonZeroU8::new(10).expect("non-zero step"),
+        fps: 60,
+        angle: 45.0,
+        pos: Position::new(Coord::Pixel(0.0), Coord::Pixel(0.0)),
+        bezier: (0.22, 0.0, 0.36, 1.0),
+        wave: (96.0, 48.0),
+        invert_y: false,
+    }
 }
 
 fn find_daemon_pid(namespace: &str) -> Option<u32> {
