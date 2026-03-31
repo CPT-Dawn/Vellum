@@ -1259,15 +1259,14 @@ impl App {
             .unwrap_or_else(|| "No monitors".to_string())
     }
 
-    pub fn daemon_resource_label(&self) -> String {
+    pub fn daemon_resource_parts(&self) -> (String, String) {
         self.daemon_resources
             .as_ref()
             .map(|res| {
                 let used_mib = res.memory_kib as f64 / 1024.0;
-                // Using a thin vertical bar or a bullet for a cleaner look
-                format!("{:>5}   {:.1} MiB", res.pid, used_mib)
+                (format!("{:>5}", res.pid), format!("{used_mib:.1} MiB"))
             })
-            .unwrap_or_else(|| "----   --.- MiB".to_string())
+            .unwrap_or_else(|| ("----".to_string(), "--.- MiB".to_string()))
     }
 
     pub fn visible_browser_items(&self) -> impl Iterator<Item = (usize, &FileEntry)> {

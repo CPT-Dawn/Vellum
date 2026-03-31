@@ -105,6 +105,8 @@ fn draw_monitor_header(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_daemon_header(frame: &mut Frame, area: Rect, app: &App) {
+    let (pid_label, ram_label) = app.daemon_resource_parts();
+
     let title = Line::from(vec![
         Span::styled(
             " 󰒋 Daemon ",
@@ -127,11 +129,11 @@ fn draw_daemon_header(frame: &mut Frame, area: Rect, app: &App) {
         Span::raw("  "),
         Span::styled(" ", Style::default().fg(ACCENT_SECONDARY)),
         Span::styled("PID ", Style::default().fg(TEXT_MUTED)),
-        // The Label logic (the PID and RAM split by the separator)
-        Span::styled(
-            app.daemon_resource_label(),
-            Style::default().fg(Color::White), // High contrast for the numbers
-        ),
+        Span::styled(pid_label, Style::default().fg(Color::White)),
+        Span::raw("  "),
+        Span::styled(" ", Style::default().fg(ACCENT_SECONDARY)),
+        Span::styled("RAM ", Style::default().fg(TEXT_MUTED)),
+        Span::styled(ram_label, Style::default().fg(Color::White)),
     ])]))
     .block(header_panel_block(title, false))
     .style(Style::default().fg(TEXT_PRIMARY));
