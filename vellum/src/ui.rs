@@ -1,5 +1,5 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::border;
 use ratatui::text::{Line, Span, Text};
@@ -44,7 +44,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let vertical = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(12),
-        Constraint::Length(4),
+        Constraint::Length(1),
     ])
     .spacing(1);
     let [top, middle, bottom] = vertical.areas(root);
@@ -718,11 +718,6 @@ fn draw_logs(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_keybinds(frame: &mut Frame, area: Rect, app: &App) {
-    let focus_chip = Span::styled(
-        format!(" {} ", focus_label(app.focus)),
-        Style::default().fg(ACCENT_SECONDARY),
-    );
-
     let lines = vec![Line::from(match app.focus {
         Focus::Files => vec![
             key_span("Tab"),
@@ -794,22 +789,7 @@ fn draw_keybinds(frame: &mut Frame, area: Rect, app: &App) {
             label_span(" Quit"),
         ],
     })];
-
-    let paragraph = Paragraph::new(Text::from(lines))
-        .block(header_panel_block(
-            Line::from(vec![
-                Span::styled(
-                    " 󰌌 Interaction",
-                    Style::default()
-                        .fg(ACCENT_PRIMARY)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                focus_chip,
-            ]),
-            false,
-        ))
-        .style(Style::default().fg(TEXT_PRIMARY));
-
+    let paragraph = Paragraph::new(Text::from(lines)).alignment(Alignment::Center);
     frame.render_widget(paragraph, area);
 }
 
@@ -924,14 +904,6 @@ fn status_style(status: DaemonStatus) -> Style {
         DaemonStatus::Running => Style::default().fg(GOOD).add_modifier(Modifier::BOLD),
         DaemonStatus::Stopped => Style::default().fg(WARN).add_modifier(Modifier::BOLD),
         DaemonStatus::Crashed => Style::default().fg(BAD).add_modifier(Modifier::BOLD),
-    }
-}
-
-fn focus_label(focus: Focus) -> &'static str {
-    match focus {
-        Focus::Files => "󰉋 Files",
-        Focus::Scaling => "󰆞 Scaling",
-        Focus::Playlist => "󰲹 Playlist",
     }
 }
 
