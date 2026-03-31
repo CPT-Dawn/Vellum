@@ -81,6 +81,7 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_monitor_header(frame: &mut Frame, area: Rect, app: &App) {
+    let selected_index = app.selected_monitor.saturating_add(1);
     let title = Line::from(vec![
         Span::styled(
             " 󰍹 Monitor ",
@@ -88,47 +89,13 @@ fn draw_monitor_header(frame: &mut Frame, area: Rect, app: &App) {
                 .fg(ACCENT_PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("selected target", Style::default().fg(TEXT_MUTED)),
+        Span::styled(
+            format!(" {}. {} ", selected_index, app.selected_monitor_label()),
+            Style::default().fg(TEXT_MUTED),
+        ),
     ]);
 
-    let mut lines = if app.monitors.is_empty() {
-        vec![Line::from(vec![Span::styled(
-            " 󰖪 No monitors detected",
-            Style::default().fg(WARN).add_modifier(Modifier::BOLD),
-        )])]
-    } else {
-        let selected_index = app.selected_monitor.saturating_add(1);
-        let selected_has_wallpaper = app
-            .selected_monitor_ref()
-            .and_then(|monitor| monitor.wallpaper.as_ref())
-            .is_some();
-
-        vec![Line::from(vec![
-            Span::styled(" 󰨈 Selected ", Style::default().fg(TEXT_MUTED)),
-            Span::styled(
-                format!(" {}. {} ", selected_index, app.selected_monitor_label()),
-                Style::default()
-                    .fg(CURSOR_TEXT)
-                    .bg(HIGHLIGHT_BG)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                if selected_has_wallpaper {
-                    "󰄬 applied"
-                } else {
-                    "󰄱 empty"
-                },
-                Style::default().fg(if selected_has_wallpaper {
-                    GOOD
-                } else {
-                    TEXT_MUTED
-                }),
-            ),
-        ])]
-    };
-
-    lines.push(monitor_hotkey_line(app));
+    let lines = vec![monitor_hotkey_line(app)];
 
     let paragraph = Paragraph::new(Text::from(lines))
         .block(header_panel_block(title, false))
@@ -145,42 +112,27 @@ fn draw_daemon_header(frame: &mut Frame, area: Rect, app: &App) {
                 .fg(ACCENT_PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("runtime status", Style::default().fg(TEXT_MUTED)),
+        Span::styled("Overview", Style::default().fg(TEXT_MUTED)),
     ]);
 
-    let paragraph = Paragraph::new(Text::from(vec![
-        Line::from(vec![
-            Span::styled(
-                format!(
-                    "{} {}",
-                    daemon_status_glyph(app.daemon_status),
-                    daemon_status_label(app.daemon_status)
-                ),
-                status_style(app.daemon_status),
+    let paragraph = Paragraph::new(Text::from(vec![Line::from(vec![
+        Span::styled(
+            format!(
+                "{} {}",
+                daemon_status_glyph(app.daemon_status),
+                daemon_status_label(app.daemon_status)
             ),
-            Span::raw("  "),
-            Span::styled("󰘚 ", Style::default().fg(TEXT_MUTED)),
-            Span::styled(
-                app.daemon_resource_label(),
-                Style::default().fg(ACCENT_SECONDARY),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("󰌌 ", Style::default().fg(TEXT_MUTED)),
-            Span::styled(
-                focus_label(app.focus),
-                Style::default()
-                    .fg(ACCENT_SECONDARY)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled("󰁔 ", Style::default().fg(TEXT_MUTED)),
-            Span::styled(
-                format!("{} outputs", app.monitors.len()),
-                Style::default().fg(TEXT_SECONDARY),
-            ),
-        ]),
-    ]))
+            status_style(app.daemon_status),
+        ),
+        Span::raw("  "),
+        Span::styled(" ", Style::default().fg(ACCENT_SECONDARY)),
+        Span::styled("PID ", Style::default().fg(TEXT_MUTED)),
+        // The Label logic (the PID and RAM split by the separator)
+        Span::styled(
+            app.daemon_resource_label(),
+            Style::default().fg(Color::White), // High contrast for the numbers
+        ),
+    ])]))
     .block(header_panel_block(title, false))
     .style(Style::default().fg(TEXT_PRIMARY));
 
@@ -799,9 +751,6 @@ fn draw_keybinds(frame: &mut Frame, area: Rect, app: &App) {
             key_span("→ / l"),
             label_span(" Open/Favorite"),
             Span::raw("  "),
-            key_span("gg / G"),
-            label_span(" Top/Bottom"),
-            Span::raw("  "),
             key_span("PgUp/PgDn"),
             label_span(" Jump"),
             Span::raw("  "),
@@ -833,26 +782,8 @@ fn draw_keybinds(frame: &mut Frame, area: Rect, app: &App) {
             key_span("↑/↓ j/k"),
             label_span(" Select"),
             Span::raw("  "),
-            key_span("←/→ h/l"),
-            label_span(" Change"),
-            Span::raw("  "),
-            key_span("g / G"),
-            label_span(" Top/Bottom"),
-            Span::raw("  "),
-            key_span("PgUp/PgDn"),
-            label_span(" Jump"),
-            Span::raw("  "),
-            key_span("Home/End"),
-            label_span(" Bounds"),
-            Span::raw("  "),
             key_span("Tab"),
             label_span(" Next"),
-            Span::raw("  "),
-            key_span("[ / ]"),
-            label_span(" Step"),
-            Span::raw("  "),
-            key_span("o / v"),
-            label_span(" Filters"),
             Span::raw("  "),
             key_span("c/p/s"),
             label_span(" Clear/Pause/Daemon"),

@@ -1261,21 +1261,13 @@ impl App {
 
     pub fn daemon_resource_label(&self) -> String {
         self.daemon_resources
-            .map(|resources| {
-                let used_mib = resources.memory_kib as f64 / 1024.0;
-                let total_mib = resources.total_memory_kib as f64 / 1024.0;
-                let percent = if resources.total_memory_kib > 0 {
-                    resources.memory_kib as f64 * 100.0 / resources.total_memory_kib as f64
-                } else {
-                    0.0
-                };
-
-                format!(
-                    "PID {} • RAM {:.1}/{:.0} MiB ({:.1}%)",
-                    resources.pid, used_mib, total_mib, percent
-                )
+            .as_ref()
+            .map(|res| {
+                let used_mib = res.memory_kib as f64 / 1024.0;
+                // Using a thin vertical bar or a bullet for a cleaner look
+                format!("{:>5}   {:.1} MiB", res.pid, used_mib)
             })
-            .unwrap_or_else(|| "PID -- • RAM --/-- MiB".to_string())
+            .unwrap_or_else(|| "----   --.- MiB".to_string())
     }
 
     pub fn visible_browser_items(&self) -> impl Iterator<Item = (usize, &FileEntry)> {
