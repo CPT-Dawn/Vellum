@@ -404,10 +404,6 @@ impl App {
                 self.select_monitor_hotkey(c);
                 false
             }
-            KeyCode::Char('c') => {
-                self.clear_daemon_data(backend);
-                false
-            }
             KeyCode::Char('r') => {
                 self.restart_or_reload_daemon(backend);
                 false
@@ -707,18 +703,6 @@ impl App {
 
         if let Err(error) = self.save_playlist_state() {
             self.push_log(format!("[WARN] Failed to save playlist state: {error}"));
-        }
-    }
-
-    fn clear_daemon_data(&mut self, backend: &mut Backend) {
-        match backend.clear_daemon_data() {
-            Ok(()) => {
-                self.sync_from_backend(backend);
-                self.push_log("[INFO] Cleared daemon outputs and cache".to_string());
-            }
-            Err(error) => {
-                self.push_log(format!("[ERROR] Failed to clear daemon data: {error}"));
-            }
         }
     }
 
