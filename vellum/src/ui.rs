@@ -922,7 +922,7 @@ fn panel_block(title: impl Into<Line<'static>>, active: bool) -> Block<'static> 
 }
 
 fn header_panel_block(title: impl Into<Line<'static>>, active: bool) -> Block<'static> {
-    panel_block_with_padding(title, active, Padding::symmetric(1, 0))
+    panel_block_with_padding(title, active, Padding::symmetric(2, 0))
 }
 
 fn panel_block_with_padding(
@@ -959,58 +959,4 @@ fn key_span(key: &'static str) -> Span<'static> {
 
 fn label_span(label: &'static str) -> Span<'static> {
     Span::styled(label, Style::default().fg(TEXT_SECONDARY))
-}
-
-#[cfg(test)]
-fn monitor_aspect_label(width: u16, height: u16) -> String {
-    const COMMON_RATIOS: &[(u32, u32, &str)] = &[
-        (32, 9, "32:9"),
-        (21, 9, "21:9"),
-        (16, 10, "16:10"),
-        (16, 9, "16:9"),
-        (3, 2, "3:2"),
-        (4, 3, "4:3"),
-        (5, 4, "5:4"),
-        (9, 16, "9:16"),
-        (10, 16, "10:16"),
-        (2, 3, "2:3"),
-        (3, 4, "3:4"),
-    ];
-
-    let width = width as u32;
-    let height = height as u32;
-
-    for (ratio_width, ratio_height, label) in COMMON_RATIOS {
-        if width.saturating_mul(*ratio_height) == height.saturating_mul(*ratio_width) {
-            return (*label).to_string();
-        }
-    }
-
-    let divisor = gcd(width, height);
-    format!("{}:{}", width / divisor, height / divisor)
-}
-
-#[cfg(test)]
-fn gcd(mut left: u32, mut right: u32) -> u32 {
-    while right != 0 {
-        let remainder = left % right;
-        left = right;
-        right = remainder;
-    }
-
-    left.max(1)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::monitor_aspect_label;
-
-    #[test]
-    fn recognizes_common_monitor_ratios() {
-        assert_eq!(monitor_aspect_label(2560, 1600), "16:10");
-        assert_eq!(monitor_aspect_label(1920, 1080), "16:9");
-        assert_eq!(monitor_aspect_label(1080, 1920), "9:16");
-        assert_eq!(monitor_aspect_label(3440, 1440), "43:18");
-        assert_eq!(monitor_aspect_label(1280, 1024), "5:4");
-    }
 }
