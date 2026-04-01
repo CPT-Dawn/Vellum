@@ -530,21 +530,32 @@ fn fitted_monitor_rect(area: Rect, monitor: &Monitor) -> Rect {
         area.height.saturating_sub(2),
     );
 
-    let usable_width = inner.width.saturating_sub(2).max(8);
-    let usable_height = inner.height.saturating_sub(4).max(4);
+    let max_frame_width = inner.width.saturating_sub(2).max(8);
+    let max_frame_height = inner.height.saturating_sub(4).max(4);
 
     let target_ratio = monitor.aspect_ratio() * CELL_ASPECT_COMPENSATION;
-    let area_ratio = usable_width as f64 / usable_height.max(1) as f64;
 
-    let (width, height) = if area_ratio > target_ratio {
-        let height = usable_height;
-        let width = ((height as f64 * target_ratio).round() as u16).clamp(8, usable_width);
-        (width, height)
+    // Calculate frame dimensions so the INNER area (frame minus the 1-cell
+    // border on each side) matches the monitor's aspect ratio. This ensures
+    // the rendered image fills the visible area without gaps.
+    let max_inner_w = max_frame_width.saturating_sub(2).max(1);
+    let max_inner_h = max_frame_height.saturating_sub(2).max(1);
+    let inner_ratio = max_inner_w as f64 / max_inner_h.max(1) as f64;
+
+    let (width, height) = if inner_ratio > target_ratio {
+        // Height-limited: use full height, derive width from inner dimensions
+        let content_h = max_inner_h;
+        let content_w = ((content_h as f64 * target_ratio).round() as u16).max(1);
+        ((content_w + 2).min(max_frame_width), max_frame_height)
     } else {
-        let width = usable_width;
-        let height = ((width as f64 / target_ratio).round() as u16).clamp(4, usable_height);
-        (width, height)
+        // Width-limited: use full width, derive height from inner dimensions
+        let content_w = max_inner_w;
+        let content_h = ((content_w as f64 / target_ratio).round() as u16).max(1);
+        (max_frame_width, (content_h + 2).min(max_frame_height))
     };
+
+    let width = width.max(8);
+    let height = height.max(4);
 
     let x = inner.x + (inner.width.saturating_sub(width)) / 2;
     let y = inner.y + (inner.height.saturating_sub(height + 2)) / 2;
