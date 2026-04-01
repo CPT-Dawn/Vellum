@@ -30,7 +30,7 @@ use core::{
 
 use animations::Animator;
 use common::ipc::{
-    Answer, BgInfo, ImageReq, IpcError, IpcSocket, PixelFormat, RequestRecv, RequestSend, Scale,
+    Answer, BgInfo, ImageReq, IpcSocket, PixelFormat, RequestRecv, RequestSend, Scale,
 };
 use common::mmap::MmappedStr;
 use output_info::OutputInfo;
@@ -710,9 +710,14 @@ pub unsafe extern "C" fn main(
     }
 
     // create the socket listener and setup the signal handlers
-    // this will also return an error if there is a `vellum-daemon` instance already
-    // running
-    let listener = SocketWrapper::new(&cli.namespace).unwrap();
+    // this will also replace a stale or already-running daemon instance when needed
+    let listener = match SocketWrapper::new(&cli.namespace) {
+        Ok(listener) => listener,
+        Err(e) => {
+            error!("failed to create socket listener: {e}");
+            return -1;
+        }
+    };
     setup_signals();
 
     // use the initializer to create the Daemon, then drop it to free up the memory
@@ -892,17 +897,16 @@ impl SocketWrapper {
         let addr = IpcSocket::path(namespace);
 
         if fs::access(&addr, fs::Access::EXISTS).is_ok() {
-            if is_daemon_running(namespace).map_err(|s| s.to_string())? {
-                return Err(
-                    "There is a vellum-daemon instance already running on this socket!".to_string(),
+            stop_existing_daemon(namespace)?;
+
+            if fs::access(&addr, fs::Access::EXISTS).is_ok() {
+                warn!(
+                    "socket file {} was not deleted when the previous daemon exited",
+                    addr.display()
                 );
-            }
-            warn!(
-                "socket file {} was not deleted when the previous daemon exited",
-                addr.display()
-            );
-            if let Err(e) = fs::unlink(&addr) {
-                return Err(format!("failed to delete previous socket: {e}"));
+                if let Err(e) = fs::unlink(&addr) {
+                    return Err(format!("failed to delete previous socket: {e}"));
+                }
             }
         }
 
@@ -938,20 +942,29 @@ impl Drop for SocketWrapper {
     }
 }
 
-pub fn is_daemon_running(namespace: &str) -> Result<bool, IpcError> {
-    let sock = match IpcSocket::client(namespace) {
-        Ok(s) => s,
-        // likely a connection refused; either way, this is a reliable signal there's no surviving
-        // daemon.
-        Err(_) => return Ok(false),
+fn stop_existing_daemon(namespace: &str) -> Result<(), String> {
+    const ATTEMPTS: usize = 50;
+    const INTERVAL: Timespec = Timespec {
+        tv_sec: 0,
+        tv_nsec: 100_000_000,
     };
 
-    RequestSend::Ping.send(&sock)?;
-    let answer = Answer::receive(sock.recv()?)?;
-    match answer {
-        Answer::Ping(_) => Ok(true),
-        _ => Ok(false),
+    let sock = match IpcSocket::client(namespace) {
+        Ok(sock) => sock,
+        Err(_) => return Ok(()),
+    };
+
+    info!("found existing daemon on this socket; requesting shutdown");
+    RequestSend::Kill.send(&sock).map_err(|e| e.to_string())?;
+
+    for _ in 0..ATTEMPTS {
+        if IpcSocket::client(namespace).is_err() {
+            return Ok(());
+        }
+        let _ = rustix::thread::nanosleep(&INTERVAL);
     }
+
+    Err("timed out waiting for the previous daemon to exit".to_string())
 }
 
 /// This will sleep for an amount of time we can roughly expected the OS to still be precise enough
