@@ -165,11 +165,11 @@ fn render_like_backend(
 
     let bytes = match img_buf.decode_prepare() {
         imgproc::DecodeBuffer::RasterImage(imgbuf) => {
-            let decoded = imgbuf.decode(PixelFormat::Rgb)?;
+            let decoded = imgbuf.decode(PixelFormat::Bgr)?;
             resize_with_strategy(&decoded, resize, dimensions, filter)?
         }
         imgproc::DecodeBuffer::VectorImage(imgbuf) => {
-            let decoded = imgbuf.decode(PixelFormat::Rgb, dimensions.0, dimensions.1)?;
+            let decoded = imgbuf.decode(PixelFormat::Bgr, dimensions.0, dimensions.1)?;
             resize_with_strategy(&decoded, resize, dimensions, filter)?
         }
     };
@@ -209,7 +209,7 @@ fn resolved_monitor_dimensions(
 
 fn resize_strategy_for_scaling_mode(mode: ScalingMode) -> ResizeStrategy {
     match mode {
-        ScalingMode::Fill => ResizeStrategy::Stretch,
+        ScalingMode::Fill => ResizeStrategy::Crop,
         ScalingMode::Fit => ResizeStrategy::Fit,
         ScalingMode::Crop => ResizeStrategy::Crop,
         ScalingMode::Center => ResizeStrategy::No,
