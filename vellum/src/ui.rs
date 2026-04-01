@@ -486,10 +486,11 @@ fn draw_preview_panel(frame: &mut Frame, area: Rect, app: &mut App, active: bool
         let preview_inner = preview_inner_rect(preview);
         if preview_inner.width > 0 && preview_inner.height > 0 {
             app.update_preview_request(preview_inner.width, preview_inner.height);
-            if let Some(image) = app.preview_image() {
-                if image.width == preview_inner.width && image.height_rows == preview_inner.height {
-                    frame.render_widget(ratatui_image::Image::new(&image.protocol), preview_inner);
-                }
+            if let Some(image) = app.preview_image()
+                && image.width == preview_inner.width
+                && image.height_rows == preview_inner.height
+            {
+                frame.render_widget(ratatui_image::Image::new(&image.protocol), preview_inner);
             }
         }
     }
