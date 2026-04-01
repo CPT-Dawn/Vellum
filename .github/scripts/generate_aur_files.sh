@@ -38,7 +38,6 @@ pkgdesc="Wayland wallpaper stack with daemon and TUI"
 arch=('x86_64')
 url="${server_url}/${repo}"
 license=('GPL3')
-depends=('liblz4')
 makedepends=('cargo' 'pkgconf')
 provides=("vellum")
 conflicts=("vellum-git")
