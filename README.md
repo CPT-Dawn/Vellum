@@ -5,6 +5,12 @@ Vellum is a Wayland wallpaper stack with:
 - `vellum-daemon`: the wallpaper daemon that talks to Wayland and applies images.
 - `vellum`: the TUI client for browsing images, configuring playlist behavior, and controlling runtime.
 
+## Acknowledgements
+
+The daemon side of Vellum was heavily adapted and stripped down from the awww code base on Codeberg.
+That foundation saved a large amount of work and made this project much less rough to bring together.
+Thanks to the awww authors and maintainers for the original code base and the ideas behind it.
+
 ## Install
 
 ### Arch Linux / AUR
