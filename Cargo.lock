@@ -280,7 +280,7 @@ checksum = "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b"
 
 [[package]]
 name = "common"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "cpufeatures 0.3.0",
  "fastrand",
@@ -1211,9 +1211,9 @@ checksum = "7a79a3332a6609480d7d0c9eab957bca6b455b91bb84e66d19f5ff66294b85b8"
 
 [[package]]
 name = "libc"
-version = "0.2.183"
+version = "0.2.184"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d"
+checksum = "48f5d2a454e16a5ea0f4ced81bd44e4cfc7bd3a507b61887c99fd3538b28e4af"
 
 [[package]]
 name = "libm"
@@ -2748,7 +2748,7 @@ dependencies = [
 
 [[package]]
 name = "vellum"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "common",
  "crossterm",
@@ -2765,7 +2765,7 @@ dependencies = [
 
 [[package]]
 name = "vellum-daemon"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "common",
  "fast_image_resize",

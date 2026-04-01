@@ -23,7 +23,7 @@ paru -S vellum
 
 Vellum is designed to be session-safe and reboot-friendly:
 
-- The daemon restores last applied wallpapers from cache on startup.
+- The daemon restores last applied wallpapers from durable state on startup, and keeps animation frame data in the cache.
 - Favorites and playlist settings are persisted in XDG state.
 - Launching `vellum` without a TTY (for example from compositor startup) runs a lightweight bootstrap path that ensures daemon + playlist worker startup.
 
@@ -66,12 +66,13 @@ to:
 
 ### Wallpaper restore
 
-`vellum-daemon` restores previous per-output wallpapers from cache by default.
+`vellum-daemon` restores previous per-output wallpapers from durable state by default.
 
 ### User state
 
 Vellum stores state in XDG locations:
 
+- `XDG_STATE_HOME/vellum/wallpaper-state-v1/`
 - `XDG_STATE_HOME/vellum/playlist-state-v1.txt`
 - `XDG_STATE_HOME/vellum/favorites-v1.txt`
 
@@ -82,6 +83,7 @@ Fallback path when `XDG_STATE_HOME` is not set:
 Cache path:
 
 - `XDG_CACHE_HOME/vellum/` (or `~/.cache/vellum/`)
+- Wallpaper animation frames stay cached under the versioned cache directory inside that path.
 
 ## Daily Usage
 

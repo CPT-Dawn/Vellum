@@ -66,6 +66,7 @@ pub struct Wallpaper {
 
     pub configured: bool,
     dirty: bool,
+    restore_pending: bool,
 
     /// we only allow one single borrow at a time, regardless of whether it is mutable or immutable
     is_borrowed: bool,
@@ -178,6 +179,7 @@ impl Wallpaper {
             needs_ack: false,
             configured: false,
             dirty: false,
+            restore_pending: true,
             clones: 0,
             is_borrowed: false,
             frame_callback_handler,
@@ -262,6 +264,7 @@ impl Wallpaper {
         pixel_format: PixelFormat,
         use_cache: bool,
     ) -> bool {
+        let had_initial_configure = self.needs_ack;
         if self.needs_ack {
             crate::wayland::zwlr_layer_surface_v1::req::ack_configure(
                 backend,
@@ -272,10 +275,11 @@ impl Wallpaper {
             self.needs_ack = false;
         }
 
-        if !self.dirty {
+        if !self.configured && !had_initial_configure {
             return false;
         }
-        let should_restore = !self.configured && use_cache && !self.img.is_set();
+
+        let should_restore = self.restore_pending && use_cache && !self.img.is_set();
         if !self.dirty && !should_restore {
             return false;
         }
@@ -293,7 +297,9 @@ impl Wallpaper {
         let (w, h) = self.scale_factor.mul_dim(width, height);
         self.pool.resize(backend, w, h);
 
-        if should_restore && self.restore_from_cache(backend, objman, pixel_format, _namespace) {
+        if should_restore
+            && self.restore_from_saved_state(backend, objman, pixel_format, _namespace)
+        {
             self.configured = true;
             return true;
         }
@@ -305,31 +311,41 @@ impl Wallpaper {
         true
     }
 
-    fn restore_from_cache(
+    fn restore_from_saved_state(
         &mut self,
         backend: &mut Waybackend,
         objman: &mut ObjectManager<WaylandObject>,
         pixel_format: PixelFormat,
         namespace: &str,
     ) -> bool {
-        let output_name = self.output_name.to_string();
-        let cache_data = match cache::read_cache_file(&output_name) {
-            Ok(cache_data) => cache_data,
-            Err(error) => {
-                debug!(
-                    "Output {} has no cache to restore: {error}",
-                    self.output_name
-                );
-                return false;
-            }
+        self.restore_pending = false;
+
+        let fallback_output_name = self.output_name.to_string();
+        let output_name = self
+            .name
+            .as_deref()
+            .unwrap_or(fallback_output_name.as_str());
+
+        let state_data = match cache::read_wallpaper_state_file(output_name) {
+            Ok(state_data) => state_data,
+            Err(_) => match cache::read_cache_file(output_name) {
+                Ok(cache_data) => cache_data,
+                Err(error) => {
+                    debug!(
+                        "Output {} has no saved wallpaper to restore: {error}",
+                        self.output_name
+                    );
+                    return false;
+                }
+            },
         };
 
-        let entry = match cache::get_previous_image_cache(&output_name, namespace, &cache_data) {
+        let entry = match cache::get_previous_image_cache(output_name, namespace, &state_data) {
             Ok(Some(entry)) => entry,
             Ok(None) => return false,
             Err(error) => {
                 debug!(
-                    "Output {} cache entry is invalid: {error}",
+                    "Output {} saved wallpaper entry is invalid: {error}",
                     self.output_name
                 );
                 return false;
@@ -340,7 +356,7 @@ impl Wallpaper {
             Ok(resize) => resize,
             Err(error) => {
                 debug!(
-                    "Output {} cache resize mode is invalid: {error}",
+                    "Output {} saved wallpaper resize mode is invalid: {error}",
                     self.output_name
                 );
                 return false;
@@ -356,6 +372,13 @@ impl Wallpaper {
                 return false;
             }
         };
+
+        if let Err(error) = entry.store_state(output_name) {
+            debug!(
+                "Output {} failed to refresh persisted wallpaper state: {error}",
+                self.output_name
+            );
+        }
 
         self.set_img_info(BgImg::Img(entry.img_path.into()));
         self.canvas_change(backend, objman, pixel_format, |canvas| {
@@ -449,6 +472,7 @@ impl Wallpaper {
             img_info
         );
         self.img = img_info;
+        self.restore_pending = false;
     }
 
     pub fn destroy(&mut self, backend: &mut Waybackend) {

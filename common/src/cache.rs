@@ -1,8 +1,9 @@
-//! Implements basic cache functionality.
+//! Implements basic wallpaper persistence and image cache functionality.
 //!
 //! The idea is:
-//!   1. the client registers the last image sent for each output in a file
-//!   2. the daemon spawns a client that reloads that image when an output is created
+//!   1. the client stores the last image sent for each output in durable state
+//!   2. the daemon reloads that image when an output is created
+//!   3. animation frame data stays in the cache for fast reuse
 
 use ::alloc::format;
 use ::alloc::string::String;
@@ -19,12 +20,14 @@ use crate::path::Path;
 use crate::path::PathBuf;
 
 const CACHE_DIRNAME: &str = env!("CARGO_PKG_VERSION");
+const WALLPAPER_STATE_DIRNAME: &str = "wallpaper-state-v1";
 
-/// Create this with [read_cache_file] and use it with [get_previous_image_cache]. It is its own
-/// type just for sake of preventing errors with sending generic buffers to
-/// [get_previous_image_cache].
+/// Create this with [read_cache_file] or [read_wallpaper_state_file] and use it with
+/// [get_previous_image_cache]. It is its own type just for sake of preventing errors with
+/// sending generic buffers to [get_previous_image_cache].
 pub struct CacheData(Vec<u8>);
 
+#[derive(Clone, Copy)]
 pub struct CacheEntry<'a> {
     pub namespace: &'a str,
     pub resize: &'a str,
@@ -48,16 +51,21 @@ impl<'a> CacheEntry<'a> {
     }
 
     fn parse_file<'b>(output_name: &str, data: &'b [u8]) -> Result<Vec<CacheEntry<'b>>, String> {
-        let mut v = Vec::new();
-        let mut strings = data.split(|ch| *ch == 0);
-        while let Some(namespace) = strings.next() {
-            let resize = strings.next().ok_or_else(|| {
+        let mut entries = Vec::new();
+        let mut fields = data.split(|ch| *ch == 0).peekable();
+
+        while let Some(namespace) = fields.next() {
+            if namespace.is_empty() && fields.peek().is_none() {
+                break;
+            }
+
+            let resize = fields.next().ok_or_else(|| {
                 format!("cache file for output {output_name} is in the wrong format (no resize)")
             })?;
-            let filter = strings.next().ok_or_else(|| {
+            let filter = fields.next().ok_or_else(|| {
                 format!("cache file for output {output_name} is in the wrong format (no filter)")
             })?;
-            let img_path = strings.next().ok_or_else(|| {
+            let img_path = fields.next().ok_or_else(|| {
                 format!(
                     "cache file for output {output_name} is in the wrong format (no image path)"
                 )
@@ -69,7 +77,7 @@ impl<'a> CacheEntry<'a> {
             let filter = str::from_utf8(filter).map_err(|_| err.clone())?;
             let img_path = str::from_utf8(img_path).map_err(|_| err)?;
 
-            v.push(CacheEntry {
+            entries.push(CacheEntry {
                 namespace,
                 resize,
                 filter,
@@ -77,13 +85,10 @@ impl<'a> CacheEntry<'a> {
             });
         }
 
-        Ok(v)
+        Ok(entries)
     }
 
-    pub(crate) fn store(self, output_name: &str) -> io::Result<()> {
-        let mut filepath = cache_dir()?;
-        filepath.push_str(output_name);
-
+    fn store_at(self, filepath: PathBuf, output_name: &str) -> io::Result<()> {
         let file = fs::open(
             filepath,
             fs::OFlags::RDWR.union(fs::OFlags::CREATE),
@@ -115,12 +120,20 @@ impl<'a> CacheEntry<'a> {
             } = entry;
             len += write_all(
                 &file,
-                format!("{namespace}\0{resize}\0{filter}\0{img_path}").as_bytes(),
+                format!("{namespace}\0{resize}\0{filter}\0{img_path}\0").as_bytes(),
             )?;
         }
 
         fs::ftruncate(file, len as u64)?;
         Ok(())
+    }
+
+    pub(crate) fn store(self, output_name: &str) -> io::Result<()> {
+        self.store_at(cache_file_path(output_name)?, output_name)
+    }
+
+    pub fn store_state(self, output_name: &str) -> io::Result<()> {
+        self.store_at(wallpaper_state_file_path(output_name)?, output_name)
     }
 }
 
@@ -182,12 +195,11 @@ pub fn load_animation_frames<P: Arg>(
 
 pub fn read_cache_file(output_name: &str) -> io::Result<CacheData> {
     clean_previous_versions();
+    read_entry_file(cache_file_path(output_name)?)
+}
 
-    let mut filepath = cache_dir()?;
-    filepath.push_str(output_name);
-
-    let file = fs::open(filepath, fs::OFlags::RDONLY, fs::Mode::RUSR)?;
-    Ok(CacheData(read_all(&file)?))
+pub fn read_wallpaper_state_file(output_name: &str) -> io::Result<CacheData> {
+    read_entry_file(wallpaper_state_file_path(output_name)?)
 }
 
 pub fn get_previous_image_cache<'a>(
@@ -307,12 +319,46 @@ fn user_cache_dir() -> io::Result<PathBuf> {
     }
 }
 
+fn user_state_dir() -> io::Result<PathBuf> {
+    if let Some(path) = unsafe { crate::getenv(c"XDG_STATE_HOME") } {
+        Ok(PathBuf::from_iter([path, c"vellum"]))
+    } else if let Some(path) = unsafe { crate::getenv(c"HOME") } {
+        Ok(PathBuf::from_iter([path, c".local", c"state", c"vellum"]))
+    } else {
+        Err(io::Errno::NOENT)
+    }
+}
+
 fn cache_dir() -> io::Result<PathBuf> {
     let mut path = user_cache_dir()?;
     create_dir(&path)?;
     path.push_str(CACHE_DIRNAME);
     create_dir(&path)?;
     Ok(path)
+}
+
+fn wallpaper_state_dir() -> io::Result<PathBuf> {
+    let mut path = user_state_dir()?;
+    path.push_str(WALLPAPER_STATE_DIRNAME);
+    create_dir(&path)?;
+    Ok(path)
+}
+
+fn cache_file_path(output_name: &str) -> io::Result<PathBuf> {
+    let mut filepath = cache_dir()?;
+    filepath.push_str(output_name);
+    Ok(filepath)
+}
+
+fn wallpaper_state_file_path(output_name: &str) -> io::Result<PathBuf> {
+    let mut filepath = wallpaper_state_dir()?;
+    filepath.push_str(output_name);
+    Ok(filepath)
+}
+
+fn read_entry_file(filepath: PathBuf) -> io::Result<CacheData> {
+    let file = fs::open(filepath, fs::OFlags::RDONLY, fs::Mode::RUSR)?;
+    Ok(CacheData(read_all(&file)?))
 }
 
 #[must_use]
@@ -386,4 +432,31 @@ fn remove_dir_all(dir: fd::BorrowedFd, file: &core::ffi::CStr) -> io::Result<()>
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_file_handles_trailing_separator() {
+        let data = b"namespace\0resize\0filter\0/path\0";
+        let entries = CacheEntry::parse_file("output", data).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].namespace, "namespace");
+        assert_eq!(entries[0].resize, "resize");
+        assert_eq!(entries[0].filter, "filter");
+        assert_eq!(entries[0].img_path, "/path");
+    }
+
+    #[test]
+    fn parse_file_handles_multiple_entries() {
+        let data = b"ns1\0resize1\0filter1\0/path1\0ns2\0resize2\0filter2\0/path2\0";
+        let entries = CacheEntry::parse_file("output", data).unwrap();
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].namespace, "ns1");
+        assert_eq!(entries[1].namespace, "ns2");
+    }
 }

@@ -101,10 +101,12 @@ impl ImageRequestBuilder {
 
         // cache the request
         for output in outputs {
-            if let Err(e) =
-                super::cache::CacheEntry::new(namespace, resize, filter, path).store(output)
-            {
+            let entry = super::cache::CacheEntry::new(namespace, resize, filter, path);
+            if let Err(e) = entry.store(output) {
                 log::error!("failed to store cache: {e}");
+            }
+            if let Err(e) = entry.store_state(output) {
+                log::error!("failed to store wallpaper state: {e}");
             }
         }
 
