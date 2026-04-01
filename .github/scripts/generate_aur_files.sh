@@ -86,7 +86,6 @@ pkgbase = ${pkgname}
     license = GPL3
     makedepends = cargo
     makedepends = pkgconf
-    depends = liblz4
     provides = vellum
     conflicts = vellum-git
     source = ${pkgname}-${pkgver}.tar.gz::${tarball_url}
