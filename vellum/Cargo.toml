@@ -10,6 +10,9 @@ license-file.workspace = true
 crossterm = "0.29.0"
 fuzzy-matcher = "0.3.7"
 ratatui = "0.30.0"
+ratatui-image = { version = "10.0.6", default-features = false, features = [
+    "crossterm",
+] }
 common = { workspace = true }
 fast_image_resize = "6.0.0"
 fastrand = { version = "2.3.0", default-features = false, features = ["std"] }

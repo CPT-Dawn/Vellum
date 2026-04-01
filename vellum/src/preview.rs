@@ -1,12 +1,16 @@
 use std::collections::{HashMap, VecDeque};
+use std::io::{IsTerminal, stdin, stdout};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 
 use common::ipc::PixelFormat;
 use fast_image_resize::FilterType as FirFilterType;
-use image::imageops::FilterType;
 use image::{DynamicImage, RgbImage};
+use ratatui::layout::Rect;
+use ratatui_image::{
+    FilterType as ImageFilterType, Resize as ImageResize, picker::Picker, protocol::Protocol,
+};
 
 use crate::app::ScalingMode;
 use crate::imgproc::{self, ImgBuf, ResizeStrategy};
@@ -29,11 +33,21 @@ pub struct PreviewResult {
     pub image: Result<PreviewImage, String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PreviewImage {
     pub width: u16,
-    pub height_px: u16,
-    pub pixels_rgb: Vec<u8>,
+    pub height_rows: u16,
+    pub protocol: Protocol,
+}
+
+impl core::fmt::Debug for PreviewImage {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PreviewImage")
+            .field("width", &self.width)
+            .field("height_rows", &self.height_rows)
+            .field("area", &self.protocol.area())
+            .finish()
+    }
 }
 
 const RENDER_CACHE_LIMIT: usize = 16;
@@ -67,6 +81,8 @@ pub fn spawn_preview_worker(
     request_rx: Receiver<PreviewRequest>,
     result_tx: Sender<PreviewResult>,
 ) {
+    let picker = build_preview_picker();
+
     thread::spawn(move || {
         let mut render_cache: HashMap<PreviewRenderKey, PreviewImage> = HashMap::new();
         let mut render_lru: VecDeque<PreviewRenderKey> = VecDeque::new();
@@ -81,7 +97,7 @@ pub fn spawn_preview_worker(
                 touch_lru(&mut render_lru, &render_key);
                 Ok(cached)
             } else {
-                let rendered = build_preview_image(&request);
+                let rendered = build_preview_image(&request, &picker);
                 if let Ok(ref preview_image) = rendered {
                     insert_lru(
                         &mut render_cache,
@@ -107,28 +123,35 @@ pub fn spawn_preview_worker(
     });
 }
 
-fn build_preview_image(request: &PreviewRequest) -> Result<PreviewImage, String> {
+fn build_preview_picker() -> Picker {
+    if stdin().is_terminal() && stdout().is_terminal() {
+        Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks())
+    } else {
+        Picker::halfblocks()
+    }
+}
+
+fn build_preview_image(request: &PreviewRequest, picker: &Picker) -> Result<PreviewImage, String> {
     if request.target_width < 1 || request.target_height_rows < 1 {
         return Err("preview area too small".to_string());
     }
 
     let target_width = request.target_width as u32;
-    let target_height_px = request.target_height_rows.saturating_mul(2) as u32;
-    let monitor_dimensions = resolved_monitor_dimensions(request, target_width, target_height_px);
+    let target_height_rows = request.target_height_rows as u32;
+    let monitor_dimensions = resolved_monitor_dimensions(request, target_width, target_height_rows);
     let source_render = render_like_backend(request, monitor_dimensions)?;
-    let panel_render =
-        if source_render.width() == target_width && source_render.height() == target_height_px {
-            source_render
-        } else {
-            DynamicImage::ImageRgb8(source_render)
-                .resize_exact(target_width, target_height_px, FilterType::Lanczos3)
-                .to_rgb8()
-        };
+    let protocol = picker
+        .new_protocol(
+            DynamicImage::ImageRgb8(source_render),
+            Rect::new(0, 0, request.target_width, request.target_height_rows),
+            ImageResize::Fit(Some(ImageFilterType::Lanczos3)),
+        )
+        .map_err(|error| error.to_string())?;
 
     Ok(PreviewImage {
-        width: panel_render.width() as u16,
-        height_px: panel_render.height() as u16,
-        pixels_rgb: panel_render.into_raw(),
+        width: request.target_width,
+        height_rows: request.target_height_rows,
+        protocol,
     })
 }
 

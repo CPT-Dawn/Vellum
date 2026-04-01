@@ -485,10 +485,11 @@ fn draw_preview_panel(frame: &mut Frame, area: Rect, app: &mut App, active: bool
 
         let preview_inner = preview_inner_rect(preview);
         if preview_inner.width > 0 && preview_inner.height > 0 {
-            let request_width = preview_inner.width.saturating_mul(2);
-            app.update_preview_request(request_width, preview_inner.height);
+            app.update_preview_request(preview_inner.width, preview_inner.height);
             if let Some(image) = app.preview_image() {
-                draw_quadrant_preview(frame, preview_inner, image);
+                if image.width == preview_inner.width && image.height_rows == preview_inner.height {
+                    frame.render_widget(ratatui_image::Image::new(&image.protocol), preview_inner);
+                }
             }
         }
     }
@@ -519,157 +520,6 @@ fn preview_inner_rect(preview: Rect) -> Rect {
         preview.width.saturating_sub(2),
         preview.height.saturating_sub(2),
     )
-}
-
-fn draw_quadrant_preview(frame: &mut Frame, area: Rect, image: &crate::preview::PreviewImage) {
-    let cols = area.width.min(image.width / 2);
-    let rows = area.height.min(image.height_px / 2);
-
-    if cols == 0 || rows == 0 {
-        return;
-    }
-
-    let image_width = image.width as usize;
-    let mut lines = Vec::with_capacity(rows as usize);
-
-    for y in 0..rows as usize {
-        let mut spans = Vec::with_capacity(cols as usize);
-        let src_row = y * 2;
-
-        for x in 0..cols as usize {
-            let src_col = x * 2;
-            let p0_idx = (src_row * image_width + src_col) * 3;
-            let p1_idx = (src_row * image_width + (src_col + 1)) * 3;
-            let p2_idx = ((src_row + 1) * image_width + src_col) * 3;
-            let p3_idx = ((src_row + 1) * image_width + (src_col + 1)) * 3;
-
-            let pixels = [
-                [
-                    image.pixels_rgb[p0_idx],
-                    image.pixels_rgb[p0_idx + 1],
-                    image.pixels_rgb[p0_idx + 2],
-                ],
-                [
-                    image.pixels_rgb[p1_idx],
-                    image.pixels_rgb[p1_idx + 1],
-                    image.pixels_rgb[p1_idx + 2],
-                ],
-                [
-                    image.pixels_rgb[p2_idx],
-                    image.pixels_rgb[p2_idx + 1],
-                    image.pixels_rgb[p2_idx + 2],
-                ],
-                [
-                    image.pixels_rgb[p3_idx],
-                    image.pixels_rgb[p3_idx + 1],
-                    image.pixels_rgb[p3_idx + 2],
-                ],
-            ];
-
-            let (ch, fg, bg) = best_quadrant_cell(pixels);
-            let style = match (fg, bg) {
-                (Some(fg), Some(bg)) => Style::default().fg(fg).bg(bg),
-                (Some(fg), None) => Style::default().fg(fg),
-                (None, Some(bg)) => Style::default().bg(bg),
-                (None, None) => Style::default(),
-            };
-            spans.push(Span::styled(ch.to_string(), style));
-        }
-
-        lines.push(Line::from(spans));
-    }
-
-    frame.render_widget(Paragraph::new(Text::from(lines)), area);
-}
-
-fn best_quadrant_cell(pixels: [[u8; 3]; 4]) -> (char, Option<Color>, Option<Color>) {
-    const GLYPHS: [char; 16] = [
-        ' ', '▗', '▖', '▄', '▝', '▐', '▞', '▟', '▘', '▚', '▌', '▙', '▀', '▜', '▛', '█',
-    ];
-
-    let mut best_mask = 0u8;
-    let mut best_fg = [0u8; 3];
-    let mut best_bg = [0u8; 3];
-    let mut best_error = u64::MAX;
-
-    for mask in 0u8..=15 {
-        let (fg, bg) = average_colors_for_mask(mask, &pixels);
-        let mut error = 0u64;
-        for (index, pixel) in pixels.iter().enumerate() {
-            let use_fg = (mask >> (3 - index)) & 1 == 1;
-            let target = if use_fg { fg } else { bg };
-            error += channel_error(*pixel, target);
-        }
-
-        if error < best_error {
-            best_error = error;
-            best_mask = mask;
-            best_fg = fg;
-            best_bg = bg;
-        }
-    }
-
-    let ch = GLYPHS[best_mask as usize];
-    match best_mask {
-        0 => (ch, None, Some(rgb_color(best_bg))),
-        15 => (ch, Some(rgb_color(best_fg)), None),
-        _ => (ch, Some(rgb_color(best_fg)), Some(rgb_color(best_bg))),
-    }
-}
-
-fn average_colors_for_mask(mask: u8, pixels: &[[u8; 3]; 4]) -> ([u8; 3], [u8; 3]) {
-    let mut fg_sum = [0u32; 3];
-    let mut bg_sum = [0u32; 3];
-    let mut fg_count = 0u32;
-    let mut bg_count = 0u32;
-
-    for (index, pixel) in pixels.iter().enumerate() {
-        let use_fg = (mask >> (3 - index)) & 1 == 1;
-        if use_fg {
-            fg_sum[0] += pixel[0] as u32;
-            fg_sum[1] += pixel[1] as u32;
-            fg_sum[2] += pixel[2] as u32;
-            fg_count += 1;
-        } else {
-            bg_sum[0] += pixel[0] as u32;
-            bg_sum[1] += pixel[1] as u32;
-            bg_sum[2] += pixel[2] as u32;
-            bg_count += 1;
-        }
-    }
-
-    let fg = if fg_count == 0 {
-        [0, 0, 0]
-    } else {
-        [
-            (fg_sum[0] / fg_count) as u8,
-            (fg_sum[1] / fg_count) as u8,
-            (fg_sum[2] / fg_count) as u8,
-        ]
-    };
-
-    let bg = if bg_count == 0 {
-        [0, 0, 0]
-    } else {
-        [
-            (bg_sum[0] / bg_count) as u8,
-            (bg_sum[1] / bg_count) as u8,
-            (bg_sum[2] / bg_count) as u8,
-        ]
-    };
-
-    (fg, bg)
-}
-
-fn channel_error(a: [u8; 3], b: [u8; 3]) -> u64 {
-    let dr = a[0] as i32 - b[0] as i32;
-    let dg = a[1] as i32 - b[1] as i32;
-    let db = a[2] as i32 - b[2] as i32;
-    (dr * dr + dg * dg + db * db) as u64
-}
-
-fn rgb_color(rgb: [u8; 3]) -> Color {
-    Color::Rgb(rgb[0], rgb[1], rgb[2])
 }
 
 fn fitted_monitor_rect(area: Rect, monitor: &Monitor) -> Rect {

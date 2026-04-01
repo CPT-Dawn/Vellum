@@ -213,7 +213,7 @@ impl Monitor {
 
 impl From<BgInfo> for Monitor {
     fn from(value: BgInfo) -> Self {
-        let (width, height) = value.dim;
+        let (width, height) = value.real_dim();
         Self {
             name: value.name.into(),
             width: width.min(u16::MAX as u32) as u16,
