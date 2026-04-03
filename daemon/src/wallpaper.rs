@@ -189,8 +189,13 @@ impl Wallpaper {
     }
 
     pub fn get_bg_info(&self, pixel_format: PixelFormat) -> BgInfo {
+        let fallback_output_name = self.output_name.to_string();
         BgInfo {
-            name: self.name.as_deref().unwrap_or("?").into(),
+            name: self
+                .name
+                .as_deref()
+                .unwrap_or(fallback_output_name.as_str())
+                .into(),
             dim: (self.width.get() as u32, self.height.get() as u32),
             scale_factor: self.scale_factor,
             img: match &self.img {
@@ -210,6 +215,11 @@ impl Wallpaper {
     pub fn set_desc(&mut self, desc: Box<str>) {
         debug!("Output {} description: {desc}", self.output_name);
         self.desc = Some(desc);
+    }
+
+    pub fn set_name(&mut self, name: Box<str>) {
+        debug!("Output {} name: {name}", self.output_name);
+        self.name = Some(name);
     }
 
     pub fn set_dimensions(&mut self, width: i32, height: i32) {
@@ -390,7 +400,7 @@ impl Wallpaper {
     }
 
     pub fn has_name(&self, name: &str) -> bool {
-        self.name.as_ref().is_some_and(|s| s.as_ref() == name)
+        self.name.as_ref().is_some_and(|s| s.as_ref() == name) || self.output_name.to_string() == name
     }
 
     pub fn has_output(&self, output: ObjectId) -> bool {

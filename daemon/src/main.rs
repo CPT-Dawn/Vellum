@@ -473,13 +473,20 @@ impl wayland::wl_output::EvHandler for Daemon {
     }
 
     fn name(&mut self, sender_id: ObjectId, name: &str) {
-        // According to the protocol:
-        // 'names are sent once per output object, and the name does not change over the
-        // lifetime of the wl_output global'. So we need only set the name for the pending
-        // outputs.
+        // According to the protocol, names are sent once per output object lifetime.
+        // In practice, we may receive `done` before `name`, so we must handle both pending
+        // outputs and already-created wallpapers.
         for info in &mut self.pending_outputs {
             if info.output == sender_id {
                 info.name = Some(name.into());
+                return;
+            }
+        }
+
+        for wallpaper in &self.wallpapers {
+            let mut wallpaper = wallpaper.borrow_mut();
+            if wallpaper.has_output(sender_id) {
+                wallpaper.set_name(name.into());
                 return;
             }
         }
