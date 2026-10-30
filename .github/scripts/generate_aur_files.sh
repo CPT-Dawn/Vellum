@@ -16,7 +16,7 @@ pkgname="vellum"
 _reponame="Vellum"
 pkgver="${release_tag#v}"
 pkgrel="${PKGREL:-1}"
-maintainer="${AUR_MAINTAINER:-CPT-Dawn <dawnsp0456@gmail.com>}"
+maintainer="${AUR_MAINTAINER:-CPT-Dawn <ping@cptdawn.dev>}"
 repo="${GITHUB_REPOSITORY:-CPT-Dawn/Vellum}"
 server_url="${GITHUB_SERVER_URL:-https://github.com}"
 
