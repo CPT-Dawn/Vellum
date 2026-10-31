@@ -8,8 +8,9 @@ please say Monitor, not output or screen, in code, docs and issues.
 ## What you need
 
 - Rust stable, 1.99 or newer (`rustup update stable`)
-- `sway` and `grim` for the end-to-end tests. They run a headless Sway, so
-  you don't need to be running Sway yourself.
+- `sway` 1.10 or newer and `grim` for the end-to-end tests. They run a
+  headless Sway, so you don't need to be running Sway yourself. Older Sways
+  lack alpha-modifier, so the GPU Fade test can't pass there.
 - Optional: `dav1d` to build the `avif` feature, `cargo-deny` for the
   license and advisory check.
 

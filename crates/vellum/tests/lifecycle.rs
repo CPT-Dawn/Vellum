@@ -32,10 +32,14 @@ fn solid(sway: &Sway, color: [u8; 3], width: u32, height: u32) -> String {
     path.to_string_lossy().into_owned()
 }
 
-fn center_is(sway: &Sway, monitor: &str, color: [u8; 3]) -> bool {
+fn center(sway: &Sway, monitor: &str) -> [u8; 3] {
     let shot = sway.screenshot(monitor);
     let (w, h) = shot.dimensions();
-    shot.get_pixel(w / 2, h / 2).0 == color
+    shot.get_pixel(w / 2, h / 2).0
+}
+
+fn center_is(sway: &Sway, monitor: &str, color: [u8; 3]) -> bool {
+    center(sway, monitor) == color
 }
 
 fn stderr(out: &std::process::Output) -> String {
@@ -45,6 +49,14 @@ fn stderr(out: &std::process::Output) -> String {
 #[test]
 fn wallpapers_and_fit_modes_come_back_after_a_daemon_restart() {
     let mut sway = Sway::start(&[SMALL, TINY]);
+    // What each monitor shows with no wallpaper on it: the compositor's own
+    // background, which varies by version (black in Sway 1.10+, grey before).
+    let bare_one = center(&sway, "HEADLESS-1");
+    let bare_two = center(&sway, "HEADLESS-2");
+    assert!(
+        ![RED, GREEN].contains(&bare_one) && ![RED, GREEN].contains(&bare_two),
+        "the bare background must differ from the test wallpapers"
+    );
     sway.start_daemon();
     // A small image centred leaves black around it; filled, it covers all.
     let red = solid(&sway, RED, 40, 30);
@@ -58,7 +70,7 @@ fn wallpapers_and_fit_modes_come_back_after_a_daemon_restart() {
     sway.vellum_ok(["kill"]);
     assert!(sway.wait_daemon_exit().is_some_and(|s| s.success()));
     sway.wait_until("the wallpapers to go away", || {
-        center_is(&sway, "HEADLESS-1", BLACK) && center_is(&sway, "HEADLESS-2", BLACK)
+        center_is(&sway, "HEADLESS-1", bare_one) && center_is(&sway, "HEADLESS-2", bare_two)
     });
 
     sway.start_daemon();

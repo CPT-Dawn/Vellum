@@ -17,7 +17,19 @@ jobs:
   check:
     name: fmt, clippy, tests (incl. headless-Sway e2e)
     runs-on: ubuntu-24.04
+    # Ubuntu 24.04 ships Sway 1.9 (wlroots 0.17): no alpha-modifier, so the
+    # GPU Fade can't be tested, and it clears bare Monitors to grey. Arch has
+    # a current Sway, like the AUR package's users.
+    container:
+      image: archlinux:base-devel
+      # Arch's sway carries cap_sys_nice; without it in the bounding set,
+      # exec fails with EPERM. Docker's 64 MiB /dev/shm is too small for
+      # parallel headless Sways with 1440p Monitors: they die of SIGBUS.
+      options: --cap-add SYS_NICE --shm-size 1g
     steps:
+      - name: Install git, sway and grim
+        run: pacman -Syu --noconfirm --needed git sway grim
+
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
@@ -25,11 +37,6 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
-
-      - name: Install sway and grim for the e2e harness
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends sway grim
 
       - name: Format
         run: cargo fmt --all --check
