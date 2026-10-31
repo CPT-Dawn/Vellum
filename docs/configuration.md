@@ -25,6 +25,15 @@ direction = "right"
 duration = 600
 easing = "ease-out"
 
+[rotation]
+interval = "30m"
+source = "library"
+order = "shuffle"
+sync = false
+
+# [rotation.monitor.DP-2]   # Overrides: none by default
+# interval = "2h"
+
 [preview]
 cache_mb = 200
 ```
@@ -37,7 +46,7 @@ TOML needs top-level keys (`library`, `fit`, `letterbox`, `theme`,
 Save the file and the change takes effect. You do not need to restart
 anything. The Daemon watches the Config directory and asks `vellum` to
 re-read the file whenever it changes. `vellum status` shows the Transition
-the Daemon is using now.
+and Rotation the Daemon is using now.
 
 To re-read the Config by hand and see any error in it, run:
 
@@ -198,6 +207,93 @@ How long the Transition takes, in whole milliseconds. The default is `600`.
 
 The timing curve: `"linear"`, `"ease-in"`, `"ease-out"` (the default) or
 `"ease-in-out"`.
+
+## Rotation
+
+Rotation changes the wallpaper on a timer. It is off until you start it,
+and once started it stays on across reboots until you stop it:
+
+```sh
+vellum rotation start
+vellum rotation status   # source, order, interval and time to the next change
+vellum rotation stop
+```
+
+The `[rotation]` section says how it rotates. Every key is optional:
+
+```toml
+[rotation]
+interval = "30m"
+source = "library"
+order = "shuffle"
+sync = false
+```
+
+### `rotation.interval`
+
+How long each wallpaper stays up. Write it with units, such as `"30m"`,
+`"1h30m"`, `"90s"` or `"250ms"`, or as a whole number of minutes (`15`).
+The default is `"30m"`. A shorter interval takes effect at once.
+
+### `rotation.source`
+
+- `"library"`: every wallpaper in the Library. This is the default.
+- `"favorites"`: only your Favorites (see below).
+
+### `rotation.order`
+
+- `"shuffle"`: a shuffled deck. No wallpaper comes back until every one
+  has been shown, even across a reshuffle. This is the default.
+- `"sequential"`: Library order (or the order you added Favorites). It
+  remembers its position across restarts.
+
+### `rotation.sync`
+
+With `false` (the default), each monitor gets a different wallpaper on
+each change. With `true`, they all show the same one and change together.
+
+### Per-monitor Overrides
+
+A `[rotation.monitor.<name>]` section gives one monitor its own
+`interval`, `source` and `order`. Any key it leaves out comes from
+`[rotation]`. A monitor with an Override rotates on its own and is never
+part of `sync`. Run `vellum monitors` to see the names.
+
+```toml
+[rotation.monitor.DP-2]   # the portrait monitor
+interval = "2h"
+source = "favorites"
+```
+
+### Stepping by hand
+
+`vellum next`, `vellum prev` and `vellum random` (each with an optional
+`-m <monitor>`) change the wallpaper now, which makes them handy for
+keybinds. `next` follows the Rotation rules above, `prev` goes back to the
+wallpaper shown before, and `random` picks any wallpaper from the
+Rotation's source. They work whether or not Rotation is running.
+
+Any wallpaper you apply by hand, including `vellum set`, restarts that
+monitor's timer, so it stays up for a full interval.
+
+A file that cannot be decoded is skipped with a warning, and the next one
+is tried, so Rotation never gets stuck.
+
+## Favorites
+
+Favorites are the wallpapers you star:
+
+```sh
+vellum fav add dunes.jpg   # a path or a Library name
+vellum fav add             # the wallpaper on screen now (-m to pick a monitor)
+vellum fav remove dunes.jpg
+vellum fav list
+```
+
+They are kept in `~/.local/share/vellum/favorites` (or
+`$XDG_DATA_HOME/vellum/favorites`), one path per line. A Favorite whose
+file has gone missing, for example on an unplugged drive, is skipped
+without an error and comes back when the file does.
 
 ## Change hook
 

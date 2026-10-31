@@ -1,4 +1,5 @@
-//! `vellum status`: the Daemon, its memory use, and what each Monitor shows.
+//! `vellum status`: the Daemon, its memory use, Rotation, and what each
+//! Monitor shows.
 
 use vellum_ipc::{Status, Transition, TransitionKind};
 
@@ -13,31 +14,38 @@ pub fn run() -> Result<(), String> {
 
 fn report(status: &Status) -> String {
     let mut out = format!(
-        "vellumd {} (pid {}), {} resident\ntransition: {}\n\n",
+        "vellumd {} (pid {}), {} resident\ntransition: {}\nrotation: {}\n\n",
         status.version,
         status.pid,
         memory(status.rss_bytes),
-        transition(&status.settings.transition)
+        transition(&status.settings.transition),
+        crate::rotation::summary(status)
     );
-    let rows: Vec<[&str; 3]> = status
+    let rows: Vec<Vec<&str>> = status
         .monitors
         .iter()
         .map(|m| match &m.wallpaper {
-            Some(w) => [m.name.as_str(), w.fit.name(), w.path.as_str()],
-            None => [m.name.as_str(), "-", "-"],
+            Some(w) => vec![m.name.as_str(), w.fit.name(), w.path.as_str()],
+            None => vec![m.name.as_str(), "-", "-"],
         })
         .collect();
-    let header = ["MONITOR", "FIT", "WALLPAPER"];
-    let mut widths = header.map(str::len);
-    for row in &rows {
+    out += &table(&["MONITOR", "FIT", "WALLPAPER"], &rows);
+    out
+}
+
+/// Left-aligned columns two spaces apart, one line per row.
+pub fn table(header: &[&str], rows: &[Vec<&str>]) -> String {
+    let mut widths: Vec<usize> = header.iter().map(|h| h.len()).collect();
+    for row in rows {
         for (width, cell) in widths.iter_mut().zip(row) {
             *width = (*width).max(cell.len());
         }
     }
-    for row in std::iter::once(&header).chain(&rows) {
+    let mut out = String::new();
+    for row in std::iter::once(header).chain(rows.iter().map(Vec::as_slice)) {
         let line: Vec<String> = row
             .iter()
-            .zip(widths)
+            .zip(&widths)
             .map(|(cell, width)| format!("{cell:<width$}"))
             .collect();
         out += line.join("  ").trim_end();
@@ -91,18 +99,22 @@ mod tests {
                         path: "/w/dunes.jpg".into(),
                         fit: FitMode::Center,
                     }),
+                    next_change_ms: None,
                 },
                 MonitorStatus {
                     name: "HDMI-A-1".into(),
                     wallpaper: None,
+                    next_change_ms: None,
                 },
             ],
             settings: Settings::default(),
+            rotation_running: false,
         };
         assert_eq!(
             report(&status),
             "vellumd 2.0.0 (pid 42), 2.4 MB resident\n\
-             transition: fade, 600 ms, ease-out\n\n\
+             transition: fade, 600 ms, ease-out\n\
+             rotation: stopped\n\n\
              MONITOR   FIT     WALLPAPER\n\
              DP-1      center  /w/dunes.jpg\n\
              HDMI-A-1  -       -\n"

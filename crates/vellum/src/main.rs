@@ -2,14 +2,17 @@
 
 mod client;
 mod config;
+mod deck;
 mod decode;
 mod docs;
+mod favorites;
 mod frame;
 mod hook;
 mod library;
 mod monitors;
 mod render;
 mod restore;
+mod rotation;
 mod set;
 mod status;
 mod sync;
@@ -50,6 +53,22 @@ enum Command {
         #[command(flatten)]
         transition: TransitionArgs,
     },
+    /// Show the next wallpaper by the Rotation rules.
+    Next(PickArgs),
+    /// Go back to the wallpaper shown before.
+    Prev(PickArgs),
+    /// Show a random wallpaper from the Rotation's source.
+    Random(PickArgs),
+    /// Start, stop or inspect Rotation.
+    Rotation {
+        #[command(subcommand)]
+        action: RotationAction,
+    },
+    /// Add, remove or list Favorites.
+    Fav {
+        #[command(subcommand)]
+        action: FavAction,
+    },
     /// List connected monitors with their size and scale.
     Monitors,
     /// Show the Daemon, its memory use, and each monitor's wallpaper.
@@ -71,7 +90,7 @@ enum Command {
     },
     /// Render a frame or push the Config for the Daemon. Run by vellumd,
     /// not by hand.
-    #[command(hide = true, group(ArgGroup::new("mode").required(true).args(["restore", "sync"])))]
+    #[command(hide = true, group(ArgGroup::new("mode").required(true).args(["restore", "sync", "rotate"])))]
     Render {
         /// Put the wallpaper State remembers back on the monitor.
         #[arg(long, requires = "monitor")]
@@ -79,10 +98,64 @@ enum Command {
         /// Read the Config and push its settings to the Daemon.
         #[arg(long)]
         sync: bool,
-        /// The monitor to render for.
+        /// A Rotation tick: put the next wallpaper on each monitor.
+        #[arg(long)]
+        rotate: bool,
+        /// The monitor to render for; --rotate takes several.
+        #[arg(short, long, value_name = "NAME")]
+        monitor: Vec<String>,
+    },
+}
+
+/// The target and Transition of `next`, `prev` and `random`.
+#[derive(Args)]
+struct PickArgs {
+    /// Only this monitor, by connector name (see `vellum monitors`).
+    #[arg(short, long, value_name = "NAME")]
+    monitor: Option<String>,
+    #[command(flatten)]
+    transition: TransitionArgs,
+}
+
+#[derive(Subcommand)]
+enum RotationAction {
+    /// Start changing wallpapers on a timer; stays on across reboots.
+    Start,
+    /// Stop Rotation.
+    Stop,
+    /// Show each monitor's source, order, interval and next change.
+    Status,
+}
+
+#[derive(Subcommand)]
+enum FavAction {
+    /// Add a wallpaper to Favorites (default: the one on screen).
+    Add {
+        /// The image file, or a name in the Library.
+        file: Option<PathBuf>,
+        /// Without a file: the wallpaper on this monitor.
         #[arg(short, long, value_name = "NAME")]
         monitor: Option<String>,
     },
+    /// Remove a wallpaper from Favorites (default: the one on screen).
+    Remove {
+        /// The image file, or a name in the Library.
+        file: Option<PathBuf>,
+        /// Without a file: the wallpaper on this monitor.
+        #[arg(short, long, value_name = "NAME")]
+        monitor: Option<String>,
+    },
+    /// List Favorites, skipping files that have gone missing.
+    List,
+}
+
+impl PickArgs {
+    fn run(self, pick: rotation::Pick) -> Result<(), String> {
+        let config = config::load();
+        let transition = self.transition.resolve(config.transition);
+        let monitors: Vec<String> = self.monitor.into_iter().collect();
+        rotation::run(pick, &monitors, Some(transition), rotation::Trigger::Manual)
+    }
 }
 
 /// Per-command Transition overrides.
@@ -159,6 +232,21 @@ fn main() -> ExitCode {
             let transition = transition.resolve(config.transition);
             set::run(&file, monitor.as_deref(), &config, fit, transition)
         }
+        Command::Next(args) => args.run(rotation::Pick::Next),
+        Command::Prev(args) => args.run(rotation::Pick::Prev),
+        Command::Random(args) => args.run(rotation::Pick::Random),
+        Command::Rotation { action } => match action {
+            RotationAction::Start => rotation::control(true),
+            RotationAction::Stop => rotation::control(false),
+            RotationAction::Status => rotation::status(),
+        },
+        Command::Fav { action } => match action {
+            FavAction::Add { file, monitor } => favorites::add(file.as_deref(), monitor.as_deref()),
+            FavAction::Remove { file, monitor } => {
+                favorites::remove(file.as_deref(), monitor.as_deref())
+            }
+            FavAction::List => favorites::list(),
+        },
         Command::Monitors => monitors::run(),
         Command::Status => status::run(),
         Command::Reload => client::daemon().and_then(|socket| sync::run(&socket)),
@@ -169,7 +257,17 @@ fn main() -> ExitCode {
         Command::Render { sync: true, .. } => {
             client::socket().and_then(|socket| sync::run(&socket))
         }
-        Command::Render { monitor, .. } => restore::run(&monitor.expect("clap requires it")),
+        Command::Render {
+            rotate: true,
+            monitor,
+            ..
+        } => rotation::run(
+            rotation::Pick::Next,
+            &monitor,
+            None,
+            rotation::Trigger::Tick,
+        ),
+        Command::Render { monitor, .. } => restore::run(&monitor[0]),
     };
     finish(result)
 }

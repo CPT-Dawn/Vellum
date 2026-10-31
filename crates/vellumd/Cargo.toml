@@ -16,7 +16,7 @@ workspace = true
 
 [dependencies]
 vellum-ipc.workspace = true
-rustix = { workspace = true, features = ["net", "fs", "event", "mm", "process", "param"] }
+rustix = { workspace = true, features = ["net", "fs", "event", "mm", "process", "param", "time"] }
 waybackend = "0.11.0"
 
 [build-dependencies]
