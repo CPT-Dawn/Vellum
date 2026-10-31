@@ -87,9 +87,11 @@ pub fn daemon_info(monitors: Vec<MonitorInfo>) -> DaemonInfo {
                 .map(|m| MonitorStatus {
                     name: m.name.clone(),
                     wallpaper: None,
+                    next_change_ms: None,
                 })
                 .collect(),
             settings: Settings::default(),
+            rotation_running: false,
         },
         monitors,
     }

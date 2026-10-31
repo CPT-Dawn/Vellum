@@ -173,12 +173,28 @@ pub fn kill() -> Result<(), String> {
         }
         Err(err) => return Err(describe(&socket, err)),
     }
+    // The socket goes first, the display lock only when the process is
+    // gone; a Daemon started before that would find the lock taken.
     let deadline = Instant::now() + Duration::from_secs(3);
-    while is_running(&socket) {
+    while is_running(&socket) || display_locked(&socket) {
         if Instant::now() > deadline {
             return Err("vellumd did not stop".into());
         }
         std::thread::sleep(Duration::from_millis(20));
     }
     Ok(())
+}
+
+/// Whether a Daemon still holds the per-display lock next to `socket`.
+fn display_locked(socket: &Path) -> bool {
+    use rustix::fs::{FlockOperation, Mode, OFlags, flock, open};
+    let Ok(fd) = open(
+        socket.with_extension("lock"),
+        OFlags::RDWR | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) else {
+        return false;
+    };
+    // Closing `fd` releases the probe's own lock right away.
+    flock(&fd, FlockOperation::NonBlockingLockExclusive).is_err()
 }

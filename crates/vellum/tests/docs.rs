@@ -22,7 +22,29 @@ fn stdout_of(args: &[&str]) -> String {
 }
 
 /// Visible subcommands every completion script and the man page must know.
-const SUBCOMMANDS: &[&str] = &["set", "monitors", "status", "reload", "kill", "completions"];
+const SUBCOMMANDS: &[&str] = &[
+    "set",
+    "next",
+    "prev",
+    "random",
+    "rotation",
+    "fav",
+    "monitors",
+    "status",
+    "reload",
+    "kill",
+    "completions",
+];
+
+/// Nested subcommands, which get a page of their own each.
+const NESTED: &[&str] = &[
+    "fav-add",
+    "fav-remove",
+    "fav-list",
+    "rotation-start",
+    "rotation-stop",
+    "rotation-status",
+];
 
 #[test]
 fn completions_cover_bash_zsh_and_fish() {
@@ -80,6 +102,7 @@ fn man_pages_cover_every_visible_subcommand() {
     names.sort();
     let mut want: Vec<String> = SUBCOMMANDS
         .iter()
+        .chain(NESTED)
         .map(|s| format!("vellum-{s}.1"))
         .chain(["vellum.1".to_owned()])
         .collect();

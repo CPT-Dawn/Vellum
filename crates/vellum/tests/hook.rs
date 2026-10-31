@@ -166,3 +166,53 @@ fn a_letterbox_repaint_does_not_run_the_hook() {
     assert_pixel(&shot, 160, 120, GREEN, 0);
     assert_eq!(marker_lines(&sway), [line(&wide, "HEADLESS-1")]);
 }
+
+/// A Library of two flat wallpapers, as Config text for `install_hook`.
+fn library(sway: &Sway) -> String {
+    let walls = sway.dir().join("walls");
+    std::fs::create_dir_all(&walls).unwrap();
+    for (name, color) in [("a.png", RED), ("b.png", GREEN)] {
+        RgbImage::from_pixel(32, 24, Rgb(color))
+            .save(walls.join(name))
+            .unwrap();
+    }
+    format!("library = [\"{}\"]\n", walls.display())
+}
+
+#[test]
+fn next_runs_the_hook_for_the_wallpaper_it_picked() {
+    let mut sway = Sway::start(&[SMALL]);
+    let extra = library(&sway);
+    install_hook(&sway, &extra);
+    sway.start_daemon();
+
+    sway.vellum_ok(["next"]);
+
+    let status = sway.vellum_stdout(["status"]);
+    let shown = status
+        .lines()
+        .find_map(|l| l.strip_prefix("HEADLESS-1"))
+        .and_then(|l| l.split_whitespace().nth(1))
+        .expect("a wallpaper on HEADLESS-1")
+        .to_owned();
+    assert_eq!(marker_lines(&sway), [line(&shown, "HEADLESS-1")]);
+}
+
+#[test]
+fn a_rotation_tick_runs_the_hook() {
+    let mut sway = Sway::start(&[SMALL]);
+    let extra = library(&sway) + "[rotation]\ninterval = \"300ms\"\n";
+    install_hook(&sway, &extra);
+    sway.start_daemon();
+    sway.wait_until("the Config to reach the Daemon", || {
+        sway.vellum_stdout(["rotation", "status"]).contains("300ms")
+    });
+
+    sway.vellum_ok(["rotation", "start"]);
+
+    sway.wait_until("a tick to run the hook", || {
+        marker_lines(&sway)
+            .iter()
+            .any(|l| l.ends_with("|HEADLESS-1") && l.contains("/walls/"))
+    });
+}

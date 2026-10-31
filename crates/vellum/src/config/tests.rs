@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use vellum_ipc::{Direction, Easing, Transition, TransitionKind};
+use vellum_ipc::{
+    Direction, Easing, RotationOrder, RotationSettings, RotationSource, Schedule, Transition,
+    TransitionKind,
+};
 
 use super::*;
 use crate::render::FitMode;
@@ -170,4 +173,98 @@ fn the_theme_defaults_to_midnight_and_can_follow_the_terminal() {
         err.message,
         "unknown theme \"solarized\", expected one of \"midnight\", \"terminal\""
     );
+}
+
+#[test]
+fn rotation_defaults_to_a_30_minute_library_shuffle() {
+    let config = parse("").unwrap();
+    assert_eq!(config.rotation, RotationSettings::default());
+    assert_eq!(config.settings().rotation, config.rotation);
+}
+
+#[test]
+fn rotation_and_its_overrides_are_read() {
+    let config = parse(
+        r#"
+[rotation]
+interval = "1h30m"
+source = "favorites"
+order = "sequential"
+sync = true
+
+[rotation.monitor.DP-2]
+interval = 5
+order = "shuffle"
+
+[rotation.monitor."HDMI-A-1"]
+source = "library"
+"#,
+    )
+    .unwrap();
+    let r = &config.rotation;
+    assert_eq!(
+        r.schedule,
+        Schedule {
+            interval_ms: 90 * 60 * 1000,
+            source: RotationSource::Favorites,
+            order: RotationOrder::Sequential,
+        }
+    );
+    assert!(r.sync);
+    // An Override inherits what it does not set from the global Rotation.
+    assert_eq!(
+        r.schedule_for("DP-2"),
+        &Schedule {
+            interval_ms: 5 * 60 * 1000,
+            source: RotationSource::Favorites,
+            order: RotationOrder::Shuffle,
+        }
+    );
+    assert_eq!(r.schedule_for("HDMI-A-1").source, RotationSource::Library);
+    assert_eq!(r.schedule_for("HDMI-A-1").interval_ms, 90 * 60 * 1000);
+}
+
+#[test]
+fn intervals_take_units_or_whole_minutes() {
+    for (text, ms) in [
+        ("\"30m\"", 1_800_000),
+        ("\"90s\"", 90_000),
+        ("\"2h\"", 7_200_000),
+        ("\"1m30s\"", 90_000),
+        ("\"250ms\"", 250),
+        ("\"1h 5m\"", 3_900_000),
+        ("15", 900_000),
+    ] {
+        let config = parse(&format!("[rotation]\ninterval = {text}\n")).unwrap();
+        assert_eq!(config.rotation.schedule.interval_ms, ms, "{text}");
+    }
+    for bad in ["\"soon\"", "\"10\"", "\"0s\"", "0", "\"5d\"", "-3"] {
+        let err = parse(&format!("[rotation]\ninterval = {bad}\n")).unwrap_err();
+        assert_eq!(
+            err.key.as_deref(),
+            Some("rotation.interval"),
+            "{bad}: {err}"
+        );
+        assert!(err.message.contains("\"30m\""), "{bad}: {err}");
+    }
+}
+
+#[test]
+fn rotation_mistakes_name_their_override() {
+    let err = parse("[rotation.monitor.DP-1]\nintervall = \"5m\"\n").unwrap_err();
+    assert_eq!(err.key.as_deref(), Some("rotation.monitor.DP-1.intervall"));
+    let err = parse("[rotation]\norder = \"random\"\n").unwrap_err();
+    assert!(err.message.contains("\"sequential\""), "{err}");
+    // `sync` is global only.
+    let err = parse("[rotation.monitor.DP-1]\nsync = true\n").unwrap_err();
+    assert_eq!(err.key.as_deref(), Some("rotation.monitor.DP-1.sync"));
+}
+
+#[test]
+fn intervals_print_the_way_they_are_written() {
+    assert_eq!(format_interval(1_800_000), "30m");
+    assert_eq!(format_interval(90_000), "1m30s");
+    assert_eq!(format_interval(5_400_000), "1h30m");
+    assert_eq!(format_interval(250), "250ms");
+    assert_eq!(format_interval(1_500), "1.5s");
 }

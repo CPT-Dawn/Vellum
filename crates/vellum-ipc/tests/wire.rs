@@ -5,9 +5,9 @@ use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 
 use vellum_ipc::{
-    Direction, Easing, Error, FitMode, HEADER_LEN, MonitorInfo, MonitorStatus, PROTOCOL_VERSION,
-    PixelFormat, Present, Request, Response, Settings, Status, Transition, TransitionKind,
-    Wallpaper, recv, send,
+    Direction, Easing, Error, FitMode, HEADER_LEN, MonitorInfo, MonitorStatus, Override,
+    PROTOCOL_VERSION, PixelFormat, Present, Request, Response, RotationOrder, RotationSettings,
+    RotationSource, Schedule, Settings, Status, Transition, TransitionKind, Wallpaper, recv, send,
 };
 
 fn settings() -> Settings {
@@ -17,6 +17,22 @@ fn settings() -> Settings {
             direction: Direction::Up,
             duration_ms: 250,
             easing: Easing::Linear,
+        },
+        rotation: RotationSettings {
+            schedule: Schedule {
+                interval_ms: 90_000,
+                source: RotationSource::Favorites,
+                order: RotationOrder::Sequential,
+            },
+            sync: true,
+            overrides: vec![Override {
+                monitor: "DP-2".into(),
+                schedule: Schedule {
+                    interval_ms: 3_600_000,
+                    source: RotationSource::Library,
+                    order: RotationOrder::Shuffle,
+                },
+            }],
         },
     }
 }
@@ -71,6 +87,9 @@ fn requests_survive_a_round_trip() {
         Request::Kill,
         Request::Settings(settings()),
         Request::Settings(Settings::default()),
+        Request::RotationStart,
+        Request::RotationStop,
+        Request::RotationReset("DP-1".into()),
     ];
     for kind in [
         TransitionKind::None,
@@ -129,6 +148,7 @@ fn responses_survive_a_round_trip() {
             pid: 4242,
             rss_bytes: 3 << 20,
             settings: settings(),
+            rotation_running: true,
             monitors: vec![
                 MonitorStatus {
                     name: "DP-1".into(),
@@ -136,10 +156,12 @@ fn responses_survive_a_round_trip() {
                         path: "/w/dunes.jpg".into(),
                         fit: FitMode::Fit,
                     }),
+                    next_change_ms: Some(61_000),
                 },
                 MonitorStatus {
                     name: "eDP-1".into(),
                     wallpaper: None,
+                    next_change_ms: None,
                 },
             ],
         }),
@@ -240,4 +262,25 @@ fn fit_modes_have_stable_names() {
     }
     assert_eq!(FitMode::Stretch.name(), "stretch");
     assert_eq!(FitMode::from_name("tile"), None);
+}
+
+#[test]
+fn rotation_defaults_to_a_30_minute_library_shuffle_without_sync() {
+    let r = RotationSettings::default();
+    assert_eq!(r.schedule.interval_ms, 30 * 60 * 1000);
+    assert_eq!(r.schedule.source, RotationSource::Library);
+    assert_eq!(r.schedule.order, RotationOrder::Shuffle);
+    assert!(!r.sync);
+    assert!(r.overrides.is_empty());
+}
+
+#[test]
+fn an_override_replaces_the_global_rotation_for_its_monitor_only() {
+    let r = settings().rotation;
+    assert_eq!(r.schedule_for("DP-2").interval_ms, 3_600_000);
+    assert_eq!(r.schedule_for("DP-1").interval_ms, 90_000);
+    // `sync` groups the Monitors that follow the global Rotation.
+    assert!(r.in_sync_group("DP-1"));
+    assert!(!r.in_sync_group("DP-2"));
+    assert!(!RotationSettings::default().in_sync_group("DP-1"));
 }

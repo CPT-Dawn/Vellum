@@ -1,6 +1,6 @@
 //! The Daemon's ties to the rest of the system: the single-instance lock,
-//! systemd readiness, its own memory use, and the `vellum` renderer it
-//! spawns.
+//! systemd readiness, its own memory use, the Rotation timerfd, and the
+//! `vellum` renderer it spawns.
 
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixDatagram;
@@ -77,6 +77,8 @@ pub enum Job {
     Restore(String),
     /// `--sync`: read the Config and push its settings.
     Sync,
+    /// `--rotate --monitor <name>...`: a Rotation tick for these Monitors.
+    Rotate(Vec<String>),
 }
 
 impl std::fmt::Display for Job {
@@ -84,6 +86,7 @@ impl std::fmt::Display for Job {
         match self {
             Job::Restore(monitor) => write!(f, "restoring {monitor}"),
             Job::Sync => f.write_str("reading the Config"),
+            Job::Rotate(monitors) => write!(f, "rotating {}", monitors.join(", ")),
         }
     }
 }
@@ -95,6 +98,13 @@ pub fn spawn_render(job: Job) -> Result<Renderer, String> {
     match &job {
         Job::Restore(monitor) => command.args(["render", "--restore", "--monitor", monitor]),
         Job::Sync => command.args(["render", "--sync"]),
+        Job::Rotate(monitors) => {
+            command.args(["render", "--rotate"]);
+            for monitor in monitors {
+                command.args(["--monitor", monitor]);
+            }
+            &mut command
+        }
     };
     let child = command
         .stdin(Stdio::null())
@@ -114,4 +124,64 @@ fn vellum_bin() -> PathBuf {
         .map(|exe| exe.with_file_name("vellum"))
         .filter(|bin| bin.exists())
         .unwrap_or_else(|| PathBuf::from("vellum"))
+}
+
+/// A one-shot `CLOCK_REALTIME` timerfd armed at a wall-clock deadline. It
+/// is readable from the deadline on, and silent while disarmed.
+pub struct Timer {
+    fd: OwnedFd,
+    /// The deadline it is armed at, in Unix milliseconds.
+    armed: Option<u64>,
+}
+
+impl Timer {
+    pub fn new() -> Result<Timer, String> {
+        use rustix::time::{TimerfdClockId, TimerfdFlags, timerfd_create};
+        let fd = timerfd_create(
+            TimerfdClockId::Realtime,
+            TimerfdFlags::CLOEXEC | TimerfdFlags::NONBLOCK,
+        )
+        .map_err(|err| format!("cannot create the Rotation timer: {err}"))?;
+        Ok(Timer { fd, armed: None })
+    }
+
+    pub fn fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        use std::os::fd::AsFd;
+        self.fd.as_fd()
+    }
+
+    /// Arms the timer at `deadline` (Unix ms), or disarms it with `None`.
+    pub fn set(&mut self, deadline: Option<u64>) {
+        use rustix::time::{Itimerspec, TimerfdTimerFlags, Timespec, timerfd_settime};
+        if self.armed == deadline {
+            return;
+        }
+        let zero = Timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        let value = match deadline {
+            // An all-zero value would disarm instead; keep at least 1 ns.
+            Some(ms) => Timespec {
+                tv_sec: (ms / 1000) as i64,
+                tv_nsec: ((ms % 1000) * 1_000_000).max(1) as i64,
+            },
+            None => zero,
+        };
+        let spec = Itimerspec {
+            it_interval: zero,
+            it_value: value,
+        };
+        match timerfd_settime(&self.fd, TimerfdTimerFlags::ABSTIME, &spec) {
+            Ok(_) => self.armed = deadline,
+            Err(err) => eprintln!("vellumd: cannot arm the Rotation timer: {err}"),
+        }
+    }
+
+    /// Clears a fired timer. It stays disarmed until the next [`Timer::set`].
+    pub fn acknowledge(&mut self) {
+        let mut buf = [0u8; 8];
+        let _ = rustix::io::read(&self.fd, &mut buf);
+        self.armed = None;
+    }
 }

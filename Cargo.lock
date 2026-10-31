@@ -2545,6 +2545,7 @@ dependencies = [
  "clap_complete",
  "clap_mangen",
  "fast_image_resize",
+ "fastrand",
  "image",
  "insta",
  "jxl-oxide",

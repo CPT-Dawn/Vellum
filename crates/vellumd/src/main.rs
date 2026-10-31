@@ -4,6 +4,7 @@
 mod config_watch;
 mod daemon;
 mod ipc;
+mod rotation;
 mod state;
 mod system;
 mod wayland;
@@ -56,6 +57,7 @@ fn run() -> Result<(), String> {
     // means the Daemon is ready to present.
     let listener = ipc::Listener::bind(&socket)?;
     let config = config_watch::ConfigWatch::new(vellum_ipc::config_dir_from_env())?;
+    let timer = system::Timer::new()?;
     system::notify_ready();
-    daemon::Daemon::new(wayland, listener, config, state::State::load()).run()
+    daemon::Daemon::new(wayland, listener, config, timer, state::State::load()).run()
 }
