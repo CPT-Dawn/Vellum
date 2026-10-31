@@ -71,9 +71,10 @@ and `malloc_trim` after Transitions weren't needed.
 
 - `crates/vellum/tests/lightness.rs` runs the real Daemon on headless Sway
   with the 2560x1440 + 1920x1080 Monitors. It fails if idle RSS goes over
-  4 MiB or Private_Dirty over 1 MiB (after the first wallpaper, and after a
-  Fade on both the GPU and CPU paths), if the Daemon still maps a memfd once
-  idle, or if it wakes more than twice in 2 s of idle.
+  4 MiB or anonymous memory (heap and stack, smaps `Anonymous`) over 1 MiB
+  (after the first wallpaper, and after a Fade on both the GPU and CPU
+  paths), if the Daemon still maps a memfd once idle, or if it wakes more
+  than twice in 2 s of idle.
 - `.github/workflows/ci.yml` fails if the release `vellumd` grows past
   640 KiB.
 

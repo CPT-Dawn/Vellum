@@ -15,9 +15,12 @@ use support::*;
 /// through it.
 const IDLE_RSS_BUDGET_KIB: u64 = 4 * 1024;
 
-/// Heap and stack the Daemon has written to. Pixels must never land here
-/// (ADR 0003); about 160 KiB release, 300 KiB debug.
-const PRIVATE_DIRTY_BUDGET_KIB: u64 = 1024;
+/// Heap and stack the Daemon has written to, as smaps `Anonymous`. Pixels
+/// must never land here (ADR 0003); about 160 KiB release, 300 KiB debug.
+/// Not `Private_Dirty`: that also counts the Daemon's own read-only code
+/// while a fresh build of it is still dirty in the page cache, which put a
+/// just-linked debug vellumd ~900 KiB over budget with no leak at all.
+const ANONYMOUS_BUDGET_KIB: u64 = 1024;
 
 /// Context switches tolerated in the idle window: zero expected, a couple
 /// allowed for a stray compositor event.
@@ -61,16 +64,16 @@ fn assert_light(sway: &Sway, when: &str) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let rss = sway.daemon_smaps_kib("Rss");
-        let dirty = sway.daemon_smaps_kib("Private_Dirty");
-        let summary = format!("{when}: Rss {rss} KiB, Private_Dirty {dirty} KiB");
+        let anon = sway.daemon_smaps_kib("Anonymous");
+        let summary = format!("{when}: Rss {rss} KiB, Anonymous {anon} KiB");
         eprintln!("{summary}");
-        if rss <= IDLE_RSS_BUDGET_KIB && dirty <= PRIVATE_DIRTY_BUDGET_KIB {
+        if rss <= IDLE_RSS_BUDGET_KIB && anon <= ANONYMOUS_BUDGET_KIB {
             return;
         }
         assert!(
             Instant::now() < deadline,
             "{summary}; the budgets are {IDLE_RSS_BUDGET_KIB} KiB RSS and \
-             {PRIVATE_DIRTY_BUDGET_KIB} KiB Private_Dirty"
+             {ANONYMOUS_BUDGET_KIB} KiB Anonymous"
         );
         std::thread::sleep(Duration::from_millis(100));
     }

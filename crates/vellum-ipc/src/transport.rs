@@ -31,14 +31,16 @@ pub fn send<M: Message>(
     if !fds.is_empty() {
         control.push(SendAncillaryMessage::ScmRights(fds));
     }
-    let mut sent = sendmsg(
-        &socket,
-        &[IoSlice::new(&frame)],
-        &mut control,
-        SendFlags::NOSIGNAL,
-    )?;
+    let mut sent = retrying(|| {
+        sendmsg(
+            &socket,
+            &[IoSlice::new(&frame)],
+            &mut control,
+            SendFlags::NOSIGNAL,
+        )
+    })?;
     while sent < frame.len() {
-        sent += rustix::net::send(&socket, &frame[sent..], SendFlags::NOSIGNAL)?;
+        sent += retrying(|| rustix::net::send(&socket, &frame[sent..], SendFlags::NOSIGNAL))?;
     }
     Ok(())
 }
@@ -58,12 +60,14 @@ fn read_exact(socket: &impl AsFd, mut buf: &mut [u8], fds: &mut Vec<OwnedFd>) ->
     while !buf.is_empty() {
         let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(MAX_FDS))];
         let mut control = RecvAncillaryBuffer::new(&mut space);
-        let received = recvmsg(
-            socket,
-            &mut [IoSliceMut::new(buf)],
-            &mut control,
-            RecvFlags::CMSG_CLOEXEC,
-        )?;
+        let received = retrying(|| {
+            recvmsg(
+                socket,
+                &mut [IoSliceMut::new(buf)],
+                &mut control,
+                RecvFlags::CMSG_CLOEXEC,
+            )
+        })?;
         for message in control.drain() {
             if let RecvAncillaryMessage::ScmRights(received_fds) = message {
                 fds.extend(received_fds);
@@ -75,6 +79,18 @@ fn read_exact(socket: &impl AsFd, mut buf: &mut [u8], fds: &mut Vec<OwnedFd>) ->
         buf = &mut buf[received.bytes..];
     }
     Ok(())
+}
+
+/// Runs a socket call again when it returns EINTR, as std's I/O does.
+/// Sockets with a timeout (ours) return EINTR after a stop and continue
+/// even without a signal handler, and nothing was transferred in that case.
+fn retrying<T>(mut call: impl FnMut() -> rustix::io::Result<T>) -> rustix::io::Result<T> {
+    loop {
+        match call() {
+            Err(rustix::io::Errno::INTR) => continue,
+            other => return other,
+        }
+    }
 }
 
 /// Connects to the Daemon at `socket`, sends `request` with `fds` and waits
