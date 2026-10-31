@@ -75,6 +75,7 @@ fn run_in(terminal: &mut DefaultTerminal, config: Config, theme: Theme) -> Resul
     }
     // The grid is cheap where kitty graphics are; elsewhere it is opt-in.
     model.grid.on = picker.protocol_type() == ProtocolType::Kitty;
+    model.coarse = picker.protocol_type() == ProtocolType::Halfblocks;
     let thumbs = super::cache::thumbs_dir();
     let services: Arc<dyn Services> = Arc::new(Live::new(picker, config, thumbs));
     let latest = Arc::new(Latest::default());

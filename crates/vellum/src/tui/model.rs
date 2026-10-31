@@ -83,6 +83,9 @@ pub struct Model {
     /// The letterbox color the preview and Enter use.
     pub letterbox: Color,
     pub preview: Preview,
+    /// Whether previews are drawn in halfblocks: the terminal answered for
+    /// no graphics protocol, so the preview pane says why it looks coarse.
+    pub coarse: bool,
     /// Applies in flight, oldest first, for the spinner.
     pub applying: Vec<Busy>,
     /// The thumbnail grid, shown instead of the list and preview when on.
@@ -146,6 +149,7 @@ impl Model {
             fit: config.fit,
             letterbox: config.letterbox,
             preview: Preview::default(),
+            coarse: false,
             applying: Vec::new(),
             grid: Grid::default(),
             toast: None,
