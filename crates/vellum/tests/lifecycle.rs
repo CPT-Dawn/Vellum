@@ -67,21 +67,56 @@ fn wallpapers_and_fit_modes_come_back_after_a_daemon_restart() {
             let pa = (a.get_pixel(160, 120).0, a.get_pixel(5, 5).0);
             let pb = (b.get_pixel(100, 75).0, b.get_pixel(2, 2).0);
             let entry = format!("{:?} H1 {:?} H2 {:?}", start.elapsed(), pa, pb);
-            if seen.last().map(|(_, e): &(String, String)| e.split_once(" H1 ").unwrap().1.to_string()) != Some(entry.split_once(" H1 ").unwrap().1.to_string()) {
+            if seen
+                .last()
+                .map(|(_, e): &(String, String)| e.split_once(" H1 ").unwrap().1.to_string())
+                != Some(entry.split_once(" H1 ").unwrap().1.to_string())
+            {
                 seen.push((String::new(), entry));
             }
-            if pa.0 == BLACK && pb.0 == BLACK { break; }
+            if pa.0 == BLACK && pb.0 == BLACK {
+                break;
+            }
             if start.elapsed() > std::time::Duration::from_secs(5) {
-                let out = sway.command("swaymsg").env("SWAYSOCK", std::fs::read_dir(sway.dir()).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.file_name().unwrap().to_string_lossy().starts_with("sway-ipc.")).unwrap()).args(["-t", "get_tree", "-r"]).output().unwrap();
-                panic!("[DEBUG-c1r5] still not black:\n{}\n--- tree ---\n{}\n--- sway log ---\n{}\n--- vellumd log ---\n{}",
-                    seen.iter().map(|(_, e)| e.as_str()).collect::<Vec<_>>().join("\n"),
-                    String::from_utf8_lossy(&out.stdout).chars().take(3000).collect::<String>(),
+                let out = sway
+                    .command("swaymsg")
+                    .env(
+                        "SWAYSOCK",
+                        std::fs::read_dir(sway.dir())
+                            .unwrap()
+                            .filter_map(|e| e.ok())
+                            .map(|e| e.path())
+                            .find(|p| {
+                                p.file_name()
+                                    .unwrap()
+                                    .to_string_lossy()
+                                    .starts_with("sway-ipc.")
+                            })
+                            .unwrap(),
+                    )
+                    .args(["-t", "get_tree", "-r"])
+                    .output()
+                    .unwrap();
+                panic!(
+                    "[DEBUG-c1r5] still not black:\n{}\n--- tree ---\n{}\n--- sway log ---\n{}\n--- vellumd log ---\n{}",
+                    seen.iter()
+                        .map(|(_, e)| e.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    String::from_utf8_lossy(&out.stdout)
+                        .chars()
+                        .take(3000)
+                        .collect::<String>(),
                     std::fs::read_to_string(sway.dir().join("sway.log")).unwrap_or_default(),
-                    sway.daemon_log());
+                    sway.daemon_log()
+                );
             }
             std::thread::sleep(std::time::Duration::from_millis(30));
         }
-        eprintln!("[DEBUG-c1r5] went black: {:?}", seen.iter().map(|(_, e)| e.as_str()).collect::<Vec<_>>());
+        eprintln!(
+            "[DEBUG-c1r5] went black: {:?}",
+            seen.iter().map(|(_, e)| e.as_str()).collect::<Vec<_>>()
+        );
     }
 
     sway.start_daemon();
