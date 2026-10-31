@@ -407,13 +407,17 @@ A key is a character (`"j"`, `"G"`, `"/"`), or one of `enter`, `esc`,
 `pageup`, `pagedown` and `f1` to `f24`, optionally after `ctrl-` or `alt-`.
 Write uppercase letters as themselves (`"G"`, not `"shift-g"`). Keys
 separated by spaces form a sequence. If a key is both bound alone and the
-start of a sequence, it waits 400 ms for the rest.
+start of a sequence, it waits 400 ms for the rest. By default `g` toggles
+the grid and `g g` jumps to the top, so a lone `g` takes effect after that
+pause, or at once if you press another key.
 
 Browsing the list:
 
 | Action | Default | Does |
 |---|---|---|
-| `down`, `up` | `j` `down`, `k` `up` | Move |
+| `down`, `up` | `j` `down`, `k` `up` | Move (a row of tiles in the grid) |
+| `left`, `right` | `h` `left`, `l` `right` | Move between tiles in the grid |
+| `grid` | `g` | Switch between the list and the thumbnail grid |
 | `top`, `bottom` | `g g` `home`, `G` `end` | Jump to either end |
 | `page_down`, `page_up` | `ctrl-d` `pagedown`, `ctrl-u` `pageup` | Half a page |
 | `apply` | `enter` | Apply to the targeted monitor |
