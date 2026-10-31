@@ -1,5 +1,5 @@
 //! `vellum set <file>`: decode, render for each targeted Monitor, present.
-//! `vellum render --restore` shares [`present`].
+//! `vellum render --restore` and `--sync` share [`present`].
 
 use std::os::fd::AsFd;
 use std::path::Path;
@@ -8,47 +8,65 @@ use image::RgbaImage;
 use vellum_ipc::{MonitorInfo, PixelFormat, Present, Request, Response, Transition};
 
 use crate::client::{self, ask, unexpected};
+use crate::config::Config;
 use crate::frame::Frame;
-use crate::render::{DEFAULT_LETTERBOX, FitMode, Target, render};
+use crate::render::{Color, FitMode, Target, render};
 
-/// Sets `file` on the Monitor named `monitor`, or on every Monitor, playing
-/// `transition` on each.
+/// How a frame is rendered and presented.
+#[derive(Debug, Clone, Copy)]
+pub struct Look {
+    pub fit: FitMode,
+    pub letterbox: Color,
+    pub transition: Transition,
+    /// A restore frame is dropped by the Daemon if the Monitor already
+    /// shows an up-to-date one.
+    pub restore: bool,
+}
+
+/// Sets `file` (a path, or a name in the Library) on the Monitor named
+/// `monitor`, or on every Monitor. `fit` and `transition` already have the
+/// command's flags applied over the Config.
 pub fn run(
     file: &Path,
     monitor: Option<&str>,
+    config: &Config,
     fit: FitMode,
     transition: Transition,
 ) -> Result<(), String> {
-    let image = crate::decode::load(file)?;
+    let file = crate::library::resolve(file, &config.library)?;
+    let image = crate::decode::load(&file)?;
 
     let socket = client::daemon()?;
     let monitors = target(client::monitors(&socket)?, monitor)?;
 
-    let source = std::path::absolute(file).unwrap_or_else(|_| file.to_owned());
+    let source = std::path::absolute(&file).unwrap_or(file);
     let source = source.to_string_lossy();
+    let look = Look {
+        fit,
+        letterbox: config.letterbox,
+        transition,
+        restore: false,
+    };
     for monitor in &monitors {
-        present(&socket, &image, monitor, fit, &source, transition, false)?;
+        present(&socket, &image, monitor, &source, look)?;
     }
     Ok(())
 }
 
 /// Renders `image` for `monitor` and presents it, recording `source` and
-/// `fit` in State. A `restore` frame is dropped by the Daemon if the Monitor
-/// already shows an up-to-date one.
+/// the Fit mode in State.
 pub fn present(
     socket: &Path,
     image: &RgbaImage,
     monitor: &MonitorInfo,
-    fit: FitMode,
     source: &str,
-    transition: Transition,
-    restore: bool,
+    look: Look,
 ) -> Result<(), String> {
     let (width, height) = (monitor.physical_width, monitor.physical_height);
     let mut frame = Frame::new(width, height)
         .map_err(|err| format!("cannot allocate a frame for {}: {err}", monitor.name))?;
     let target = Target::from_scale_120(width, height, monitor.scale_120);
-    render(image, target, fit, DEFAULT_LETTERBOX, frame.pixels_mut());
+    render(image, target, look.fit, look.letterbox, frame.pixels_mut());
     let stride = frame.stride;
     let memfd = frame
         .finish()
@@ -60,9 +78,9 @@ pub fn present(
         stride,
         format: PixelFormat::Xrgb8888,
         source: source.to_owned(),
-        transition,
-        fit: fit.into(),
-        restore,
+        transition: look.transition,
+        fit: look.fit.into(),
+        restore: look.restore,
     });
     match ask(socket, &present, &[memfd.as_fd()])? {
         Response::Ok => Ok(()),

@@ -19,6 +19,7 @@ mod kind {
     pub const MONITORS: u16 = 0x0101;
     pub const STATUS: u16 = 0x0102;
     pub const PRESENT: u16 = 0x0201;
+    pub const SETTINGS: u16 = 0x0301;
     pub const KILL: u16 = 0x0502;
 
     pub const OK: u16 = 0x8000;
@@ -41,6 +42,22 @@ pub enum Request {
     Status,
     /// Stop the Daemon. Answered by [`Response::Ok`] just before it exits.
     Kill,
+    /// The settings `vellum render --sync` read from a valid Config. They
+    /// replace the previous ones whole. Answered by [`Response::Ok`].
+    Settings(Settings),
+}
+
+/// The Config values the Daemon holds, pushed by `vellum render --sync`
+/// whenever the Config changes. The Daemon never reads the Config itself
+/// (ADR 0003); it keeps the last good values it was sent and reports them
+/// in [`Status`]. Until the first push, every field has its default.
+///
+/// To add a setting: add a field here, write and read it at the end of
+/// [`write_settings`] and [`read_settings`], and bump `PROTOCOL_VERSION`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Settings {
+    /// The Transition `vellum set` plays when no flag overrides it.
+    pub transition: Transition,
 }
 
 /// A frame for one Monitor. The pixels are in the accompanying memfd at
@@ -205,6 +222,8 @@ pub struct Status {
     pub rss_bytes: u64,
     /// Every connected Monitor, sorted by name.
     pub monitors: Vec<MonitorStatus>,
+    /// The settings in effect: the last good Config pushed, or defaults.
+    pub settings: Settings,
 }
 
 /// One connected Monitor in a [`Status`].
@@ -296,6 +315,7 @@ impl Body for Request {
             Request::Present(_) => kind::PRESENT,
             Request::Status => kind::STATUS,
             Request::Kill => kind::KILL,
+            Request::Settings(_) => kind::SETTINGS,
         }
     }
 
@@ -309,13 +329,11 @@ impl Body for Request {
                 w.u32(p.stride);
                 w.u32(p.format as u32);
                 w.str(&p.source);
-                w.u8(p.transition.kind as u8);
-                w.u8(p.transition.direction as u8);
-                w.u8(p.transition.easing as u8);
-                w.u32(p.transition.duration_ms);
+                write_transition(w, &p.transition);
                 w.u8(p.fit.code());
                 w.u8(u8::from(p.restore));
             }
+            Request::Settings(settings) => write_settings(w, settings),
         }
     }
 
@@ -338,9 +356,27 @@ impl Body for Request {
             }),
             kind::STATUS => Request::Status,
             kind::KILL => Request::Kill,
+            kind::SETTINGS => Request::Settings(read_settings(r)?),
             other => return Err(Error::UnknownKind(other)),
         })
     }
+}
+
+fn write_transition(w: &mut Writer, t: &Transition) {
+    w.u8(t.kind as u8);
+    w.u8(t.direction as u8);
+    w.u8(t.easing as u8);
+    w.u32(t.duration_ms);
+}
+
+fn write_settings(w: &mut Writer, settings: &Settings) {
+    write_transition(w, &settings.transition);
+}
+
+fn read_settings(r: &mut Reader<'_>) -> Result<Settings, Error> {
+    Ok(Settings {
+        transition: read_transition(r)?,
+    })
 }
 
 fn read_transition(r: &mut Reader<'_>) -> Result<Transition, Error> {
@@ -414,6 +450,7 @@ impl Body for Response {
                         }
                     }
                 }
+                write_settings(w, &status.settings);
             }
         }
     }
@@ -459,6 +496,7 @@ impl Body for Response {
                     pid,
                     rss_bytes,
                     monitors,
+                    settings: read_settings(r)?,
                 })
             }
             other => return Err(Error::UnknownKind(other)),

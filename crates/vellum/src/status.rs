@@ -1,8 +1,9 @@
 //! `vellum status`: the Daemon, its memory use, and what each Monitor shows.
 
-use vellum_ipc::Status;
+use vellum_ipc::{Status, Transition, TransitionKind};
 
 use crate::client;
+use crate::config::Named;
 
 pub fn run() -> Result<(), String> {
     let status = client::status(&client::daemon()?)?;
@@ -12,10 +13,11 @@ pub fn run() -> Result<(), String> {
 
 fn report(status: &Status) -> String {
     let mut out = format!(
-        "vellumd {} (pid {}), {} resident\n\n",
+        "vellumd {} (pid {}), {} resident\ntransition: {}\n\n",
         status.version,
         status.pid,
-        memory(status.rss_bytes)
+        memory(status.rss_bytes),
+        transition(&status.settings.transition)
     );
     let rows: Vec<[&str; 3]> = status
         .monitors
@@ -44,6 +46,21 @@ fn report(status: &Status) -> String {
     out
 }
 
+/// The default Transition in Config words: "wipe up, 250 ms, linear".
+fn transition(t: &Transition) -> String {
+    match t.kind {
+        TransitionKind::None => "none".into(),
+        TransitionKind::Fade => format!("fade, {} ms, {}", t.duration_ms, t.easing.name()),
+        TransitionKind::Wipe | TransitionKind::Slide => format!(
+            "{} {}, {} ms, {}",
+            t.kind.name(),
+            t.direction.name(),
+            t.duration_ms,
+            t.easing.name()
+        ),
+    }
+}
+
 /// Bytes as a short human size: "812 KB", "2.4 MB".
 fn memory(bytes: u64) -> String {
     const MB: u64 = 1024 * 1024;
@@ -57,7 +74,9 @@ fn memory(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vellum_ipc::{FitMode, MonitorStatus, Wallpaper};
+    use vellum_ipc::{
+        Direction, Easing, FitMode, MonitorStatus, Settings, Transition, TransitionKind, Wallpaper,
+    };
 
     #[test]
     fn the_report_names_the_daemon_and_each_monitor() {
@@ -78,14 +97,32 @@ mod tests {
                     wallpaper: None,
                 },
             ],
+            settings: Settings::default(),
         };
         assert_eq!(
             report(&status),
-            "vellumd 2.0.0 (pid 42), 2.4 MB resident\n\n\
+            "vellumd 2.0.0 (pid 42), 2.4 MB resident\n\
+             transition: fade, 600 ms, ease-out\n\n\
              MONITOR   FIT     WALLPAPER\n\
              DP-1      center  /w/dunes.jpg\n\
              HDMI-A-1  -       -\n"
         );
+    }
+
+    #[test]
+    fn the_transition_line_names_a_direction_only_where_it_matters() {
+        let slide = Transition {
+            kind: TransitionKind::Slide,
+            direction: Direction::Up,
+            duration_ms: 250,
+            easing: Easing::Linear,
+        };
+        assert_eq!(transition(&slide), "slide up, 250 ms, linear");
+        let none = Transition {
+            kind: TransitionKind::None,
+            ..slide
+        };
+        assert_eq!(transition(&none), "none");
     }
 
     #[test]

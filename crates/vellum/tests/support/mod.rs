@@ -155,6 +155,21 @@ impl Sway {
         cmd
     }
 
+    /// The Config file `vellum` reads in this sandbox.
+    pub fn config_path(&self) -> PathBuf {
+        self.dir.path().join("config/vellum/config.toml")
+    }
+
+    /// Writes the Config file in one step (temp file plus rename, as most
+    /// editors save), creating its directory.
+    pub fn write_config(&self, text: &str) {
+        let path = self.config_path();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let tmp = path.with_extension("tmp");
+        fs::write(&tmp, text).unwrap();
+        fs::rename(&tmp, &path).unwrap();
+    }
+
     /// Starts `vellumd` and waits until its socket answers.
     pub fn start_daemon(&mut self) -> u32 {
         self.start_daemon_with(&[])
