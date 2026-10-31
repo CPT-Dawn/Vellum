@@ -7,7 +7,13 @@
 //! ```text
 //! vellum-state 1
 //! wallpaper <monitor> <fit> <absolute path to the end of the line>
+//! rotation running
+//! deadline <monitor> <unix milliseconds>
 //! ```
+//!
+//! The `rotation` and `deadline` lines hold the Rotation timer, so a
+//! started Rotation survives a restart. The Rotation deck and position
+//! belong to `vellum`, in a file of its own.
 //!
 //! Lines are kept in the order the wallpapers were last set, so the last
 //! line is the most recent wallpaper: the default for a Monitor Vellum has
@@ -20,12 +26,16 @@ use std::path::{Path, PathBuf};
 
 use vellum_ipc::{FitMode, Wallpaper};
 
+use crate::rotation::Rotation;
+
 const HEADER: &str = "vellum-state 1";
 
 pub struct State {
     path: Option<PathBuf>,
     /// Monitor name and its wallpaper, least recently set first.
     wallpapers: Vec<(String, Wallpaper)>,
+    /// The Rotation timer. Call [`State::save`] after changing it.
+    pub rotation: Rotation,
 }
 
 impl State {
@@ -33,12 +43,16 @@ impl State {
     /// an empty State.
     pub fn load() -> State {
         let path = state_path();
-        let wallpapers = path
+        let (wallpapers, rotation) = path
             .as_deref()
             .and_then(|p| fs::read_to_string(p).ok())
             .map(|text| parse(&text))
             .unwrap_or_default();
-        State { path, wallpapers }
+        State {
+            path,
+            wallpapers,
+            rotation,
+        }
     }
 
     /// The wallpaper remembered for `monitor`.
@@ -65,17 +79,18 @@ impl State {
         }
         self.wallpapers.retain(|(name, _)| name != monitor);
         self.wallpapers.push((monitor.to_owned(), wallpaper));
-        if let Err(err) = self.save() {
-            eprintln!("vellumd: cannot save State: {err}");
-        }
+        self.save();
     }
 
-    fn save(&self) -> Result<(), String> {
+    /// Writes State to disk, logging a failure.
+    pub fn save(&self) {
         let Some(path) = &self.path else {
-            return Err("neither XDG_STATE_HOME nor HOME is set".into());
+            eprintln!("vellumd: cannot save State: neither XDG_STATE_HOME nor HOME is set");
+            return;
         };
-        write_atomically(path, &format(&self.wallpapers))
-            .map_err(|err| format!("{}: {err}", path.display()))
+        if let Err(err) = write_atomically(path, &format(&self.wallpapers, &self.rotation)) {
+            eprintln!("vellumd: cannot save State: {}: {err}", path.display());
+        }
     }
 }
 
@@ -88,13 +103,24 @@ fn state_path() -> Option<PathBuf> {
     Some(base.join("vellum").join("state"))
 }
 
-fn parse(text: &str) -> Vec<(String, Wallpaper)> {
+fn parse(text: &str) -> (Vec<(String, Wallpaper)>, Rotation) {
     let mut lines = text.lines();
+    let mut rotation = Rotation::default();
     if lines.next() != Some(HEADER) {
-        return Vec::new();
+        return (Vec::new(), rotation);
     }
     let mut wallpapers: Vec<(String, Wallpaper)> = Vec::new();
     for line in lines {
+        if line == "rotation running" {
+            rotation.running = true;
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("deadline ") {
+            if let Some((monitor, Ok(ms))) = rest.split_once(' ').map(|(m, d)| (m, d.parse())) {
+                rotation.deadlines.insert(monitor.to_owned(), ms);
+            }
+            continue;
+        }
         let mut fields = line.splitn(4, ' ');
         let (Some("wallpaper"), Some(monitor), Some(fit), Some(path)) =
             (fields.next(), fields.next(), fields.next(), fields.next())
@@ -113,13 +139,22 @@ fn parse(text: &str) -> Vec<(String, Wallpaper)> {
             },
         ));
     }
-    wallpapers
+    if !rotation.running {
+        rotation.deadlines.clear();
+    }
+    (wallpapers, rotation)
 }
 
-fn format(wallpapers: &[(String, Wallpaper)]) -> String {
+fn format(wallpapers: &[(String, Wallpaper)], rotation: &Rotation) -> String {
     let mut text = format!("{HEADER}\n");
     for (monitor, w) in wallpapers {
         text += &format!("wallpaper {monitor} {} {}\n", w.fit.name(), w.path);
+    }
+    if rotation.running {
+        text += "rotation running\n";
+        for (monitor, ms) in &rotation.deadlines {
+            text += &format!("deadline {monitor} {ms}\n");
+        }
     }
     text
 }
@@ -151,7 +186,20 @@ mod tests {
             ("DP-1".to_owned(), wallpaper("/w/a b.png", FitMode::Center)),
             ("eDP-1".to_owned(), wallpaper("/w/c.jpg", FitMode::Fill)),
         ];
-        assert_eq!(parse(&format(&wallpapers)), wallpapers);
+        let mut rotation = Rotation {
+            running: true,
+            ..Rotation::default()
+        };
+        rotation.deadlines.insert("DP-1".into(), 1_700_000_000_123);
+        assert_eq!(
+            parse(&format(&wallpapers, &rotation)),
+            (wallpapers.clone(), rotation)
+        );
+        // A stopped Rotation leaves no trace.
+        assert_eq!(
+            parse(&format(&wallpapers, &Rotation::default())),
+            (wallpapers, Rotation::default())
+        );
     }
 
     #[test]
@@ -163,12 +211,16 @@ mod tests {
                     wallpaper DP-3\n\
                     wallpaper DP-4 fit /w/d.png\n";
         assert_eq!(
-            parse(text),
+            parse(text).0,
             [
                 ("DP-1".to_owned(), wallpaper("/w/a.png", FitMode::Fill)),
                 ("DP-4".to_owned(), wallpaper("/w/d.png", FitMode::Fit)),
             ]
         );
-        assert!(parse("something else\nwallpaper DP-1 fill /a\n").is_empty());
+        assert!(
+            parse("something else\nwallpaper DP-1 fill /a\n")
+                .0
+                .is_empty()
+        );
     }
 }

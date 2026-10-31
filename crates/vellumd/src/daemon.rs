@@ -2,8 +2,8 @@
 //!
 //! Every event source is one entry in [`Source`]. The loop polls them all
 //! with an infinite timeout, so an idle Daemon makes zero wakeups. To add a
-//! source (the Rotation timerfd), add a variant,
-//! push its fd in [`Daemon::run`] and handle it in the match. Running
+//! source, add a variant, push its fd in [`Daemon::run`] and handle it in
+//! the match. Running
 //! `vellum render` children are polled after the fixed sources, one pidfd
 //! each, so they are reaped the moment they exit.
 //!
@@ -15,6 +15,11 @@
 //! it spawns `vellum render --sync`, which reads the Config and pushes
 //! [`Settings`] back. Only one sync runs at a time; a change while one runs
 //! queues exactly one more, so the last sync always reads the newest file.
+//!
+//! While Rotation runs, a timerfd is armed at the earliest Monitor deadline
+//! (see [`crate::rotation`]). When it fires, the Daemon spawns one `vellum
+//! render --rotate` for every Monitor that is due; `vellum` picks the
+//! wallpapers.
 
 use std::os::fd::{AsFd, OwnedFd};
 
@@ -23,8 +28,9 @@ use vellum_ipc::{MonitorStatus, Request, Response, Settings, Status, Wallpaper};
 
 use crate::config_watch::ConfigWatch;
 use crate::ipc::{Client, Listener};
+use crate::rotation::now_ms;
 use crate::state::State;
-use crate::system::{self, Job, Renderer};
+use crate::system::{self, Job, Renderer, Timer};
 use crate::wayland::Wayland;
 
 /// The fds the loop waits on, in poll order.
@@ -33,14 +39,16 @@ enum Source {
     Wayland,
     Ipc,
     Config,
+    Timer,
 }
 
-const SOURCES: [Source; 3] = [Source::Wayland, Source::Ipc, Source::Config];
+const SOURCES: [Source; 4] = [Source::Wayland, Source::Ipc, Source::Config, Source::Timer];
 
 pub struct Daemon {
     wayland: Wayland,
     listener: Listener,
     config: ConfigWatch,
+    timer: Timer,
     state: State,
     /// The last good Config values `vellum render --sync` pushed.
     settings: Settings,
@@ -52,11 +60,18 @@ pub struct Daemon {
 }
 
 impl Daemon {
-    pub fn new(wayland: Wayland, listener: Listener, config: ConfigWatch, state: State) -> Daemon {
+    pub fn new(
+        wayland: Wayland,
+        listener: Listener,
+        config: ConfigWatch,
+        timer: Timer,
+        state: State,
+    ) -> Daemon {
         Daemon {
             wayland,
             listener,
             config,
+            timer,
             state,
             settings: Settings::default(),
             renderers: Vec::new(),
@@ -71,6 +86,7 @@ impl Daemon {
         loop {
             self.restore_missing_frames();
             self.start_sync();
+            self.arm_rotation();
             self.wayland.flush()?;
             let (ready, exited) = {
                 let wayland_fd = self.wayland.fd();
@@ -80,6 +96,7 @@ impl Daemon {
                         Source::Wayland => wayland_fd.as_fd(),
                         Source::Ipc => self.listener.listener().as_fd(),
                         Source::Config => self.config.fd(),
+                        Source::Timer => self.timer.fd(),
                     })
                     .chain(self.renderers.iter().map(|r| r.pidfd.as_fd()))
                     .map(|fd| PollFd::from_borrowed_fd(fd, PollFlags::IN))
@@ -129,6 +146,10 @@ impl Daemon {
                             self.sync_wanted = true;
                         }
                     }
+                    Source::Timer => {
+                        self.timer.acknowledge();
+                        self.rotate_due();
+                    }
                 }
             }
         }
@@ -171,6 +192,45 @@ impl Daemon {
         }
     }
 
+    /// The connected Monitors' names.
+    fn connected(&self) -> Vec<String> {
+        self.wayland
+            .monitors()
+            .into_iter()
+            .map(|m| m.name)
+            .collect()
+    }
+
+    /// Gives newly connected Monitors a Rotation deadline and arms the
+    /// timer at the earliest one (or disarms it).
+    fn arm_rotation(&mut self) {
+        let connected = self.connected();
+        let settings = &self.settings.rotation;
+        if self.state.rotation.ensure(now_ms(), &connected, settings) {
+            self.state.save();
+        }
+        self.timer
+            .set(self.state.rotation.next_deadline(&connected));
+    }
+
+    /// The timer fired: spawn one `vellum render --rotate` for every
+    /// Monitor that is due.
+    fn rotate_due(&mut self) {
+        let connected = self.connected();
+        let due = self
+            .state
+            .rotation
+            .take_due(now_ms(), &connected, &self.settings.rotation);
+        if due.is_empty() {
+            return;
+        }
+        self.state.save();
+        match system::spawn_render(Job::Rotate(due)) {
+            Ok(renderer) => self.renderers.push(renderer),
+            Err(err) => eprintln!("vellumd: {err}"),
+        }
+    }
+
     /// Spawns `vellum render --sync` if the Config may have changed and no
     /// sync is running.
     fn start_sync(&mut self) {
@@ -205,6 +265,7 @@ impl Daemon {
     }
 
     fn status(&self) -> Status {
+        let now = now_ms();
         Status {
             version: env!("CARGO_PKG_VERSION").into(),
             pid: std::process::id(),
@@ -215,10 +276,12 @@ impl Daemon {
                 .into_iter()
                 .map(|m| MonitorStatus {
                     wallpaper: self.state.wallpaper(&m.name).cloned(),
+                    next_change_ms: self.state.rotation.remaining(&m.name, now),
                     name: m.name,
                 })
                 .collect(),
             settings: self.settings.clone(),
+            rotation_running: self.state.rotation.running,
         }
     }
 
@@ -228,7 +291,44 @@ impl Daemon {
             Request::Monitors => Response::Monitors(self.wayland.monitors()),
             Request::Status => Response::Status(self.status()),
             Request::Settings(settings) => {
+                if settings.rotation != self.settings.rotation
+                    && self
+                        .state
+                        .rotation
+                        .settings_changed(now_ms(), &settings.rotation)
+                {
+                    self.state.save();
+                }
                 self.settings = settings;
+                Response::Ok
+            }
+            Request::RotationStart => {
+                let connected = self.connected();
+                if self
+                    .state
+                    .rotation
+                    .start(now_ms(), &connected, &self.settings.rotation)
+                {
+                    self.state.save();
+                }
+                Response::Ok
+            }
+            Request::RotationStop => {
+                if self.state.rotation.stop() {
+                    self.state.save();
+                }
+                Response::Ok
+            }
+            Request::RotationReset(monitor) => {
+                let connected = self.connected();
+                if self.state.rotation.reset(
+                    &monitor,
+                    now_ms(),
+                    &connected,
+                    &self.settings.rotation,
+                ) {
+                    self.state.save();
+                }
                 Response::Ok
             }
             Request::Kill => {

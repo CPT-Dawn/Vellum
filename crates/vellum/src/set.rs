@@ -49,6 +49,8 @@ pub fn run(
     };
     for monitor in &monitors {
         present(&socket, &image, monitor, &source, look)?;
+        // A manual pick stays up a full Rotation interval.
+        crate::rotation::reset_timer(&socket, &monitor.name)?;
     }
     Ok(())
 }

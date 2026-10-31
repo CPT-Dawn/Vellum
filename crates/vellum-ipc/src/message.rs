@@ -20,6 +20,9 @@ mod kind {
     pub const STATUS: u16 = 0x0102;
     pub const PRESENT: u16 = 0x0201;
     pub const SETTINGS: u16 = 0x0301;
+    pub const ROTATION_START: u16 = 0x0401;
+    pub const ROTATION_STOP: u16 = 0x0402;
+    pub const ROTATION_RESET: u16 = 0x0403;
     pub const KILL: u16 = 0x0502;
 
     pub const OK: u16 = 0x8000;
@@ -45,6 +48,15 @@ pub enum Request {
     /// The settings `vellum render --sync` read from a valid Config. They
     /// replace the previous ones whole. Answered by [`Response::Ok`].
     Settings(Settings),
+    /// Start Rotation on every Monitor. It stays on across restarts until
+    /// stopped. Answered by [`Response::Ok`].
+    RotationStart,
+    /// Stop Rotation. Answered by [`Response::Ok`].
+    RotationStop,
+    /// A wallpaper was applied by hand on this Monitor: restart its
+    /// Rotation timer so the pick stays a full interval. With `sync`, the
+    /// whole sync group restarts. Answered by [`Response::Ok`].
+    RotationReset(String),
 }
 
 /// The Config values the Daemon holds, pushed by `vellum render --sync`
@@ -58,6 +70,82 @@ pub enum Request {
 pub struct Settings {
     /// The Transition `vellum set` plays when no flag overrides it.
     pub transition: Transition,
+    /// The Rotation schedule. The Daemon only keeps time with it; `vellum
+    /// render --rotate` picks the wallpapers.
+    pub rotation: RotationSettings,
+}
+
+/// The Rotation schedule: the global one, `sync`, and per-Monitor
+/// Overrides.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RotationSettings {
+    /// The global Rotation, for every Monitor without an Override.
+    pub schedule: Schedule,
+    /// Monitors following the global Rotation share one wallpaper per tick.
+    pub sync: bool,
+    /// Per-Monitor Overrides, each already merged over the global schedule.
+    pub overrides: Vec<Override>,
+}
+
+impl RotationSettings {
+    /// The schedule `monitor` follows: its Override, else the global one.
+    pub fn schedule_for(&self, monitor: &str) -> &Schedule {
+        self.overrides
+            .iter()
+            .find(|o| o.monitor == monitor)
+            .map_or(&self.schedule, |o| &o.schedule)
+    }
+
+    /// Whether `monitor` ticks and draws together with the other Monitors
+    /// following the global Rotation (`sync = true` and no Override).
+    pub fn in_sync_group(&self, monitor: &str) -> bool {
+        self.sync && !self.overrides.iter().any(|o| o.monitor == monitor)
+    }
+}
+
+/// A per-Monitor Rotation that replaces the global one for that Monitor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Override {
+    pub monitor: String,
+    pub schedule: Schedule,
+}
+
+/// How often and from where one Rotation draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Schedule {
+    /// Time between changes, in milliseconds.
+    pub interval_ms: u64,
+    pub source: RotationSource,
+    pub order: RotationOrder,
+}
+
+impl Default for Schedule {
+    /// Every 30 minutes, shuffled, from the Library.
+    fn default() -> Self {
+        Schedule {
+            interval_ms: 30 * 60 * 1000,
+            source: RotationSource::Library,
+            order: RotationOrder::Shuffle,
+        }
+    }
+}
+
+/// The wallpapers a Rotation draws from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RotationSource {
+    Library = 0,
+    Favorites = 1,
+}
+
+/// The order a Rotation draws in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RotationOrder {
+    /// A shuffled deck: no repeats until every wallpaper has been shown.
+    Shuffle = 0,
+    /// Library order, remembering the position.
+    Sequential = 1,
 }
 
 /// A frame for one Monitor. The pixels are in the accompanying memfd at
@@ -224,6 +312,8 @@ pub struct Status {
     pub monitors: Vec<MonitorStatus>,
     /// The settings in effect: the last good Config pushed, or defaults.
     pub settings: Settings,
+    /// Whether Rotation is started.
+    pub rotation_running: bool,
 }
 
 /// One connected Monitor in a [`Status`].
@@ -233,6 +323,9 @@ pub struct MonitorStatus {
     /// The wallpaper State holds for it: the one on screen, or the one a
     /// restore is about to put there. `None` if Vellum has nothing to show.
     pub wallpaper: Option<Wallpaper>,
+    /// Milliseconds until Rotation changes it, `None` while Rotation is
+    /// stopped.
+    pub next_change_ms: Option<u64>,
 }
 
 /// A wallpaper file and the Fit mode it is shown with.
@@ -316,12 +409,20 @@ impl Body for Request {
             Request::Status => kind::STATUS,
             Request::Kill => kind::KILL,
             Request::Settings(_) => kind::SETTINGS,
+            Request::RotationStart => kind::ROTATION_START,
+            Request::RotationStop => kind::ROTATION_STOP,
+            Request::RotationReset(_) => kind::ROTATION_RESET,
         }
     }
 
     fn write(&self, w: &mut Writer) {
         match self {
-            Request::Monitors | Request::Status | Request::Kill => {}
+            Request::Monitors
+            | Request::Status
+            | Request::Kill
+            | Request::RotationStart
+            | Request::RotationStop => {}
+            Request::RotationReset(monitor) => w.str(monitor),
             Request::Present(p) => {
                 w.str(&p.monitor);
                 w.u32(p.width);
@@ -357,6 +458,9 @@ impl Body for Request {
             kind::STATUS => Request::Status,
             kind::KILL => Request::Kill,
             kind::SETTINGS => Request::Settings(read_settings(r)?),
+            kind::ROTATION_START => Request::RotationStart,
+            kind::ROTATION_STOP => Request::RotationStop,
+            kind::ROTATION_RESET => Request::RotationReset(r.string()?),
             other => return Err(Error::UnknownKind(other)),
         })
     }
@@ -371,11 +475,77 @@ fn write_transition(w: &mut Writer, t: &Transition) {
 
 fn write_settings(w: &mut Writer, settings: &Settings) {
     write_transition(w, &settings.transition);
+    let rotation = &settings.rotation;
+    write_schedule(w, &rotation.schedule);
+    w.u8(u8::from(rotation.sync));
+    w.u16(rotation.overrides.len() as u16);
+    for o in &rotation.overrides {
+        w.str(&o.monitor);
+        write_schedule(w, &o.schedule);
+    }
 }
 
 fn read_settings(r: &mut Reader<'_>) -> Result<Settings, Error> {
+    let transition = read_transition(r)?;
+    let schedule = read_schedule(r)?;
+    let sync = r.u8()? != 0;
+    let count = r.u16()?;
+    let mut overrides = Vec::with_capacity(count.into());
+    for _ in 0..count {
+        overrides.push(Override {
+            monitor: r.string()?,
+            schedule: read_schedule(r)?,
+        });
+    }
     Ok(Settings {
-        transition: read_transition(r)?,
+        transition,
+        rotation: RotationSettings {
+            schedule,
+            sync,
+            overrides,
+        },
+    })
+}
+
+fn write_schedule(w: &mut Writer, s: &Schedule) {
+    w.u64(s.interval_ms);
+    w.u8(s.source as u8);
+    w.u8(s.order as u8);
+}
+
+fn read_schedule(r: &mut Reader<'_>) -> Result<Schedule, Error> {
+    let interval_ms = r.u64()?;
+    let source = match r.u8()? {
+        0 => RotationSource::Library,
+        1 => RotationSource::Favorites,
+        _ => return Err(Error::BadValue("rotation source")),
+    };
+    let order = match r.u8()? {
+        0 => RotationOrder::Shuffle,
+        1 => RotationOrder::Sequential,
+        _ => return Err(Error::BadValue("rotation order")),
+    };
+    Ok(Schedule {
+        interval_ms,
+        source,
+        order,
+    })
+}
+
+fn write_option_u64(w: &mut Writer, v: Option<u64>) {
+    match v {
+        None => w.u8(0),
+        Some(v) => {
+            w.u8(1);
+            w.u64(v);
+        }
+    }
+}
+
+fn read_option_u64(r: &mut Reader<'_>) -> Result<Option<u64>, Error> {
+    Ok(match r.u8()? {
+        0 => None,
+        _ => Some(r.u64()?),
     })
 }
 
@@ -449,8 +619,10 @@ impl Body for Response {
                             w.u8(wallpaper.fit.code());
                         }
                     }
+                    write_option_u64(w, m.next_change_ms);
                 }
                 write_settings(w, &status.settings);
+                w.u8(u8::from(status.rotation_running));
             }
         }
     }
@@ -489,7 +661,12 @@ impl Body for Response {
                             fit: FitMode::from_code(r.u8()?)?,
                         }),
                     };
-                    monitors.push(MonitorStatus { name, wallpaper });
+                    let next_change_ms = read_option_u64(r)?;
+                    monitors.push(MonitorStatus {
+                        name,
+                        wallpaper,
+                        next_change_ms,
+                    });
                 }
                 Response::Status(Status {
                     version,
@@ -497,6 +674,7 @@ impl Body for Response {
                     rss_bytes,
                     monitors,
                     settings: read_settings(r)?,
+                    rotation_running: r.u8()? != 0,
                 })
             }
             other => return Err(Error::UnknownKind(other)),

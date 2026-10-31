@@ -24,8 +24,13 @@ use std::path::{Path, PathBuf};
 
 use serde::de::{Deserializer, Error as _};
 use serde::{Deserialize, de};
+use std::collections::BTreeMap;
 use toml::Spanned;
-use vellum_ipc::{Direction, Easing, Settings, Transition, TransitionKind};
+
+use vellum_ipc::{
+    Direction, Easing, Override, RotationOrder, RotationSettings, RotationSource, Schedule,
+    Settings, Transition, TransitionKind,
+};
 
 use crate::render::{Color, DEFAULT_LETTERBOX, FitMode};
 
@@ -43,6 +48,8 @@ pub struct Config {
     pub letterbox: Color,
     /// The Transition `vellum set` plays without flags.
     pub transition: Transition,
+    /// The Rotation schedule, Overrides already merged.
+    pub rotation: RotationSettings,
 }
 
 impl Config {
@@ -53,6 +60,7 @@ impl Config {
             fit: FitMode::default(),
             letterbox: DEFAULT_LETTERBOX,
             transition: Transition::default(),
+            rotation: RotationSettings::default(),
         }
     }
 
@@ -82,6 +90,7 @@ impl Config {
         config.fit = file.fit.unwrap_or(config.fit);
         config.letterbox = file.letterbox.map_or(config.letterbox, |c| c.0);
         config.transition = file.transition.into();
+        config.rotation = file.rotation.resolve();
         Ok(config)
     }
 
@@ -89,6 +98,7 @@ impl Config {
     pub fn settings(&self) -> Settings {
         Settings {
             transition: self.transition,
+            rotation: self.rotation.clone(),
         }
     }
 }
@@ -113,6 +123,73 @@ struct File {
     fit: Option<FitMode>,
     letterbox: Option<Hex>,
     transition: TransitionSection,
+    rotation: RotationSection,
+}
+
+/// `[rotation]`: the global Rotation, plus `[rotation.monitor.<name>]`
+/// Overrides.
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RotationSection {
+    #[serde(deserialize_with = "interval")]
+    interval: u64,
+    #[serde(deserialize_with = "named")]
+    source: RotationSource,
+    #[serde(deserialize_with = "named")]
+    order: RotationOrder,
+    sync: bool,
+    monitor: BTreeMap<String, OverrideSection>,
+}
+
+impl Default for RotationSection {
+    fn default() -> Self {
+        let s = Schedule::default();
+        RotationSection {
+            interval: s.interval_ms,
+            source: s.source,
+            order: s.order,
+            sync: false,
+            monitor: BTreeMap::new(),
+        }
+    }
+}
+
+/// `[rotation.monitor.<name>]`: what this Monitor does differently.
+#[derive(Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct OverrideSection {
+    #[serde(deserialize_with = "interval_opt")]
+    interval: Option<u64>,
+    #[serde(deserialize_with = "named_opt")]
+    source: Option<RotationSource>,
+    #[serde(deserialize_with = "named_opt")]
+    order: Option<RotationOrder>,
+}
+
+impl RotationSection {
+    fn resolve(self) -> RotationSettings {
+        let schedule = Schedule {
+            interval_ms: self.interval,
+            source: self.source,
+            order: self.order,
+        };
+        RotationSettings {
+            schedule,
+            sync: self.sync,
+            overrides: self
+                .monitor
+                .into_iter()
+                .map(|(monitor, o)| Override {
+                    monitor,
+                    schedule: Schedule {
+                        interval_ms: o.interval.unwrap_or(schedule.interval_ms),
+                        source: o.source.unwrap_or(schedule.source),
+                        order: o.order.unwrap_or(schedule.order),
+                    },
+                })
+                .collect(),
+        }
+    }
 }
 
 /// `[transition]`: the defaults `vellum set` plays.
@@ -224,6 +301,22 @@ fn named<'de, D: Deserializer<'de>, T: Named>(d: D) -> Result<T, D::Error> {
         })
 }
 
+impl Named for RotationSource {
+    const WHAT: &'static str = "Rotation source";
+    const NAMES: &'static [(&'static str, Self)] = &[
+        ("library", RotationSource::Library),
+        ("favorites", RotationSource::Favorites),
+    ];
+}
+
+impl Named for RotationOrder {
+    const WHAT: &'static str = "Rotation order";
+    const NAMES: &'static [(&'static str, Self)] = &[
+        ("shuffle", RotationOrder::Shuffle),
+        ("sequential", RotationOrder::Sequential),
+    ];
+}
+
 fn named_opt<'de, D: Deserializer<'de>, T: Named>(d: D) -> Result<Option<T>, D::Error> {
     named(d).map(Some)
 }
@@ -244,6 +337,90 @@ fn millis<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
         }
     }
     d.deserialize_u32(Millis)
+}
+
+/// A Rotation interval: a string with units (`"30m"`, `"1h30m"`, `"90s"`,
+/// `"250ms"`) or a whole number of minutes. In milliseconds.
+fn interval<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    struct Interval;
+    const EXPECTED: &str = "an interval like \"30m\", \"1h30m\" or \"90s\", or whole minutes";
+    impl de::Visitor<'_> for Interval {
+        type Value = u64;
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(EXPECTED)
+        }
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<u64, E> {
+            match u64::try_from(v) {
+                Ok(minutes) if minutes > 0 => Ok(minutes.saturating_mul(60_000)),
+                _ => Err(E::invalid_value(de::Unexpected::Signed(v), &self)),
+            }
+        }
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<u64, E> {
+            self.visit_i64(i64::try_from(v).unwrap_or(i64::MAX))
+        }
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<u64, E> {
+            parse_interval(v)
+                .filter(|&ms| ms > 0)
+                .ok_or_else(|| E::custom(format!("\"{v}\" is not {EXPECTED}")))
+        }
+    }
+    d.deserialize_any(Interval)
+}
+
+fn interval_opt<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    interval(d).map(Some)
+}
+
+/// `"1h 30m"`, `"90s"`, `"250ms"` in milliseconds. Every number needs a
+/// unit.
+fn parse_interval(text: &str) -> Option<u64> {
+    let mut rest = text.trim();
+    if rest.is_empty() {
+        return None;
+    }
+    let mut total: u64 = 0;
+    while !rest.is_empty() {
+        let digits = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if digits == 0 {
+            return None;
+        }
+        let n: u64 = rest[..digits].parse().ok()?;
+        rest = &rest[digits..];
+        let unit_len = rest
+            .find(|c: char| !c.is_ascii_alphabetic())
+            .unwrap_or(rest.len());
+        let scale = match &rest[..unit_len] {
+            "ms" => 1,
+            "s" => 1000,
+            "m" => 60_000,
+            "h" => 3_600_000,
+            _ => return None,
+        };
+        total = total.checked_add(n.checked_mul(scale)?)?;
+        rest = rest[unit_len..].trim_start();
+    }
+    Some(total)
+}
+
+/// Milliseconds the way a Config spells them: "30m", "1h30m", "1.5s".
+pub fn format_interval(ms: u64) -> String {
+    if ms < 1000 {
+        return format!("{ms}ms");
+    }
+    if ms < 60_000 && !ms.is_multiple_of(1000) {
+        return format!("{}s", ms as f64 / 1000.0);
+    }
+    let secs = ms / 1000;
+    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+    let mut out = String::new();
+    for (n, unit) in [(h, "h"), (m, "m"), (s, "s")] {
+        if n > 0 {
+            out += &format!("{n}{unit}");
+        }
+    }
+    out
 }
 
 /// A `"#rrggbb"` color.
