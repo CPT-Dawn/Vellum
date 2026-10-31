@@ -217,6 +217,52 @@ impl Sway {
         );
     }
 
+    /// Runs a Sway IPC command (e.g. `output HEADLESS-1 scale 1.5`,
+    /// `create_output`, `output HEADLESS-2 unplug`) and panics if it fails.
+    pub fn swaymsg(&self, command: &str) {
+        let out = self
+            .command("swaymsg")
+            .env(
+                "SWAYSOCK",
+                self.sway_socket().expect("sway has an IPC socket"),
+            )
+            .arg(command)
+            .output()
+            .expect("failed to run swaymsg");
+        assert!(
+            out.status.success(),
+            "swaymsg {command:?} failed:\n{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Runs `vellum` with `args`, panics if it fails, and returns its stdout.
+    pub fn vellum_stdout<I, S>(&self, args: I) -> String
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        let out = self.vellum(args);
+        assert!(
+            out.status.success(),
+            "vellum failed ({}):\n{}\n--- vellumd log ---\n{}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr),
+            self.daemon_log()
+        );
+        String::from_utf8(out.stdout).expect("vellum prints UTF-8")
+    }
+
+    /// Polls until `ready` holds, panicking with `what` after a few seconds.
+    pub fn wait_until(&self, what: &str, mut ready: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(30));
+        }
+    }
+
     /// Captures `monitor` with grim.
     pub fn screenshot(&self, monitor: &str) -> RgbImage {
         let out = self
