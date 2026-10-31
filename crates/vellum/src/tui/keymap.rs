@@ -29,6 +29,12 @@ pub const CHORD_TIMEOUT: Duration = Duration::from_millis(400);
 pub enum Action {
     Down,
     Up,
+    /// The tile to the left, in the grid. Nothing in the list.
+    Left,
+    /// The tile to the right, in the grid. Nothing in the list.
+    Right,
+    /// Switch between the list and the thumbnail grid.
+    ToggleGrid,
     Top,
     Bottom,
     PageDown,
@@ -111,6 +117,27 @@ use Scope::{Browse, Prompt};
 const ACTIONS: &[Info] = &[
     info(Action::Down, "down", Browse, "Move down", &["j", "down"]),
     info(Action::Up, "up", Browse, "Move up", &["k", "up"]),
+    info(
+        Action::Left,
+        "left",
+        Browse,
+        "Move left in the grid",
+        &["h", "left"],
+    ),
+    info(
+        Action::Right,
+        "right",
+        Browse,
+        "Move right in the grid",
+        &["l", "right"],
+    ),
+    info(
+        Action::ToggleGrid,
+        "grid",
+        Browse,
+        "Switch between list and grid",
+        &["g"],
+    ),
     info(
         Action::Top,
         "top",
@@ -527,11 +554,23 @@ pub struct Hint {
 
 /// What the footer offers in a mode, as (Actions joined into one hint,
 /// label, priority). Lower priority numbers survive a narrow footer.
-fn footer_items(mode: Mode, filtered: bool) -> Vec<(&'static [Action], &'static str, u8)> {
+fn footer_items(
+    mode: Mode,
+    filtered: bool,
+    grid: bool,
+) -> Vec<(&'static [Action], &'static str, u8)> {
     match mode {
         Mode::Normal => {
+            let (moves, other): (&'static [Action], _) = match grid {
+                false => (&[Action::Down, Action::Up], "grid"),
+                true => (
+                    &[Action::Left, Action::Down, Action::Up, Action::Right],
+                    "list",
+                ),
+            };
             let mut items: Vec<(&'static [Action], &'static str, u8)> = vec![
-                (&[Action::Down, Action::Up], "move", 1),
+                (moves, "move", 1),
+                (&[Action::ToggleGrid], other, 6),
                 (&[Action::Apply], "apply", 2),
                 (&[Action::Search], "search", 3),
                 (&[Action::Favorite], "favorite", 5),
@@ -571,8 +610,8 @@ const GAP: u16 = 2;
 /// The footer hints that fit in `width` columns, laid out from column 1.
 /// Hints keep their order; when space runs out the least important go.
 /// An Action with no key gets no hint.
-pub fn footer(keymap: &Keymap, mode: Mode, filtered: bool, width: u16) -> Vec<Hint> {
-    let items: Vec<(Action, String, &'static str, u8)> = footer_items(mode, filtered)
+pub fn footer(keymap: &Keymap, mode: Mode, filtered: bool, grid: bool, width: u16) -> Vec<Hint> {
+    let items: Vec<(Action, String, &'static str, u8)> = footer_items(mode, filtered, grid)
         .into_iter()
         .filter_map(|(actions, label, priority)| {
             let keys: Vec<String> = actions.iter().filter_map(|a| keymap.primary(*a)).collect();
@@ -743,7 +782,9 @@ mod tests {
         let g = chord("g");
         assert_eq!(
             keymap.lookup(Scope::Browse, &g),
-            Lookup::Prefix { alone: None }
+            Lookup::Prefix {
+                alone: Some(Action::ToggleGrid)
+            }
         );
         assert_eq!(
             keymap.lookup(Scope::Browse, &chord("g g")),
@@ -783,9 +824,11 @@ mod tests {
     #[test]
     fn a_narrow_footer_keeps_help_and_the_most_important_hints() {
         let keymap = Keymap::default();
-        let wide = footer(&keymap, Mode::Normal, false, 200);
-        assert_eq!(wide.len(), 11);
-        let narrow = footer(&keymap, Mode::Normal, false, 40);
+        let wide = footer(&keymap, Mode::Normal, false, false, 200);
+        assert_eq!(wide.len(), 12);
+        let grid = footer(&keymap, Mode::Normal, false, true, 200);
+        assert_eq!((grid[0].keys.as_str(), grid[1].label), ("h/j/k/l", "list"));
+        let narrow = footer(&keymap, Mode::Normal, false, false, 40);
         let labels: Vec<&str> = narrow.iter().map(|h| h.label).collect();
         assert_eq!(labels, ["move", "apply", "search", "help"]);
         let last = narrow.last().unwrap();

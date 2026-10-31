@@ -13,6 +13,9 @@ expression: harness.screen()
 │                       │ Browse                                                               │░░░░░░░░░░░░░░░░░░░░░░░│
 │                       │   j, ↓          Move down                                            │░░░░░░░░░░░░░░░░░░░░░░░│
 │                       │   k, ↑          Move up                                              │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   h, ←          Move left in the grid                                │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   l, →          Move right in the grid                               │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   g             Switch between list and grid                         │░░░░░░░░░░░░░░░░░░░░░░░│
 │                       │   gg, home      Jump to the top                                      │░░░░░░░░░░░░░░░░░░░░░░░│
 │                       │   G, end        Jump to the bottom                                   │░░░░░░░░░░░░░░░░░░░░░░░│
 │                       │   ctrl-d, pgdn  Half a page down                                     │░░░░░░░░░░░░░░░░░░░░░░░│
@@ -29,13 +32,10 @@ expression: harness.screen()
 │                       │   esc           Clear the filter, or quit                            │░░░░░░░░░░░░░░░░░░░░░░░│
 │                       │   q             Quit                                                 │░░░░░░░░░░░░░░░░░░░░░░░│
 │                       │ Search, help and palette                                             │░░░░░░░░░░░░░░░░░░░░░░░│
-│                       │   ↓, ctrl-n     Next row                                             │░░░░░░░░░░░░░░░░░░░░░░░│
-│                       │   ↑, ctrl-p     Previous row                                         │░░░░░░░░░░░░░░░░░░░░░░░│
-│                       │   ⏎             Keep the search or run the command                   │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   ↓, ctrl-n     Next row                                             │                       │
+│                       │   ↑, ctrl-p     Previous row                                         │                       │
+│                       │   ⏎             Keep the search or run the command                   │                       │
 │                       │   esc           Clear and close                                      │                       │
-│                       │   ctrl-c        Quit, from anywhere                                  │                       │
-│                       │ Mouse                                                                │                       │
-│                       │   click         Select a wallpaper, monitor or hint                  │                       │
 │                       ╰──────────────────────────────────────────────────────────────────────╯                       │
 │                                        ││                                                                            │
 │                                        ││ aurora.png  ~/Pictures/Wallpapers                                          │

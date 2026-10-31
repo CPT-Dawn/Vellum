@@ -25,4 +25,4 @@ expression: harness.screen()
 │                          ││ aurora.png  ~/Pictures/Wallpapers                │
 │                          ││ fill on DP-1                                     │
 ╰──────────────────────────╯╰──────────────────────────────────────────────────╯
- j/k move  ⏎ apply  / search  f favorite  a all  : commands  ? help  q quit
+ j/k move  g grid  ⏎ apply  / search  f favorite  : commands  ? help  q quit

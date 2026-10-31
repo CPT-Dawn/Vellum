@@ -58,12 +58,27 @@ fn gg_and_g_jump_to_either_end() {
 }
 
 #[test]
-fn a_broken_sequence_lets_the_next_key_count() {
+fn a_broken_sequence_counts_its_start_alone_then_the_next_key() {
     let mut h = Harness::started_with(80, 24, many(40));
     h.press("g");
+    assert!(!h.model.grid.on, "g waits: it may be g g");
     h.press("j");
-    assert_eq!(h.model.selected, 1);
+    // g toggled the grid at once, then j moved down a row of 3 tiles.
+    assert!(h.model.grid.on);
+    assert_eq!(h.model.selected, 3);
     assert!(h.model.pending.is_empty());
+}
+
+#[test]
+fn g_alone_toggles_the_grid_once_the_pause_passes() {
+    let mut h = Harness::started_with(80, 24, many(40));
+    h.press("g");
+    assert_eq!(
+        update::wake_at(&h.model),
+        Some(super::super::super::keymap::CHORD_TIMEOUT)
+    );
+    h.advance(400);
+    assert!(h.model.grid.on);
 }
 
 #[test]
@@ -145,8 +160,8 @@ fn m_targets_the_next_monitor_and_redraws_the_preview_for_it() {
     let mut h = Harness::started(80, 24);
     let cmds = h.update(Msg::Key(key("m")));
     assert_eq!(h.model.targeted().unwrap().name, "HDMI-A-1");
-    match cmds.as_slice() {
-        [Cmd::RenderPreview(job)] => assert_eq!(job.monitor.width, 1920),
+    match cmds.first() {
+        Some(Cmd::RenderPreview(job)) => assert_eq!(job.monitor.width, 1920),
         other => panic!("{other:?}"),
     }
     h.run(cmds);

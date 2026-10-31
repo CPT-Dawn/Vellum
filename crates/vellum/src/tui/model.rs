@@ -3,6 +3,7 @@
 //! The Model is plain data. [`super::update`] is the only code that changes
 //! it, and [`super::view`] only reads it.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -68,6 +69,8 @@ pub struct Model {
     pub preview: Preview,
     /// Applies in flight, oldest first, for the spinner.
     pub applying: Vec<Busy>,
+    /// The thumbnail grid, shown instead of the list and preview when on.
+    pub grid: Grid,
     /// The latest confirmation or error, shown in the footer.
     pub toast: Option<Toast>,
     /// When `toast` goes away.
@@ -122,6 +125,7 @@ impl Model {
             letterbox: config.letterbox,
             preview: Preview::default(),
             applying: Vec::new(),
+            grid: Grid::default(),
             toast: None,
             toast_until: Duration::ZERO,
             last_click: None,
@@ -283,6 +287,40 @@ pub enum PreviewState {
     },
 }
 
+/// The thumbnail grid. Only the tiles on screen are rendered.
+#[derive(Debug, Default)]
+pub struct Grid {
+    /// Whether the grid replaces the list and preview. `g` toggles it; it
+    /// starts on where the terminal speaks the kitty graphics protocol.
+    pub on: bool,
+    /// The first row of tiles on screen.
+    pub offset_row: usize,
+    /// Bumped whenever the tiles on screen change. Thumbnails from older
+    /// requests are dropped.
+    pub generation: u64,
+    /// What the tiles were rendered for. A change clears `tiles`.
+    pub spec: Option<TileSpec>,
+    /// Thumbnails for the tiles on screen and about a page either side.
+    pub tiles: HashMap<PathBuf, Tile>,
+}
+
+/// Everything a thumbnail depends on besides its file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TileSpec {
+    pub cells: Size,
+    pub monitor: super::msg::Screen,
+    pub fit: FitMode,
+    pub letterbox: Color,
+}
+
+/// One tile's thumbnail.
+#[derive(Debug)]
+pub enum Tile {
+    Loading,
+    Ready { image: PreviewImage, meta: Meta },
+    Failed,
+}
+
 /// Facts about a wallpaper file, for the metadata strip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Meta {
@@ -291,7 +329,8 @@ pub struct Meta {
     pub bytes: u64,
 }
 
-/// A preview ready to draw.
+/// A preview ready to draw. Cloning shares the encoded image.
+#[derive(Clone)]
 pub enum PreviewImage {
     /// Encoded for the terminal's graphics protocol.
     Protocol(Box<ratatui_image::protocol::Protocol>),

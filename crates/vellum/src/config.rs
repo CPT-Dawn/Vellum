@@ -58,7 +58,13 @@ pub struct Config {
     pub on_change: Option<Hook>,
     /// `[keymap]`: TUI Actions whose keys the user replaced.
     pub keymap: Vec<Remap>,
+    /// The most the TUI's on-disk preview cache may hold, in MiB. 0 turns
+    /// the disk cache off.
+    pub preview_cache_mb: u32,
 }
+
+/// The preview cache cap used when the Config sets none.
+pub const DEFAULT_PREVIEW_CACHE_MB: u32 = 200;
 
 /// `theme`: which palette the TUI uses.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -82,6 +88,7 @@ impl Config {
             rotation: RotationSettings::default(),
             on_change: None,
             keymap: Vec::new(),
+            preview_cache_mb: DEFAULT_PREVIEW_CACHE_MB,
         }
     }
 
@@ -113,6 +120,7 @@ impl Config {
         config.transition = file.transition.into();
         config.theme = file.theme.unwrap_or(config.theme);
         config.rotation = file.rotation.resolve();
+        config.preview_cache_mb = file.preview.cache_mb;
         if let Some(command) = file.on_change {
             let hook = Hook::parse(command.get_ref(), home).map_err(|why| {
                 ConfigError::at(text, command.span(), format!("the command {why}"))
@@ -215,6 +223,23 @@ struct File {
     transition: TransitionSection,
     rotation: RotationSection,
     keymap: BTreeMap<String, Spanned<Keys>>,
+    preview: PreviewSection,
+}
+
+/// `[preview]`: the TUI's preview cache.
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct PreviewSection {
+    /// The disk cache cap in MiB.
+    cache_mb: u32,
+}
+
+impl Default for PreviewSection {
+    fn default() -> Self {
+        PreviewSection {
+            cache_mb: DEFAULT_PREVIEW_CACHE_MB,
+        }
+    }
 }
 
 /// `[rotation]`: the global Rotation, plus `[rotation.monitor.<name>]`

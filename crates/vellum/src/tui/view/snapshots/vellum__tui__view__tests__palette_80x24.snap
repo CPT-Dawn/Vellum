@@ -11,6 +11,9 @@ expression: harness.screen()
 │             │                                                   │░░░░░░░░░░░░│
 │             │ › Move down                                 j, ↓  │░░░░░░░░░░░░│
 │             │   Move up                                   k, ↑  │░░░░░░░░░░░░│
+│             │   Move left in the grid                     h, ←  │░░░░░░░░░░░░│
+│             │   Move right in the grid                    l, →  │░░░░░░░░░░░░│
+│             │   Switch between list and grid                 g  │░░░░░░░░░░░░│
 │             │   Jump to the top                       gg, home  │░░░░░░░░░░░░│
 │             │   Jump to the bottom                      G, end  │░░░░░░░░░░░░│
 │             │   Half a page down                  ctrl-d, pgdn  │░░░░░░░░░░░░│
@@ -18,10 +21,7 @@ expression: harness.screen()
 │             │   Apply to the targeted monitor                ⏎  │░░░░░░░░░░░░│
 │             │   Apply to every monitor                       a  │░░░░░░░░░░░░│
 │             │   Apply a random wallpaper                     r  │░░░░░░░░░░░░│
-│             │   Target the next monitor                      m  │░░░░░░░░░░░░│
-│             │   Favorite or unfavorite                       f  │░░░░░░░░░░░░│
-│             │   Show only Favorites                          F  │░░░░░░░░░░░░│
-│             │   Search the Library                           /  │            │
+│             │   Target the next monitor                      m  │            │
 │             ╰───────────────────────────────────────────────────╯            │
 │                          ││ 3840×2160 · 2.4 MB · fill on DP-1                │
 ╰──────────────────────────╯╰──────────────────────────────────────────────────╯

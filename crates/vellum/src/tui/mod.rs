@@ -13,6 +13,7 @@
 //! Tests drive update and view through [`harness`] (fake Daemon, fake
 //! Library, placeholder images), without a terminal.
 
+mod cache;
 /// The Config's `[keymap]` section parses into this module's types.
 pub mod keymap;
 mod layout;

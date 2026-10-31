@@ -5,17 +5,55 @@ use std::path::PathBuf;
 use ratatui::layout::Size;
 
 use super::super::harness::*;
-use super::super::model::{Daemon, PreviewState, Toast, ToastKind};
-use super::super::msg::{ApplyJob, Cmd, Msg, PreviewJob, Screen};
+use super::super::model::{Daemon, PreviewState, Tile, Toast, ToastKind};
+use super::super::msg::{ApplyJob, Cmd, Msg, PreviewJob, Purpose, Screen, Wake};
 use super::super::update;
+use super::DEBOUNCE;
 use crate::render::FitMode;
 
 mod commands;
 
+/// The one preview-pane job among `cmds` (prefetches may follow it).
 fn preview_job(cmds: &[Cmd]) -> &PreviewJob {
     match cmds {
-        [Cmd::RenderPreview(job)] => job,
-        other => panic!("expected one RenderPreview, got {other:?}"),
+        [Cmd::RenderPreview(job), rest @ ..]
+            if job.purpose == Purpose::Preview
+                && rest.iter().all(
+                    |c| matches!(c, Cmd::RenderPreview(j) if j.purpose == Purpose::Prefetch),
+                ) =>
+        {
+            job
+        }
+        other => panic!("expected one preview job then prefetches, got {other:?}"),
+    }
+}
+
+/// The debounce timer among `cmds`.
+fn wake(cmds: &[Cmd]) -> Wake {
+    match cmds {
+        [Cmd::After { delay, wake }] => {
+            assert_eq!(*delay, DEBOUNCE);
+            *wake
+        }
+        other => panic!("expected one debounce timer, got {other:?}"),
+    }
+}
+
+/// The paths and purposes of the render jobs among `cmds`.
+fn jobs(cmds: &[Cmd]) -> Vec<(PathBuf, Purpose)> {
+    cmds.iter()
+        .map(|c| match c {
+            Cmd::RenderPreview(job) => (job.path.clone(), job.purpose),
+            other => panic!("expected only render jobs, got {other:?}"),
+        })
+        .collect()
+}
+
+/// A Library of `n` wallpapers named 000.png, 001.png, ...
+fn big_library(n: usize) -> Fake {
+    Fake {
+        library: (0..n).map(|i| wallpaper(&format!("{i:03}.png"))).collect(),
+        ..Fake::default()
     }
 }
 
@@ -74,14 +112,25 @@ fn the_preview_is_drawn_for_the_targeted_monitor() {
 }
 
 #[test]
-fn moving_selects_and_asks_for_a_newer_preview() {
+fn moving_selects_and_asks_for_a_newer_preview_once_it_settles() {
     let mut h = Harness::started(80, 24);
     let before = h.model.preview.generation;
     let cmds = h.update(Msg::Key(key("j")));
     assert_eq!(h.model.selected, 1);
+    // The old preview is gone at once; the new one waits for the debounce.
+    assert!(matches!(
+        &h.model.preview.state,
+        PreviewState::Loading { path, .. } if *path == wallpaper("beach/dunes.jpg")
+    ));
+    let Wake::Preview { generation } = wake(&cmds) else {
+        panic!("expected a preview wake");
+    };
+    assert!(generation > before);
+    let cmds = h.update(Msg::Woke(Wake::Preview { generation }));
+    assert!(!h.model.dirty, "waking alone draws nothing new");
     let job = preview_job(&cmds);
     assert_eq!(job.path, wallpaper("beach/dunes.jpg"));
-    assert!(job.generation > before);
+    assert_eq!(job.generation, generation);
 
     h.update(Msg::Key(key("down")));
     h.update(Msg::Key(key("k")));
@@ -117,20 +166,96 @@ fn a_finished_preview_is_shown_with_its_metadata() {
 #[test]
 fn a_stale_preview_is_dropped_without_a_redraw() {
     let mut h = Harness::started(80, 24);
-    let cmds = h.update(Msg::Key(key("j")));
-    let newer = preview_job(&cmds).clone();
-    let stale = PreviewJob {
-        generation: newer.generation - 1,
-        path: wallpaper("aurora.png"),
-        ..newer.clone()
-    };
-    let msg = super::super::services::perform(&h.fake, Cmd::RenderPreview(stale));
-    assert!(h.update(msg).is_empty());
+    let old = h.model.preview.generation;
+    h.update(Msg::Key(key("j")));
+    // The aurora preview finishes after the move: it must not show.
+    let late = h.fake.preview_done(old, wallpaper("aurora.png"));
+    assert!(h.update(late).is_empty());
     assert!(!h.model.dirty);
     assert!(matches!(
         &h.model.preview.state,
-        PreviewState::Loading { path, .. } if *path == newer.path
+        PreviewState::Loading { path, .. } if *path == wallpaper("beach/dunes.jpg")
     ));
+}
+
+#[test]
+fn workers_drop_jobs_whose_generation_moved_on() {
+    let mut h = Harness::started(80, 24);
+    let cmds = h.update(Msg::Key(key("j")));
+    let cmds = h.update(Msg::Woke(wake(&cmds)));
+    let current = preview_job(&cmds).clone();
+    let stale = PreviewJob {
+        generation: current.generation - 1,
+        ..current.clone()
+    };
+    h.fake.rendered.lock().unwrap().clear();
+    assert!(h.perform(Cmd::RenderPreview(stale)).is_none());
+    assert!(
+        h.fake.rendered.lock().unwrap().is_empty(),
+        "a stale job is dropped before any decoding"
+    );
+    // Moving again makes the current job stale too, even mid-queue.
+    h.update(Msg::Key(key("j")));
+    assert!(h.perform(Cmd::RenderPreview(current)).is_none());
+}
+
+#[test]
+fn fast_moves_render_only_where_the_selection_settles() {
+    let mut h = Harness::started_with(80, 24, big_library(50));
+    h.fake.rendered.lock().unwrap().clear();
+    let wakes: Vec<Wake> = (0..5)
+        .map(|_| wake(&h.update(Msg::Key(key("j")))))
+        .collect();
+    // Every timer fires, but only the newest one renders anything.
+    for w in &wakes[..4] {
+        assert!(h.update(Msg::Woke(*w)).is_empty());
+    }
+    let cmds = h.update(Msg::Woke(wakes[4]));
+    assert_eq!(preview_job(&cmds).path, wallpaper("005.png"));
+    h.run(cmds);
+    let rendered = h.fake.rendered.lock().unwrap();
+    assert_eq!(rendered[0].path, wallpaper("005.png"));
+    assert!(
+        rendered
+            .iter()
+            .all(|j| j.generation == rendered[0].generation)
+    );
+    assert!(matches!(h.model.preview.state, PreviewState::Ready { .. }));
+}
+
+#[test]
+fn the_two_neighbours_on_each_side_are_prefetched_after_the_preview() {
+    let mut h = Harness::started_with(80, 24, big_library(50));
+    h.update(Msg::Key(key("j")));
+    let cmds = h.update(Msg::Key(key("j")));
+    let cmds = h.update(Msg::Woke(wake(&cmds)));
+    assert_eq!(
+        jobs(&cmds),
+        [
+            (wallpaper("002.png"), Purpose::Preview),
+            (wallpaper("003.png"), Purpose::Prefetch),
+            (wallpaper("001.png"), Purpose::Prefetch),
+            (wallpaper("004.png"), Purpose::Prefetch),
+            (wallpaper("000.png"), Purpose::Prefetch),
+        ]
+    );
+    // A prefetch only warms the caches; it sends nothing back.
+    let Cmd::RenderPreview(prefetch) = cmds[1].clone() else {
+        unreachable!()
+    };
+    assert!(h.perform(Cmd::RenderPreview(prefetch)).is_none());
+
+    // At the top of the Library there is nothing above to prefetch.
+    let mut h = Harness::with(80, 24, big_library(50));
+    let cmds = h.update(Msg::LibraryScanned(h.fake.library.clone()));
+    assert_eq!(
+        jobs(&cmds),
+        [
+            (wallpaper("000.png"), Purpose::Preview),
+            (wallpaper("001.png"), Purpose::Prefetch),
+            (wallpaper("002.png"), Purpose::Prefetch),
+        ]
+    );
 }
 
 #[test]
@@ -244,13 +369,120 @@ fn an_unbound_key_changes_nothing_and_skips_the_redraw() {
 }
 
 #[test]
-fn a_resize_asks_for_a_preview_that_fits_the_new_pane() {
+fn a_resize_asks_for_a_preview_that_fits_the_new_pane_once_it_settles() {
     let mut h = Harness::started(80, 24);
-    let cmds = h.update(Msg::Resize {
+    let first = wake(&h.update(Msg::Resize {
+        width: 100,
+        height: 30,
+    }));
+    let last = wake(&h.update(Msg::Resize {
         width: 120,
         height: 40,
-    });
+    }));
+    assert!(h.update(Msg::Woke(first)).is_empty());
+    let cmds = h.update(Msg::Woke(last));
     assert_eq!(preview_job(&cmds).cells, Size::new(76, 34));
+}
+
+#[test]
+fn g_toggles_the_grid_which_renders_only_the_tiles_on_screen() {
+    let mut h = Harness::started_with(80, 24, big_library(50));
+    assert!(!h.model.grid.on);
+    let cmds = h.toggle_grid();
+    assert!(h.model.grid.on);
+    assert!(h.model.dirty);
+    // 80x24 fits 3 columns by 2 rows of tiles.
+    let names: Vec<_> = (0..6).map(|i| wallpaper(&format!("{i:03}.png"))).collect();
+    assert_eq!(
+        jobs(&cmds),
+        names
+            .iter()
+            .map(|p| (p.clone(), Purpose::Thumb))
+            .collect::<Vec<_>>()
+    );
+    let Cmd::RenderPreview(job) = &cmds[0] else {
+        unreachable!()
+    };
+    assert_eq!(job.cells, super::super::layout::TILE_IMAGE);
+    assert_eq!(job.generation, h.model.grid.generation);
+    h.run(cmds);
+    assert!(
+        names
+            .iter()
+            .all(|p| matches!(h.model.grid.tiles.get(p), Some(Tile::Ready { .. })))
+    );
+
+    // Back to the list: the preview pane renders again.
+    let cmds = h.toggle_grid();
+    assert!(!h.model.grid.on);
+    assert_eq!(preview_job(&cmds).path, wallpaper("000.png"));
+}
+
+#[test]
+fn moving_in_the_grid_goes_by_tile_and_row_and_scrolls_by_rows() {
+    let mut h = Harness::started_with(80, 24, big_library(50));
+    let cmds = h.toggle_grid();
+    h.run(cmds);
+    // Within the page: no rendering at all.
+    assert!(h.update(Msg::Key(key("l"))).is_empty());
+    assert_eq!(h.model.selected, 1);
+    assert!(h.update(Msg::Key(key("j"))).is_empty());
+    assert_eq!(h.model.selected, 4);
+    assert!(h.update(Msg::Key(key("h"))).is_empty());
+    assert_eq!(h.model.selected, 3);
+    // Down past the page scrolls one row, debounced; then only the new
+    // row renders.
+    let cmds = h.update(Msg::Key(key("j")));
+    assert_eq!(h.model.selected, 6);
+    assert_eq!(h.model.grid.offset_row, 1);
+    let cmds = h.update(Msg::Woke(wake(&cmds)));
+    assert_eq!(
+        jobs(&cmds),
+        [6, 7, 8].map(|i| (wallpaper(&format!("{i:03}.png")), Purpose::Thumb))
+    );
+    // Up from the top row does nothing; h/l do nothing in the list.
+    h.run(cmds);
+    h.press("k");
+    h.press("k");
+    assert!(h.update(Msg::Key(key("k"))).is_empty());
+    let cmds = h.toggle_grid();
+    h.run(cmds);
+    assert!(h.update(Msg::Key(key("l"))).is_empty());
+    assert!(!h.model.dirty);
+}
+
+#[test]
+fn down_from_above_a_short_last_row_lands_on_the_last_tile() {
+    let mut h = Harness::started_with(80, 24, big_library(5));
+    let cmds = h.toggle_grid();
+    h.run(cmds);
+    h.press("l");
+    h.press("l");
+    h.press("j");
+    assert_eq!(h.model.selected, 4);
+    assert!(h.update(Msg::Key(key("j"))).is_empty());
+}
+
+#[test]
+fn a_stale_thumbnail_is_dropped() {
+    let mut h = Harness::started_with(80, 24, big_library(50));
+    let cmds = h.toggle_grid();
+    let Cmd::RenderPreview(old) = cmds[0].clone() else {
+        unreachable!()
+    };
+    // Scrolling a page down moves the grid generation on.
+    for _ in 0..2 {
+        h.press("j");
+    }
+    assert!(h.model.grid.generation > old.generation);
+    assert!(h.perform(Cmd::RenderPreview(old.clone())).is_none());
+    let late = Msg::ThumbDone {
+        generation: old.generation,
+        path: old.path.clone(),
+        result: Err("late".into()),
+    };
+    assert!(h.update(late).is_empty());
+    assert!(!h.model.dirty);
 }
 
 #[test]

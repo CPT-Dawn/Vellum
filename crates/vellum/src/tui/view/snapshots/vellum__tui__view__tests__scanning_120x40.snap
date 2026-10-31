@@ -41,4 +41,4 @@ expression: harness.screen()
 │                                        ││                                                                            │
 │                                        ││                                                                            │
 ╰────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────────────╯
- j/k move  ⏎ apply  / search  f favorite  F favorites  a all  r random  m monitor  : commands  ? help  q quit
+ j/k move  g grid  ⏎ apply  / search  f favorite  F favorites  a all  r random  m monitor  : commands  ? help  q quit

@@ -41,4 +41,4 @@ expression: harness.screen()
 │                                        ││ aurora.png  ~/Pictures/Wallpapers                                          │
 │                                        ││ 3840×2160 · 2.4 MB · fill on DP-1                                          │
 ╰────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────────────╯
- j/k move  ⏎ apply  / search  f favorite  F favorites  a all  r random  m monitor  : commands  ? help ✓ Applied to DP-1
+ j/k move  g grid  ⏎ apply  / search  f favorite  F favorites  a all  r random  m monitor  : commands ✓ Applied to DP-1

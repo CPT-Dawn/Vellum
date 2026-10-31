@@ -107,6 +107,20 @@ fn enter_puts_the_selected_wallpaper_on_the_monitor_and_q_quits() {
     let status = sway.vellum_stdout(["status"]);
     assert!(status.contains("red.png"), "{status}");
 
+    // The preview went into the disk cache, under XDG_CACHE_HOME.
+    let thumbs = sway.dir().join("cache/vellum/thumbs");
+    let cached = || {
+        std::fs::read_dir(&thumbs).is_ok_and(|dir| {
+            dir.filter_map(Result::ok)
+                .any(|e| !e.file_name().to_string_lossy().starts_with('.'))
+        })
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !cached() {
+        assert!(Instant::now() < deadline, "no preview in {thumbs:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
     press(&keys, b"q");
     let exit = wait_exit(&mut tui).expect("q did not quit the TUI");
     assert!(exit.success(), "{exit:?}");

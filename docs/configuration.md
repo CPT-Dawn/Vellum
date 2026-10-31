@@ -36,6 +36,8 @@ sync = false
 
 # [keymap]                  # TUI keys: see "Keys" below
 # apply_all = "A"
+[preview]
+cache_mb = 200
 ```
 
 TOML needs top-level keys (`library`, `fit`, `letterbox`, `theme`,
@@ -149,6 +151,28 @@ theme = "terminal"
 
 If `NO_COLOR` is set, the TUI draws no color at all, whatever the theme,
 and marks the selection with reverse video and bold.
+
+## Previews
+
+### `preview.cache_mb`
+
+The TUI keeps the previews and grid thumbnails it renders on disk, in
+`~/.cache/vellum/thumbs/` (or `$XDG_CACHE_HOME/vellum/thumbs/`), so the
+next time you open it they show up at once. This caps how much space the
+cache may use, in MiB. When it is full, the previews you looked at least
+recently are deleted first. `0` turns the disk cache off.
+
+- Type: a whole number of MiB.
+- Default: `200`
+
+```toml
+[preview]
+cache_mb = 500
+```
+
+An entry belongs to one file at one size, Monitor and Fit mode. Editing or
+replacing a wallpaper makes its old entries unused, and they age out. You
+can delete the folder at any time.
 
 ## Transition
 

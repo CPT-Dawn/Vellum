@@ -21,12 +21,15 @@ use ratatui::layout::Rect;
 use vellum_ipc::{MonitorInfo, MonitorStatus, Settings, Status};
 
 use super::model::{Meta, Model, PreviewImage};
-use super::msg::{ApplyJob, Cmd, DaemonInfo, Msg, PreviewJob, PreviewOutput};
-use super::services::{Services, perform};
+use ratatui::layout::Size;
+
+use super::msg::{ApplyJob, Cmd, DaemonInfo, Msg, PreviewJob, PreviewOutput, Purpose, Screen};
+use super::services::{Latest, Services, perform};
 use super::theme::Theme;
 use super::{update, view};
 use crate::config::Config;
 use crate::config::Named as _;
+use crate::render::FitMode;
 
 pub const HOME: &str = "/home/me";
 
@@ -60,6 +63,8 @@ pub struct Fake {
     pub favorites: Mutex<Vec<PathBuf>>,
     /// If set, saving a Favorite fails with this.
     pub favorite_error: Option<String>,
+    /// Every preview job that was rendered, not dropped as stale.
+    pub rendered: Mutex<Vec<PreviewJob>>,
 }
 
 impl Default for Fake {
@@ -80,6 +85,28 @@ impl Default for Fake {
             applied: Mutex::new(Vec::new()),
             favorites: Mutex::new(Vec::new()),
             favorite_error: None,
+            rendered: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl Fake {
+    /// The [`Msg::PreviewDone`] a worker that took preview `generation`
+    /// would send for `path` if it never checked the generation.
+    pub fn preview_done(&self, generation: u64, path: PathBuf) -> Msg {
+        let job = PreviewJob {
+            generation,
+            purpose: Purpose::Preview,
+            path: path.clone(),
+            cells: Size::new(40, 10),
+            monitor: Screen::FALLBACK,
+            fit: FitMode::Fill,
+            letterbox: [0; 3],
+        };
+        Msg::PreviewDone {
+            generation,
+            path,
+            result: self.preview(&job, &|| false).expect("never stale"),
         }
     }
 }
@@ -117,14 +144,22 @@ impl Services for Fake {
         self.daemon.clone()
     }
 
-    fn preview(&self, job: &PreviewJob) -> Result<PreviewOutput, String> {
+    fn preview(
+        &self,
+        job: &PreviewJob,
+        stale: &dyn Fn() -> bool,
+    ) -> Option<Result<PreviewOutput, String>> {
+        if stale() {
+            return None;
+        }
+        self.rendered.lock().unwrap().push(job.clone());
         if self.broken.contains(&job.path) {
-            return Err("cannot decode: invalid PNG signature".into());
+            return Some(Err("cannot decode: invalid PNG signature".into()));
         }
         let (w, h) = super::preview::frame_size(job.cells, FONT.into(), job.monitor);
         let size = super::preview::cells_for((w, h), FONT.into());
         let name = job.path.file_name().unwrap().to_string_lossy();
-        Ok(PreviewOutput {
+        Some(Ok(PreviewOutput {
             image: PreviewImage::Placeholder {
                 size,
                 label: format!("{name} · {}", job.fit.name()),
@@ -134,7 +169,7 @@ impl Services for Fake {
                 height: 2160,
                 bytes: 2_516_582,
             },
-        })
+        }))
     }
 
     fn apply(&self, job: &ApplyJob) -> Result<(), String> {
@@ -165,6 +200,9 @@ impl Services for Fake {
 pub struct Harness {
     pub model: Model,
     pub fake: Fake,
+    /// The generations workers see, published after every update like the
+    /// runtime does.
+    pub latest: Latest,
 }
 
 impl Harness {
@@ -186,7 +224,11 @@ impl Harness {
             Some(PathBuf::from(HOME)),
         );
         model.rng = fastrand::Rng::with_seed(7);
-        Harness { model, fake }
+        Harness {
+            model,
+            fake,
+            latest: Latest::default(),
+        }
     }
 
     /// Started with a Config parsed from `toml`.
@@ -201,6 +243,15 @@ impl Harness {
     pub fn advance(&mut self, ms: u64) {
         self.model.now += std::time::Duration::from_millis(ms);
         self.dispatch(Msg::Tick);
+    }
+
+    /// Presses `g` and lets it time out (it also starts `g g`), so the grid
+    /// toggles. The Cmds come back unrun.
+    pub fn toggle_grid(&mut self) -> Vec<Cmd> {
+        let mut cmds = self.update(Msg::Key(key("g")));
+        self.model.now += super::keymap::CHORD_TIMEOUT;
+        cmds.extend(self.update(Msg::Tick));
+        cmds
     }
 
     /// Presses each character of `text` in turn.
@@ -264,7 +315,9 @@ impl Harness {
 
     /// Update only: the Cmds come back unrun.
     pub fn update(&mut self, msg: Msg) -> Vec<Cmd> {
-        update::update(&mut self.model, msg)
+        let cmds = update::update(&mut self.model, msg);
+        self.latest.publish(&self.model);
+        cmds
     }
 
     /// Update, then run every resulting Cmd (and theirs) against the fake.
@@ -273,12 +326,20 @@ impl Harness {
         self.run(cmds);
     }
 
+    /// Runs `cmds` (and the Cmds their Msgs cause) to completion, in
+    /// order. Debounce timers fire at once.
     pub fn run(&mut self, cmds: Vec<Cmd>) {
         let mut queue = std::collections::VecDeque::from(cmds);
         while let Some(cmd) = queue.pop_front() {
-            let msg = perform(&self.fake, cmd);
-            queue.extend(self.update(msg));
+            if let Some(msg) = self.perform(cmd) {
+                queue.extend(self.update(msg));
+            }
         }
+    }
+
+    /// What a worker would send back for `cmd`, given the generations now.
+    pub fn perform(&self, cmd: Cmd) -> Option<Msg> {
+        perform(&self.fake, cmd, &self.latest)
     }
 
     pub fn press(&mut self, keys: &str) {
