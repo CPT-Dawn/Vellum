@@ -136,6 +136,7 @@ impl Config {
         Settings {
             transition: self.transition,
             rotation: self.rotation.clone(),
+            letterbox: self.letterbox,
         }
     }
 }

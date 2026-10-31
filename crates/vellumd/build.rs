@@ -9,6 +9,7 @@ const PROTOCOLS: &[&str] = &[
     "viewporter.xml",
     "fractional-scale-v1.xml",
     "alpha-modifier-v1.xml",
+    "single-pixel-buffer-v1.xml",
 ];
 
 fn main() {

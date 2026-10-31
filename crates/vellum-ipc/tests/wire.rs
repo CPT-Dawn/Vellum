@@ -34,6 +34,7 @@ fn settings() -> Settings {
                 },
             }],
         },
+        letterbox: [0x12, 0x34, 0x56],
     }
 }
 

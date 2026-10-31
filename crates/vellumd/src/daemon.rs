@@ -299,6 +299,9 @@ impl Daemon {
                 {
                     self.state.save();
                 }
+                if let Err(err) = self.wayland.set_fill(settings.letterbox) {
+                    eprintln!("vellumd: {err}");
+                }
                 self.settings = settings;
                 Response::Ok
             }

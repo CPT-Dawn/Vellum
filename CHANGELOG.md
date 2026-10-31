@@ -22,7 +22,9 @@ awww, and the license changes to MIT OR Apache-2.0
   color, rendered at the Monitor's exact physical resolution, fractional
   scaling included.
 - Wallpapers restored at startup, on hotplug and after a scale change,
-  without a flash of black.
+  without a flash of black. Until its first frame, a Monitor shows the
+  letterbox color as a solid fill (single-pixel-buffer-v1, where the
+  compositor has it).
 - Rotation from the Library or Favorites, shuffled or sequential, with
   per-monitor Overrides and an optional `sync`. It survives reboots.
 - Favorites (`vellum fav`) and stepping by hand with `vellum next`, `prev`

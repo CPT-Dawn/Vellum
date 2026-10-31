@@ -73,6 +73,9 @@ pub struct Settings {
     /// The Rotation schedule. The Daemon only keeps time with it; `vellum
     /// render --rotate` picks the wallpapers.
     pub rotation: RotationSettings,
+    /// The letterbox color (RGB): the solid fill a Monitor shows while it
+    /// waits for its first frame.
+    pub letterbox: [u8; 3],
 }
 
 /// The Rotation schedule: the global one, `sync`, and per-Monitor
@@ -483,6 +486,9 @@ fn write_settings(w: &mut Writer, settings: &Settings) {
         w.str(&o.monitor);
         write_schedule(w, &o.schedule);
     }
+    for channel in settings.letterbox {
+        w.u8(channel);
+    }
 }
 
 fn read_settings(r: &mut Reader<'_>) -> Result<Settings, Error> {
@@ -497,6 +503,7 @@ fn read_settings(r: &mut Reader<'_>) -> Result<Settings, Error> {
             schedule: read_schedule(r)?,
         });
     }
+    let letterbox = [r.u8()?, r.u8()?, r.u8()?];
     Ok(Settings {
         transition,
         rotation: RotationSettings {
@@ -504,6 +511,7 @@ fn read_settings(r: &mut Reader<'_>) -> Result<Settings, Error> {
             sync,
             overrides,
         },
+        letterbox,
     })
 }
 
