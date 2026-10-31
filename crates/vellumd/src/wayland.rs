@@ -1,0 +1,522 @@
+//! The Daemon's Wayland side: Monitors, background layer surfaces and frame
+//! presentation, on waybackend (ADR 0004).
+//!
+//! Nothing here keeps pixels. A presented frame's memfd becomes a `wl_shm`
+//! pool, the buffer is attached and committed, and the fd is closed right
+//! after the flush. The buffer itself is destroyed on `wl_buffer.release`.
+
+use std::os::fd::{AsFd, OwnedFd};
+use std::time::{Duration, Instant};
+
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
+use vellum_ipc::{MonitorInfo, PixelFormat, Present};
+use waybackend::objman::ObjectManager;
+use waybackend::types::ObjectId;
+use waybackend::wire::{Error as WireError, Receiver};
+use waybackend::{WL_DISPLAY, Waybackend};
+
+use crate::protocols::*;
+
+/// What each Wayland object id refers to.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Obj {
+    Display,
+    Registry,
+    Callback,
+    Compositor,
+    Shm,
+    ShmPool,
+    Buffer,
+    Surface,
+    Output,
+    LayerShell,
+    LayerSurface,
+}
+
+/// How long startup waits for every Monitor's first configure.
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// The connection to the compositor.
+pub struct Wayland {
+    receiver: Receiver,
+    state: State,
+}
+
+struct State {
+    backend: Waybackend,
+    objects: ObjectManager<Obj>,
+    registry: ObjectId,
+    initial_sync: Option<ObjectId>,
+    compositor: Option<ObjectId>,
+    shm: Option<ObjectId>,
+    layer_shell: Option<ObjectId>,
+    monitors: Vec<Monitor>,
+    fatal: Option<String>,
+}
+
+struct Monitor {
+    /// The registry name of its `wl_output` global.
+    global: u32,
+    output: ObjectId,
+    output_version: u32,
+    /// Connector name from `wl_output.name`.
+    name: String,
+    scale: i32,
+    /// Seen `wl_output.done` at least once.
+    described: bool,
+    surface: Option<ObjectId>,
+    layer: Option<ObjectId>,
+    /// Logical size from the last layer-surface configure.
+    size: Option<(u32, u32)>,
+}
+
+impl Monitor {
+    fn physical_size(&self) -> Option<(u32, u32)> {
+        let scale = self.scale.max(1) as u32;
+        self.size.map(|(w, h)| (w * scale, h * scale))
+    }
+}
+
+impl Wayland {
+    /// Connects to the compositor named by the environment and waits until
+    /// every Monitor has a configured background surface.
+    pub fn connect() -> Result<Wayland, String> {
+        let (backend, mut objects, receiver) = waybackend::connect(Obj::Display)
+            .map_err(|err| format!("cannot connect to the Wayland compositor: {err:?}"))?;
+        let registry = objects.create(Obj::Registry);
+        let callback = objects.create(Obj::Callback);
+        let mut wayland = Wayland {
+            receiver,
+            state: State {
+                backend,
+                objects,
+                registry,
+                initial_sync: Some(callback),
+                compositor: None,
+                shm: None,
+                layer_shell: None,
+                monitors: Vec::new(),
+                fatal: None,
+            },
+        };
+        let s = &mut wayland.state;
+        wl_display::req::get_registry(&mut s.backend, WL_DISPLAY, registry).map_err(io)?;
+        wl_display::req::sync(&mut s.backend, WL_DISPLAY, callback).map_err(io)?;
+        s.backend.flush().map_err(io)?;
+
+        let deadline = Instant::now() + STARTUP_TIMEOUT;
+        while wayland.state.initial_sync.is_some() {
+            wayland.dispatch()?;
+        }
+        if wayland.state.compositor.is_none() || wayland.state.shm.is_none() {
+            return Err("the compositor lacks wl_compositor or wl_shm".into());
+        }
+        if wayland.state.layer_shell.is_none() {
+            return Err("the compositor does not support wlr-layer-shell; \
+                 Vellum needs a layer-shell compositor such as Hyprland, niri or Sway"
+                .into());
+        }
+        wayland.flush()?;
+        while !wayland.all_configured() {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                eprintln!("vellumd: some monitors did not configure in time; continuing");
+                break;
+            }
+            if wayland.wait_readable(left)? {
+                wayland.dispatch()?;
+            }
+        }
+        Ok(wayland)
+    }
+
+    fn all_configured(&self) -> bool {
+        self.state.monitors.iter().all(|m| m.size.is_some())
+    }
+
+    fn wait_readable(&self, timeout: Duration) -> Result<bool, String> {
+        let mut fds = [PollFd::new(&self.state.backend.wayland_fd, PollFlags::IN)];
+        let timeout = Timespec::try_from(timeout).ok();
+        match poll(&mut fds, timeout.as_ref()) {
+            Ok(n) => Ok(n > 0),
+            Err(rustix::io::Errno::INTR) => Ok(false),
+            Err(err) => Err(io(err)),
+        }
+    }
+
+    /// The socket to poll for compositor events.
+    pub fn fd(&self) -> impl AsFd + '_ {
+        &self.state.backend.wayland_fd
+    }
+
+    /// Reads and handles whatever the compositor sent. Call when [`fd`]
+    /// is readable. An error means the connection is unusable.
+    ///
+    /// [`fd`]: Wayland::fd
+    pub fn dispatch(&mut self) -> Result<(), String> {
+        let state = &mut self.state;
+        let mut msgs = self
+            .receiver
+            .recv(&state.backend.wayland_fd)
+            .map_err(|err| format!("lost the compositor connection: {err:?}"))?;
+        let mut received_any = false;
+        while let Some(sender) = msgs.next() {
+            received_any = true;
+            let sender = sender.map_err(|err| format!("{err:?}"))?;
+            let Some(obj) = state.objects.get(sender) else {
+                return Err(format!("event for unknown Wayland object {sender}"));
+            };
+            // Every event must be decoded, even ignored ones: decoding is
+            // what advances the read cursor to the next message.
+            let decoded = match obj {
+                Obj::Display => wl_display::event(state, &mut msgs),
+                Obj::Registry => wl_registry::event(state, &mut msgs),
+                Obj::Callback => wl_callback::event(state, &mut msgs),
+                Obj::Compositor => wl_compositor::event(state, &mut msgs),
+                Obj::Shm => wl_shm::event(state, &mut msgs),
+                Obj::ShmPool => wl_shm_pool::event(state, &mut msgs),
+                Obj::Buffer => wl_buffer::event(state, &mut msgs),
+                Obj::Surface => wl_surface::event(state, &mut msgs),
+                Obj::Output => wl_output::event(state, &mut msgs),
+                Obj::LayerShell => zwlr_layer_shell_v1::event(state, &mut msgs),
+                Obj::LayerSurface => zwlr_layer_surface_v1::event(state, &mut msgs),
+            };
+            decoded.map_err(|err| format!("malformed Wayland event: {err:?}"))?;
+        }
+        drop(msgs);
+        if !received_any {
+            return Err("the compositor closed the connection".into());
+        }
+        if let Some(fatal) = state.fatal.take() {
+            return Err(fatal);
+        }
+        state.create_missing_surfaces().map_err(io)?;
+        self.flush()
+    }
+
+    /// Sends queued requests to the compositor.
+    pub fn flush(&mut self) -> Result<(), String> {
+        self.state.backend.flush().map_err(io)
+    }
+
+    /// Every Monitor with a configured background surface.
+    pub fn monitors(&self) -> Vec<MonitorInfo> {
+        self.state
+            .monitors
+            .iter()
+            .filter_map(|m| {
+                let (logical_width, logical_height) = m.size?;
+                let (physical_width, physical_height) = m.physical_size()?;
+                Some(MonitorInfo {
+                    name: m.name.clone(),
+                    logical_width,
+                    logical_height,
+                    physical_width,
+                    physical_height,
+                    scale_120: m.scale.max(1) as u32 * 120,
+                })
+            })
+            .collect()
+    }
+
+    /// Shows `frame` on its Monitor. The memfd is consumed: it is closed as
+    /// soon as the compositor has it.
+    pub fn present(&mut self, frame: &Present, memfd: OwnedFd) -> Result<(), String> {
+        let s = &mut self.state;
+        let monitor = s
+            .monitors
+            .iter()
+            .find(|m| m.name == frame.monitor)
+            .ok_or_else(|| format!("monitor {} is not connected", frame.monitor))?;
+        let (Some(surface), Some((width, height))) = (monitor.surface, monitor.physical_size())
+        else {
+            return Err(format!("monitor {} is not ready yet", frame.monitor));
+        };
+        if (frame.width, frame.height) != (width, height) {
+            return Err(format!(
+                "frame is {}x{} but monitor {} is {width}x{height}",
+                frame.width, frame.height, frame.monitor
+            ));
+        }
+        let PixelFormat::Xrgb8888 = frame.format;
+        let min_stride = width * frame.format.bytes_per_pixel();
+        if frame.stride < min_stride {
+            return Err(format!("stride {} is below {min_stride}", frame.stride));
+        }
+        let pool_size = u64::from(frame.stride) * u64::from(height);
+        let pool_size = i32::try_from(pool_size).map_err(|_| "frame is too large".to_string())?;
+        let file_size = rustix::fs::fstat(&memfd)
+            .map_err(|err| format!("cannot inspect the frame: {err}"))?
+            .st_size;
+        if file_size < i64::from(pool_size) {
+            return Err(format!(
+                "frame memory holds {file_size} bytes but {pool_size} are needed"
+            ));
+        }
+        let scale = monitor.scale.max(1);
+
+        let shm = s.shm.expect("bound at startup");
+        let pool = s.objects.create(Obj::ShmPool);
+        wl_shm::req::create_pool(&mut s.backend, shm, pool, &memfd, pool_size).map_err(io)?;
+        let buffer = s.objects.create(Obj::Buffer);
+        wl_shm_pool::req::create_buffer(
+            &mut s.backend,
+            pool,
+            buffer,
+            0,
+            width as i32,
+            height as i32,
+            frame.stride as i32,
+            wl_shm::Format::xrgb8888,
+        )
+        .map_err(io)?;
+        wl_shm_pool::req::destroy(&mut s.backend, pool).map_err(io)?;
+        wl_surface::req::set_buffer_scale(&mut s.backend, surface, scale).map_err(io)?;
+        wl_surface::req::attach(&mut s.backend, surface, Some(buffer), 0, 0).map_err(io)?;
+        wl_surface::req::damage_buffer(&mut s.backend, surface, 0, 0, i32::MAX, i32::MAX)
+            .map_err(io)?;
+        wl_surface::req::commit(&mut s.backend, surface).map_err(io)?;
+        // waybackend sends fds on flush, so the memfd must outlive it.
+        s.backend.flush().map_err(io)?;
+        drop(memfd);
+        Ok(())
+    }
+}
+
+fn io(err: rustix::io::Errno) -> String {
+    format!("Wayland I/O error: {err}")
+}
+
+impl State {
+    fn create_missing_surfaces(&mut self) -> Result<(), rustix::io::Errno> {
+        let (Some(compositor), Some(layer_shell)) = (self.compositor, self.layer_shell) else {
+            return Ok(());
+        };
+        for m in &mut self.monitors {
+            if m.surface.is_some() || !m.described {
+                continue;
+            }
+            let surface = self.objects.create(Obj::Surface);
+            wl_compositor::req::create_surface(&mut self.backend, compositor, surface)?;
+            let layer = self.objects.create(Obj::LayerSurface);
+            zwlr_layer_shell_v1::req::get_layer_surface(
+                &mut self.backend,
+                layer_shell,
+                layer,
+                surface,
+                Some(m.output),
+                zwlr_layer_shell_v1::Layer::background,
+                "vellum",
+            )?;
+            use zwlr_layer_surface_v1::Anchor;
+            let all = Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT;
+            zwlr_layer_surface_v1::req::set_anchor(&mut self.backend, layer, all)?;
+            zwlr_layer_surface_v1::req::set_exclusive_zone(&mut self.backend, layer, -1)?;
+            wl_surface::req::commit(&mut self.backend, surface)?;
+            m.surface = Some(surface);
+            m.layer = Some(layer);
+        }
+        Ok(())
+    }
+
+    fn remove_monitor(&mut self, index: usize) {
+        let m = self.monitors.remove(index);
+        if let Some(layer) = m.layer {
+            let _ = zwlr_layer_surface_v1::req::destroy(&mut self.backend, layer);
+        }
+        if let Some(surface) = m.surface {
+            let _ = wl_surface::req::destroy(&mut self.backend, surface);
+        }
+        if m.output_version >= 3 {
+            let _ = wl_output::req::release(&mut self.backend, m.output);
+        }
+    }
+
+    fn monitor_mut(&mut self, output: ObjectId) -> Option<&mut Monitor> {
+        self.monitors.iter_mut().find(|m| m.output == output)
+    }
+
+    fn bind(&mut self, name: u32, interface: &str, version: u32, obj: Obj) -> ObjectId {
+        let id = self.objects.create(obj);
+        if let Err(err) = wl_registry::req::bind(
+            &mut self.backend,
+            self.registry,
+            name,
+            id,
+            interface,
+            version,
+        ) {
+            self.fatal = Some(io(err));
+        }
+        id
+    }
+}
+
+type Handled = Result<(), WireError>;
+
+impl wl_display::EvHandler for State {
+    fn error(&mut self, _: ObjectId, object: ObjectId, code: u32, message: &str) -> Handled {
+        self.fatal = Some(format!(
+            "Wayland protocol error on object {object} (code {code}): {message}"
+        ));
+        Ok(())
+    }
+
+    fn delete_id(&mut self, _: ObjectId, id: u32) -> Handled {
+        self.objects.remove(id);
+        Ok(())
+    }
+}
+
+impl wl_registry::EvHandler for State {
+    fn global(&mut self, _: ObjectId, name: u32, interface: &str, version: u32) -> Handled {
+        match interface {
+            wl_compositor::NAME if self.compositor.is_none() && version >= 4 => {
+                self.compositor = Some(self.bind(name, interface, 4, Obj::Compositor));
+            }
+            wl_shm::NAME if self.shm.is_none() => {
+                self.shm = Some(self.bind(name, interface, 1, Obj::Shm));
+            }
+            zwlr_layer_shell_v1::NAME if self.layer_shell.is_none() => {
+                self.layer_shell =
+                    Some(self.bind(name, interface, version.min(4), Obj::LayerShell));
+            }
+            wl_output::NAME => {
+                let version = version.min(4);
+                let output = self.bind(name, interface, version, Obj::Output);
+                self.monitors.push(Monitor {
+                    global: name,
+                    output,
+                    output_version: version,
+                    name: format!("monitor-{name}"),
+                    scale: 1,
+                    described: false,
+                    surface: None,
+                    layer: None,
+                    size: None,
+                });
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn global_remove(&mut self, _: ObjectId, name: u32) -> Handled {
+        if let Some(index) = self.monitors.iter().position(|m| m.global == name) {
+            self.remove_monitor(index);
+        }
+        Ok(())
+    }
+}
+
+impl wl_callback::EvHandler for State {
+    fn done(&mut self, sender: ObjectId, _: u32) -> Handled {
+        if self.initial_sync == Some(sender) {
+            self.initial_sync = None;
+        }
+        Ok(())
+    }
+}
+
+impl wl_compositor::EvHandler for State {}
+impl wl_shm_pool::EvHandler for State {}
+impl zwlr_layer_shell_v1::EvHandler for State {}
+
+impl wl_shm::EvHandler for State {
+    fn format(&mut self, _: ObjectId, _: wl_shm::Format) -> Handled {
+        Ok(())
+    }
+}
+
+impl wl_buffer::EvHandler for State {
+    fn release(&mut self, buffer: ObjectId) -> Handled {
+        // The compositor is done with the pixels; let them go.
+        if let Err(err) = wl_buffer::req::destroy(&mut self.backend, buffer) {
+            self.fatal = Some(io(err));
+        }
+        Ok(())
+    }
+}
+
+impl wl_surface::EvHandler for State {
+    fn enter(&mut self, _: ObjectId, _: ObjectId) -> Handled {
+        Ok(())
+    }
+    fn leave(&mut self, _: ObjectId, _: ObjectId) -> Handled {
+        Ok(())
+    }
+    fn preferred_buffer_scale(&mut self, _: ObjectId, _: i32) -> Handled {
+        Ok(())
+    }
+    fn preferred_buffer_transform(&mut self, _: ObjectId, _: wl_output::Transform) -> Handled {
+        Ok(())
+    }
+}
+
+impl wl_output::EvHandler for State {
+    #[allow(clippy::too_many_arguments)]
+    fn geometry(
+        &mut self,
+        _: ObjectId,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: wl_output::Subpixel,
+        _: &str,
+        _: &str,
+        _: wl_output::Transform,
+    ) -> Handled {
+        Ok(())
+    }
+
+    fn mode(&mut self, _: ObjectId, _: wl_output::Mode, _: i32, _: i32, _: i32) -> Handled {
+        Ok(())
+    }
+
+    fn done(&mut self, output: ObjectId) -> Handled {
+        if let Some(m) = self.monitor_mut(output) {
+            m.described = true;
+        }
+        Ok(())
+    }
+
+    fn scale(&mut self, output: ObjectId, factor: i32) -> Handled {
+        if let Some(m) = self.monitor_mut(output) {
+            m.scale = factor;
+        }
+        Ok(())
+    }
+
+    fn name(&mut self, output: ObjectId, name: &str) -> Handled {
+        if let Some(m) = self.monitor_mut(output) {
+            m.name = name.to_owned();
+        }
+        Ok(())
+    }
+
+    fn description(&mut self, _: ObjectId, _: &str) -> Handled {
+        Ok(())
+    }
+}
+
+impl zwlr_layer_surface_v1::EvHandler for State {
+    fn configure(&mut self, layer: ObjectId, serial: u32, width: u32, height: u32) -> Handled {
+        if let Err(err) =
+            zwlr_layer_surface_v1::req::ack_configure(&mut self.backend, layer, serial)
+        {
+            self.fatal = Some(io(err));
+        }
+        if let Some(m) = self.monitors.iter_mut().find(|m| m.layer == Some(layer)) {
+            m.size = Some((width, height));
+        }
+        Ok(())
+    }
+
+    fn closed(&mut self, layer: ObjectId) -> Handled {
+        if let Some(index) = self.monitors.iter().position(|m| m.layer == Some(layer)) {
+            self.remove_monitor(index);
+        }
+        Ok(())
+    }
+}

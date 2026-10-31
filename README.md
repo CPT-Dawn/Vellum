@@ -1,92 +1,18 @@
+<p align="center"><img src="assets/brand/banner.svg" alt="Vellum: Wallpapers, weightless." width="100%"></p>
+
 # Vellum
 
-Vellum is a Wayland wallpaper stack with:
+A featherweight wallpaper manager for Wayland compositors that support layer-shell.
 
-- `vellum-daemon`: the wallpaper daemon that talks to Wayland and applies images.
-- `vellum`: the TUI client for browsing images, configuring playlist behavior, and controlling runtime.
+> Vellum 2.0 is a clean-room rewrite, currently in progress on the `v2` branch.
+> The full README arrives with the release.
 
-## Acknowledgements
-
-The daemon side of Vellum was heavily adapted and stripped down from the awww code base on Codeberg.
-That foundation saved a large amount of work and made this project much less rough to bring together.
-Thanks to the awww authors and maintainers for the original code base and the ideas behind it.
-
-## Install
-
-### Arch Linux / AUR
-
-```bash
-paru -S vellum
+```sh
+vellumd &                    # the Daemon: keeps wallpapers on screen
+vellum set ~/Pictures/dunes.jpg
 ```
 
-## Reboot-Friendly Startup
+## License
 
-Vellum is designed to be session-safe and reboot-friendly:
-
-- The daemon restores last applied wallpapers from durable state on startup, and keeps animation frame data in the cache.
-- Favorites and playlist settings are persisted in XDG state.
-- Launching `vellum` without a TTY (for example from compositor startup) runs a lightweight bootstrap path that ensures daemon + playlist worker startup.
-
-### Hyprland (simple setup)
-
-Add this to your Hyprland config:
-
-```ini
-exec-once = vellum
-```
-
-This is enough for startup bootstrap on login. Open `vellum` from a terminal when you want the interactive TUI.
-
-### systemd user service (recommended for packaged installs)
-
-Install the unit file from:
-
-- `packaging/systemd/user/vellum-daemon.service`
-
-Then enable it:
-
-```bash
-systemctl --user enable --now vellum-daemon.service
-```
-
-This keeps `vellum-daemon` alive across your user session and auto-restarts on failure.
-
-### XDG autostart (non-systemd sessions)
-
-Install:
-
-- `packaging/autostart/vellum.desktop`
-
-to:
-
-- `~/.config/autostart/` (per-user), or
-- `/etc/xdg/autostart/` (system-wide).
-
-## Persistence Model
-
-### Wallpaper restore
-
-`vellum-daemon` restores previous per-output wallpapers from durable state by default.
-
-### User state
-
-Vellum stores state in XDG locations:
-
-- `XDG_STATE_HOME/vellum/wallpaper-state-v1/`
-- `XDG_STATE_HOME/vellum/playlist-state-v1.txt`
-- `XDG_STATE_HOME/vellum/favorites-v1.txt`
-
-Fallback path when `XDG_STATE_HOME` is not set:
-
-- `~/.local/state/vellum/`
-
-Cache path:
-
-- `XDG_CACHE_HOME/vellum/` (or `~/.cache/vellum/`)
-- Wallpaper animation frames stay cached under the versioned cache directory inside that path.
-
-## Daily Usage
-
-1. Run `vellum` in a terminal to open the TUI.
-2. Use `r` to restart/reload daemon handling from the TUI when needed.
-3. Apply wallpapers and playlist settings; state and cache are reused after reboot.
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option.
