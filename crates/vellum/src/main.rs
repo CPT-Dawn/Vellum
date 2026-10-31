@@ -7,6 +7,7 @@ mod decode;
 mod docs;
 mod favorites;
 mod frame;
+mod hook;
 mod library;
 mod monitors;
 mod render;
@@ -264,6 +265,8 @@ fn main() -> ExitCode {
         ),
         Command::Render { monitor, .. } => restore::run(&monitor[0]),
     };
+    // Let queued on_change hooks finish; their failures are only reported.
+    hook::finish();
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {

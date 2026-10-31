@@ -34,6 +34,7 @@ fn every_key_is_read() {
 library = ["~/Pictures/Walls", "/srv/art"]
 fit = "center"
 letterbox = "#1A1b2e"
+on_change = "matugen image {path}"
 
 [transition]
 type = "slide"
@@ -62,6 +63,16 @@ easing = "ease-in-out"
         }
     );
     assert_eq!(config.settings().transition, config.transition);
+    let hook = config.on_change.expect("on_change was read");
+    assert_eq!(hook.argv("/w.png", "DP-1"), ["matugen", "image", "/w.png"]);
+}
+
+#[test]
+fn an_unparseable_on_change_points_at_it() {
+    let err = parse("fit = \"fit\"\non_change = \"wal -i '{path}\"\n").unwrap_err();
+    assert_eq!(err.line, Some(2));
+    assert_eq!(err.key.as_deref(), Some("on_change"));
+    assert!(err.message.contains("unclosed quote"), "{err}");
 }
 
 #[test]

@@ -32,6 +32,7 @@ use vellum_ipc::{
     Settings, Transition, TransitionKind,
 };
 
+use crate::hook::Hook;
 use crate::render::{Color, DEFAULT_LETTERBOX, FitMode};
 
 /// The Library folder used when the Config names none.
@@ -50,6 +51,8 @@ pub struct Config {
     pub transition: Transition,
     /// The Rotation schedule, Overrides already merged.
     pub rotation: RotationSettings,
+    /// The command run after each new wallpaper is presented.
+    pub on_change: Option<Hook>,
 }
 
 impl Config {
@@ -61,6 +64,7 @@ impl Config {
             letterbox: DEFAULT_LETTERBOX,
             transition: Transition::default(),
             rotation: RotationSettings::default(),
+            on_change: None,
         }
     }
 
@@ -91,6 +95,12 @@ impl Config {
         config.letterbox = file.letterbox.map_or(config.letterbox, |c| c.0);
         config.transition = file.transition.into();
         config.rotation = file.rotation.resolve();
+        if let Some(command) = file.on_change {
+            let hook = Hook::parse(command.get_ref(), home).map_err(|why| {
+                ConfigError::at(text, command.span(), format!("the command {why}"))
+            })?;
+            config.on_change = Some(hook);
+        }
         Ok(config)
     }
 
@@ -122,6 +132,7 @@ struct File {
     #[serde(deserialize_with = "named_opt")]
     fit: Option<FitMode>,
     letterbox: Option<Hex>,
+    on_change: Option<Spanned<String>>,
     transition: TransitionSection,
     rotation: RotationSection,
 }
@@ -610,14 +621,17 @@ pub fn save_last_good(text: Option<&str>) -> Result<(), String> {
 
 /// The Config a command should use. A malformed Config is reported on
 /// stderr and the last good one is used instead.
+/// It also arms the `on_change` hook for this process.
 pub fn load() -> Config {
-    match read_current() {
+    let config = match read_current() {
         Ok((config, _)) => config,
         Err(err) => {
             eprintln!("vellum: {err}\nvellum: using the last good Config until this is fixed");
             last_good()
         }
-    }
+    };
+    crate::hook::remember(config.on_change.as_ref());
+    config
 }
 
 #[cfg(test)]
