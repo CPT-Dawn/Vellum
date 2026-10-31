@@ -20,7 +20,11 @@ jobs:
     # Ubuntu 24.04 ships Sway 1.9 (wlroots 0.17): no alpha-modifier, so the
     # GPU Fade can't be tested, and it clears bare Monitors to grey. Arch has
     # a current Sway, like the AUR package's users.
-    container: archlinux:base-devel
+    container:
+      image: archlinux:base-devel
+      # Arch's sway carries cap_sys_nice; without it in the bounding set,
+      # exec fails with EPERM.
+      options: --cap-add SYS_NICE
     steps:
       - name: Install git, sway and grim
         run: pacman -Syu --noconfirm --needed git sway grim
