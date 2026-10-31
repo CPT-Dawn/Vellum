@@ -32,6 +32,22 @@ use crate::protocols::*;
 /// The CPU Fade touches every pixel each frame, so it is kept short.
 const CPU_FADE_MAX: Duration = Duration::from_millis(300);
 
+/// The CPU Fade's cap. Debug builds let a test lengthen it with
+/// `VELLUMD_CPU_FADE_MAX_MS`, so a slow CI runner can still catch a frame
+/// mid-blend; a release Daemon never honors a test switch.
+#[cfg(debug_assertions)]
+fn cpu_fade_max() -> Duration {
+    std::env::var("VELLUMD_CPU_FADE_MAX_MS")
+        .ok()
+        .and_then(|ms| ms.parse().ok())
+        .map_or(CPU_FADE_MAX, Duration::from_millis)
+}
+
+#[cfg(not(debug_assertions))]
+fn cpu_fade_max() -> Duration {
+    CPU_FADE_MAX
+}
+
 /// A running Transition on one Monitor.
 pub(super) struct Animation {
     effect: Effect,
@@ -316,7 +332,7 @@ impl State {
                 (Effect::Fade { alpha }, frame.buffer, Some(frame.buffer))
             }
             Plan::CpuFade(source, memories) => {
-                duration = duration.min(CPU_FADE_MAX);
+                duration = duration.min(cpu_fade_max());
                 let shm = self.shm.expect("bound at startup");
                 let mut blends = Vec::with_capacity(2);
                 for memory in memories {

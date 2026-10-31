@@ -60,7 +60,7 @@ jobs:
             exit 1
           fi
           # Test-only switches exist in debug builds only.
-          if grep -aq VELLUMD_NO_ALPHA_MODIFIER target/release/vellumd; then
+          if grep -aqE 'VELLUMD_(NO_ALPHA_MODIFIER|CPU_FADE_MAX_MS)' target/release/vellumd; then
             echo "::error::the release vellumd honors a test-only switch"
             exit 1
           fi

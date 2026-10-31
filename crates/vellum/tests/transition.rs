@@ -221,7 +221,13 @@ fn fade_blends_on_the_gpu_through_alpha_modifier() {
 #[test]
 fn fade_falls_back_to_a_cpu_blend_without_alpha_modifier() {
     let mut sway = Sway::start(&[SMALL]);
-    sway.start_daemon_with(&[("VELLUMD_NO_ALPHA_MODIFIER", "1")]);
+    // The CPU Fade is capped at 300 ms, short enough for a slow runner's
+    // screenshots to miss every in-between frame; give it as long as the
+    // GPU paths get here.
+    sway.start_daemon_with(&[
+        ("VELLUMD_NO_ALPHA_MODIFIER", "1"),
+        ("VELLUMD_CPU_FADE_MAX_MS", "1200"),
+    ]);
     let mapped = assert_animates(&sway, &["--transition", "fade"], blended);
     assert!(mapped, "the CPU fade never mapped its blend buffers");
 }
