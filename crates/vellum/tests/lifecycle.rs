@@ -32,10 +32,14 @@ fn solid(sway: &Sway, color: [u8; 3], width: u32, height: u32) -> String {
     path.to_string_lossy().into_owned()
 }
 
-fn center_is(sway: &Sway, monitor: &str, color: [u8; 3]) -> bool {
+fn center(sway: &Sway, monitor: &str) -> [u8; 3] {
     let shot = sway.screenshot(monitor);
     let (w, h) = shot.dimensions();
-    shot.get_pixel(w / 2, h / 2).0 == color
+    shot.get_pixel(w / 2, h / 2).0
+}
+
+fn center_is(sway: &Sway, monitor: &str, color: [u8; 3]) -> bool {
+    center(sway, monitor) == color
 }
 
 fn stderr(out: &std::process::Output) -> String {
@@ -45,6 +49,14 @@ fn stderr(out: &std::process::Output) -> String {
 #[test]
 fn wallpapers_and_fit_modes_come_back_after_a_daemon_restart() {
     let mut sway = Sway::start(&[SMALL, TINY]);
+    // What each monitor shows with no wallpaper on it: the compositor's own
+    // background, which varies by version (black in Sway 1.10+, grey before).
+    let bare_one = center(&sway, "HEADLESS-1");
+    let bare_two = center(&sway, "HEADLESS-2");
+    assert!(
+        ![RED, GREEN].contains(&bare_one) && ![RED, GREEN].contains(&bare_two),
+        "the bare background must differ from the test wallpapers"
+    );
     sway.start_daemon();
     // A small image centred leaves black around it; filled, it covers all.
     let red = solid(&sway, RED, 40, 30);
@@ -57,67 +69,9 @@ fn wallpapers_and_fit_modes_come_back_after_a_daemon_restart() {
 
     sway.vellum_ok(["kill"]);
     assert!(sway.wait_daemon_exit().is_some_and(|s| s.success()));
-    // [DEBUG-c1r5]
-    {
-        let start = std::time::Instant::now();
-        let mut seen = Vec::new();
-        loop {
-            let a = sway.screenshot("HEADLESS-1");
-            let b = sway.screenshot("HEADLESS-2");
-            let pa = (a.get_pixel(160, 120).0, a.get_pixel(5, 5).0);
-            let pb = (b.get_pixel(100, 75).0, b.get_pixel(2, 2).0);
-            let entry = format!("{:?} H1 {:?} H2 {:?}", start.elapsed(), pa, pb);
-            if seen
-                .last()
-                .map(|(_, e): &(String, String)| e.split_once(" H1 ").unwrap().1.to_string())
-                != Some(entry.split_once(" H1 ").unwrap().1.to_string())
-            {
-                seen.push((String::new(), entry));
-            }
-            if pa.0 == BLACK && pb.0 == BLACK {
-                break;
-            }
-            if start.elapsed() > std::time::Duration::from_secs(5) {
-                let out = sway
-                    .command("swaymsg")
-                    .env(
-                        "SWAYSOCK",
-                        std::fs::read_dir(sway.dir())
-                            .unwrap()
-                            .filter_map(|e| e.ok())
-                            .map(|e| e.path())
-                            .find(|p| {
-                                p.file_name()
-                                    .unwrap()
-                                    .to_string_lossy()
-                                    .starts_with("sway-ipc.")
-                            })
-                            .unwrap(),
-                    )
-                    .args(["-t", "get_tree", "-r"])
-                    .output()
-                    .unwrap();
-                panic!(
-                    "[DEBUG-c1r5] still not black:\n{}\n--- tree ---\n{}\n--- sway log ---\n{}\n--- vellumd log ---\n{}",
-                    seen.iter()
-                        .map(|(_, e)| e.as_str())
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                    String::from_utf8_lossy(&out.stdout)
-                        .chars()
-                        .take(3000)
-                        .collect::<String>(),
-                    std::fs::read_to_string(sway.dir().join("sway.log")).unwrap_or_default(),
-                    sway.daemon_log()
-                );
-            }
-            std::thread::sleep(std::time::Duration::from_millis(30));
-        }
-        eprintln!(
-            "[DEBUG-c1r5] went black: {:?}",
-            seen.iter().map(|(_, e)| e.as_str()).collect::<Vec<_>>()
-        );
-    }
+    sway.wait_until("the wallpapers to go away", || {
+        center_is(&sway, "HEADLESS-1", bare_one) && center_is(&sway, "HEADLESS-2", bare_two)
+    });
 
     sway.start_daemon();
     sway.wait_until("the wallpapers to come back", || {
