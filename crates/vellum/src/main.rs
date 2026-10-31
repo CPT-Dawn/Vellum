@@ -1,5 +1,6 @@
 //! `vellum`: the TUI, the CLI and the renderer for the Vellum Daemon.
 
+mod atomic;
 mod client;
 mod config;
 mod deck;

@@ -62,7 +62,7 @@ fn save(favorites: &[PathBuf]) -> Result<(), String> {
         text += &f.to_string_lossy();
         text.push('\n');
     }
-    crate::config::write_atomically(&path, &text)
+    crate::atomic::write_atomically(&path, text.as_bytes())
         .map_err(|err| format!("cannot save {}: {err}", path.display()))
 }
 

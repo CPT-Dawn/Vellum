@@ -6,10 +6,9 @@
 
 use std::collections::VecDeque;
 use std::fs;
-use std::io::{self, Write as _};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 #[cfg(test)]
@@ -132,25 +131,12 @@ impl DiskCache {
     /// Writes the entry to a temporary file and renames it into place, so
     /// a reader never sees half an entry.
     fn write(&self, key: &str, data: &[u8]) -> io::Result<()> {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        fs::create_dir_all(&self.dir)?;
-        let tmp = self.dir.join(format!(
-            ".tmp-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let written = (|| {
-            let mut file = fs::File::create(&tmp)?;
-            let len = u32::try_from(key.len()).map_err(io::Error::other)?;
-            file.write_all(&len.to_le_bytes())?;
-            file.write_all(key.as_bytes())?;
-            file.write_all(data)?;
-            fs::rename(&tmp, self.path(key))
-        })();
-        if written.is_err() {
-            let _ = fs::remove_file(&tmp);
-        }
-        written
+        let len = u32::try_from(key.len()).map_err(io::Error::other)?;
+        let mut entry = Vec::with_capacity(4 + key.len() + data.len());
+        entry.extend_from_slice(&len.to_le_bytes());
+        entry.extend_from_slice(key.as_bytes());
+        entry.extend_from_slice(data);
+        crate::atomic::write_atomically(&self.path(key), &entry)
     }
 
     /// Deletes the least recently used entries until the rest fit. Returns
