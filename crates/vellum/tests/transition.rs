@@ -211,7 +211,11 @@ fn fade_blends_on_the_gpu_through_alpha_modifier() {
     let mut sway = Sway::start(&[SMALL]);
     sway.start_daemon();
     let mapped = assert_animates(&sway, &["--transition", "fade"], blended);
-    assert!(!mapped, "the GPU fade touched pixels in the Daemon");
+    assert!(
+        !mapped,
+        "the GPU fade touched pixels in the Daemon (the e2e Sway needs \
+         wp_alpha_modifier_v1, Sway 1.10 or newer)"
+    );
 }
 
 #[test]
