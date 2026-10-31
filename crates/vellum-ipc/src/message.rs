@@ -17,11 +17,14 @@ use crate::codec::{self, Body, Reader, Writer};
 
 mod kind {
     pub const MONITORS: u16 = 0x0101;
+    pub const STATUS: u16 = 0x0102;
     pub const PRESENT: u16 = 0x0201;
+    pub const KILL: u16 = 0x0502;
 
     pub const OK: u16 = 0x8000;
     pub const ERROR: u16 = 0x8001;
     pub const MONITORS_REPLY: u16 = 0x8101;
+    pub const STATUS_REPLY: u16 = 0x8102;
 }
 
 /// A message from `vellum` to the Daemon.
@@ -34,6 +37,10 @@ pub enum Request {
     /// memfd alongside the request. Answered by [`Response::Ok`] once the
     /// frame is committed.
     Present(Present),
+    /// What the Daemon shows and remembers. Answered by [`Response::Status`].
+    Status,
+    /// Stop the Daemon. Answered by [`Response::Ok`] just before it exits.
+    Kill,
 }
 
 /// A frame for one Monitor. The pixels are in the accompanying memfd at
@@ -51,6 +58,89 @@ pub struct Present {
     pub format: PixelFormat,
     /// The wallpaper file the frame was rendered from, recorded in State.
     pub source: String,
+    /// The Fit mode the frame was rendered with, recorded in State.
+    pub fit: FitMode,
+    /// Sent by `vellum render --restore`. The Daemon drops a restore frame
+    /// when the Monitor already shows an up-to-date one, so a restore never
+    /// overwrites a newer `vellum set`.
+    pub restore: bool,
+}
+
+/// How a wallpaper is sized to a Monitor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FitMode {
+    /// Cover the Monitor and crop the overflow.
+    #[default]
+    Fill,
+    /// Letterbox: the whole wallpaper, bars around it.
+    Fit,
+    /// Actual size, centred.
+    Center,
+    /// Ignore the aspect ratio.
+    Stretch,
+}
+
+impl FitMode {
+    const ALL: [FitMode; 4] = [
+        FitMode::Fill,
+        FitMode::Fit,
+        FitMode::Center,
+        FitMode::Stretch,
+    ];
+
+    /// The lowercase name used on the command line and in State.
+    pub fn name(self) -> &'static str {
+        match self {
+            FitMode::Fill => "fill",
+            FitMode::Fit => "fit",
+            FitMode::Center => "center",
+            FitMode::Stretch => "stretch",
+        }
+    }
+
+    /// The Fit mode called `name`, if any.
+    pub fn from_name(name: &str) -> Option<FitMode> {
+        FitMode::ALL.into_iter().find(|fit| fit.name() == name)
+    }
+
+    fn code(self) -> u8 {
+        self as u8
+    }
+
+    fn from_code(code: u8) -> Result<FitMode, Error> {
+        FitMode::ALL
+            .get(usize::from(code))
+            .copied()
+            .ok_or(Error::BadValue("fit mode"))
+    }
+}
+
+/// What the Daemon shows and remembers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Status {
+    /// The Daemon's release, e.g. `2.0.0`.
+    pub version: String,
+    pub pid: u32,
+    /// The Daemon's resident memory in bytes.
+    pub rss_bytes: u64,
+    /// Every connected Monitor, sorted by name.
+    pub monitors: Vec<MonitorStatus>,
+}
+
+/// One connected Monitor in a [`Status`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonitorStatus {
+    pub name: String,
+    /// The wallpaper State holds for it: the one on screen, or the one a
+    /// restore is about to put there. `None` if Vellum has nothing to show.
+    pub wallpaper: Option<Wallpaper>,
+}
+
+/// A wallpaper file and the Fit mode it is shown with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Wallpaper {
+    pub path: String,
+    pub fit: FitMode,
 }
 
 /// Pixel layout of a frame.
@@ -92,6 +182,7 @@ pub enum Response {
     /// The request failed. The text is meant for the user.
     Error(String),
     Monitors(Vec<MonitorInfo>),
+    Status(Status),
 }
 
 impl Request {
@@ -123,12 +214,14 @@ impl Body for Request {
         match self {
             Request::Monitors => kind::MONITORS,
             Request::Present(_) => kind::PRESENT,
+            Request::Status => kind::STATUS,
+            Request::Kill => kind::KILL,
         }
     }
 
     fn write(&self, w: &mut Writer) {
         match self {
-            Request::Monitors => {}
+            Request::Monitors | Request::Status | Request::Kill => {}
             Request::Present(p) => {
                 w.str(&p.monitor);
                 w.u32(p.width);
@@ -136,6 +229,8 @@ impl Body for Request {
                 w.u32(p.stride);
                 w.u32(p.format as u32);
                 w.str(&p.source);
+                w.u8(p.fit.code());
+                w.u8(u8::from(p.restore));
             }
         }
     }
@@ -153,7 +248,11 @@ impl Body for Request {
                     _ => return Err(Error::BadValue("pixel format")),
                 },
                 source: r.string()?,
+                fit: FitMode::from_code(r.u8()?)?,
+                restore: r.u8()? != 0,
             }),
+            kind::STATUS => Request::Status,
+            kind::KILL => Request::Kill,
             other => return Err(Error::UnknownKind(other)),
         })
     }
@@ -165,6 +264,7 @@ impl Body for Response {
             Response::Ok => kind::OK,
             Response::Error(_) => kind::ERROR,
             Response::Monitors(_) => kind::MONITORS_REPLY,
+            Response::Status(_) => kind::STATUS_REPLY,
         }
     }
 
@@ -181,6 +281,23 @@ impl Body for Response {
                     w.u32(m.physical_width);
                     w.u32(m.physical_height);
                     w.u32(m.scale_120);
+                }
+            }
+            Response::Status(status) => {
+                w.str(&status.version);
+                w.u32(status.pid);
+                w.u64(status.rss_bytes);
+                w.u16(status.monitors.len() as u16);
+                for m in &status.monitors {
+                    w.str(&m.name);
+                    match &m.wallpaper {
+                        None => w.u8(0),
+                        Some(wallpaper) => {
+                            w.u8(1);
+                            w.str(&wallpaper.path);
+                            w.u8(wallpaper.fit.code());
+                        }
+                    }
                 }
             }
         }
@@ -204,6 +321,30 @@ impl Body for Response {
                     });
                 }
                 Response::Monitors(monitors)
+            }
+            kind::STATUS_REPLY => {
+                let version = r.string()?;
+                let pid = r.u32()?;
+                let rss_bytes = r.u64()?;
+                let count = r.u16()?;
+                let mut monitors = Vec::with_capacity(count.into());
+                for _ in 0..count {
+                    let name = r.string()?;
+                    let wallpaper = match r.u8()? {
+                        0 => None,
+                        _ => Some(Wallpaper {
+                            path: r.string()?,
+                            fit: FitMode::from_code(r.u8()?)?,
+                        }),
+                    };
+                    monitors.push(MonitorStatus { name, wallpaper });
+                }
+                Response::Status(Status {
+                    version,
+                    pid,
+                    rss_bytes,
+                    monitors,
+                })
             }
             other => return Err(Error::UnknownKind(other)),
         })

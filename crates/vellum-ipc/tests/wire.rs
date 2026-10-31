@@ -5,8 +5,8 @@ use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 
 use vellum_ipc::{
-    Error, HEADER_LEN, MonitorInfo, PROTOCOL_VERSION, PixelFormat, Present, Request, Response,
-    recv, send,
+    Error, FitMode, HEADER_LEN, MonitorInfo, MonitorStatus, PROTOCOL_VERSION, PixelFormat,
+    Present, Request, Response, Status, Wallpaper, recv, send,
 };
 
 fn present() -> Present {
@@ -17,12 +17,19 @@ fn present() -> Present {
         stride: 1920 * 4,
         format: PixelFormat::Xrgb8888,
         source: "/home/me/Pictures/Wallpapers/dunes.jpg".into(),
+        fit: FitMode::Center,
+        restore: true,
     }
 }
 
 #[test]
 fn requests_survive_a_round_trip() {
-    for request in [Request::Monitors, Request::Present(present())] {
+    for request in [
+        Request::Monitors,
+        Request::Present(present()),
+        Request::Status,
+        Request::Kill,
+    ] {
         let frame = request.encode();
         assert_eq!(Request::decode(&frame).unwrap(), request);
     }
@@ -52,6 +59,24 @@ fn responses_survive_a_round_trip() {
         Response::Ok,
         Response::Error("monitor DP-9 is not connected".into()),
         Response::Monitors(monitors),
+        Response::Status(Status {
+            version: "2.0.0".into(),
+            pid: 4242,
+            rss_bytes: 3 << 20,
+            monitors: vec![
+                MonitorStatus {
+                    name: "DP-1".into(),
+                    wallpaper: Some(Wallpaper {
+                        path: "/w/dunes.jpg".into(),
+                        fit: FitMode::Fit,
+                    }),
+                },
+                MonitorStatus {
+                    name: "eDP-1".into(),
+                    wallpaper: None,
+                },
+            ],
+        }),
     ] {
         let frame = response.encode();
         assert_eq!(Response::decode(&frame).unwrap(), response);
@@ -135,4 +160,13 @@ fn tempfile_with(bytes: &[u8]) -> std::fs::File {
     let mut file = std::fs::File::from(fd);
     file.write_all(bytes).unwrap();
     file
+}
+
+#[test]
+fn fit_modes_have_stable_names() {
+    for fit in [FitMode::Fill, FitMode::Fit, FitMode::Center, FitMode::Stretch] {
+        assert_eq!(FitMode::from_name(fit.name()), Some(fit));
+    }
+    assert_eq!(FitMode::Stretch.name(), "stretch");
+    assert_eq!(FitMode::from_name("tile"), None);
 }

@@ -18,18 +18,10 @@ pub struct Listener {
 }
 
 impl Listener {
-    /// Binds `path`, refusing if another Daemon already answers there. A
-    /// stale socket left by a crashed Daemon is replaced.
+    /// Binds `path`. The caller holds the display lock, so a socket already
+    /// there was left by a Daemon that died and is replaced.
     pub fn bind(path: &Path) -> Result<Listener, String> {
-        if path.exists() {
-            if UnixStream::connect(path).is_ok() {
-                return Err(format!(
-                    "another vellumd is already running on this display ({})",
-                    path.display()
-                ));
-            }
-            let _ = std::fs::remove_file(path);
-        }
+        let _ = std::fs::remove_file(path);
         let listener = UnixListener::bind(path)
             .map_err(|err| format!("cannot listen on {}: {err}", path.display()))?;
         listener

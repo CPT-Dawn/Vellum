@@ -5,7 +5,7 @@ use crate::Error;
 /// The first four bytes of every frame.
 pub const MAGIC: [u8; 4] = *b"VLUM";
 /// Bump on any incompatible change to a payload layout or message kind.
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 /// Length of the fixed frame header.
 pub const HEADER_LEN: usize = 12;
 /// Upper bound on a payload. Pixels never travel inline (they go as a memfd),
@@ -107,6 +107,9 @@ impl Writer {
     pub fn u32(&mut self, v: u32) {
         self.0.extend_from_slice(&v.to_le_bytes());
     }
+    pub fn u64(&mut self, v: u64) {
+        self.0.extend_from_slice(&v.to_le_bytes());
+    }
     /// A `u32` byte length followed by UTF-8 bytes.
     pub fn str(&mut self, v: &str) {
         self.u32(v.len() as u32);
@@ -136,6 +139,10 @@ impl<'a> Reader<'a> {
     pub fn u32(&mut self) -> Result<u32, Error> {
         let b = self.take(4)?;
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+    pub fn u64(&mut self) -> Result<u64, Error> {
+        let b = self.take(8)?;
+        Ok(u64::from_le_bytes(b.try_into().expect("took 8 bytes")))
     }
     pub fn string(&mut self) -> Result<String, Error> {
         let len = self.u32()? as usize;

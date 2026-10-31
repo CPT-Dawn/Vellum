@@ -5,7 +5,7 @@ use vellum_ipc::MonitorInfo;
 use crate::client;
 
 pub fn run() -> Result<(), String> {
-    let monitors = client::monitors(&client::socket()?)?;
+    let monitors = client::monitors(&client::daemon()?)?;
     print!("{}", table(&monitors));
     Ok(())
 }

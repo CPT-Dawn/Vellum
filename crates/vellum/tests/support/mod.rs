@@ -157,16 +157,24 @@ impl Sway {
 
     /// Starts `vellumd` and waits until its socket answers.
     pub fn start_daemon(&mut self) -> u32 {
+        self.start_daemon_with_env(&[])
+    }
+
+    /// [`Sway::start_daemon`] with extra environment variables.
+    pub fn start_daemon_with_env(&mut self, env: &[(&str, &std::ffi::OsStr)]) -> u32 {
         let log = fs::File::create(self.dir.path().join("vellumd.log")).unwrap();
-        let child = self
-            .command(vellumd_bin())
+        let mut cmd = self.command(vellumd_bin());
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
+        let child = cmd
             .stdout(Stdio::null())
             .stderr(log)
             .spawn()
             .expect("failed to spawn vellumd");
         let pid = child.id();
         self.daemon = Some(child);
-        let socket = vellum_ipc::socket_path(self.dir.path(), &self.display);
+        let socket = self.socket();
         let deadline = Instant::now() + TIMEOUT;
         while std::os::unix::net::UnixStream::connect(&socket).is_err() {
             if let Some(Ok(Some(status))) = self.daemon.as_mut().map(|d| d.try_wait()) {
@@ -185,6 +193,44 @@ impl Sway {
             .is_some_and(|d| matches!(d.try_wait(), Ok(None)))
     }
 
+    /// Waits for the Daemon started by [`Sway::start_daemon`] to exit and
+    /// returns its status, or `None` if it is still running after a few
+    /// seconds.
+    pub fn wait_daemon_exit(&mut self) -> Option<std::process::ExitStatus> {
+        let daemon = self.daemon.as_mut().expect("no Daemon was started");
+        let deadline = Instant::now() + TIMEOUT;
+        while Instant::now() < deadline {
+            if let Ok(Some(status)) = daemon.try_wait() {
+                return Some(status);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        None
+    }
+
+    /// The Daemon's socket for this display.
+    pub fn socket(&self) -> PathBuf {
+        vellum_ipc::socket_path(self.dir.path(), &self.display)
+    }
+
+    /// Whether any Daemon answers on this display's socket.
+    pub fn daemon_answers(&self) -> bool {
+        std::os::unix::net::UnixStream::connect(self.socket()).is_ok()
+    }
+
+    /// Runs another `vellumd` in the foreground and returns its output.
+    pub fn vellumd(&self) -> Output {
+        self.command(vellumd_bin())
+            .output()
+            .expect("failed to run vellumd")
+    }
+
+    /// Kills the compositor, as a crashed or logged-out session would.
+    pub fn kill_compositor(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+
     pub fn daemon_log(&self) -> String {
         fs::read_to_string(self.dir.path().join("vellumd.log")).unwrap_or_default()
     }
@@ -197,6 +243,7 @@ impl Sway {
     {
         self.command(env!("CARGO_BIN_EXE_vellum"))
             .args(args)
+            .stdin(Stdio::null())
             .output()
             .expect("failed to run vellum")
     }
