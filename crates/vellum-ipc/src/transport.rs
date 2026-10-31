@@ -19,7 +19,11 @@ use crate::{Error, Request, Response};
 const MAX_FDS: usize = 4;
 
 /// Sends `message` as one frame, with `fds` attached to its first byte.
-pub fn send<M: Message>(socket: impl AsFd, message: &M, fds: &[BorrowedFd<'_>]) -> Result<(), Error> {
+pub fn send<M: Message>(
+    socket: impl AsFd,
+    message: &M,
+    fds: &[BorrowedFd<'_>],
+) -> Result<(), Error> {
     assert!(fds.len() <= MAX_FDS, "too many fds for one frame");
     let frame = codec::encode(message);
     let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(MAX_FDS))];

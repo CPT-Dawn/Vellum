@@ -78,7 +78,10 @@ fn a_frame_from_another_protocol_version_names_both_versions() {
     ));
     let text = err.to_string();
     assert!(text.contains(&format!("v{PROTOCOL_VERSION}")), "{text}");
-    assert!(text.contains(&format!("v{}", PROTOCOL_VERSION + 1)), "{text}");
+    assert!(
+        text.contains(&format!("v{}", PROTOCOL_VERSION + 1)),
+        "{text}"
+    );
 }
 
 #[test]

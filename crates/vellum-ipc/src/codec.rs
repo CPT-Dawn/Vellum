@@ -89,9 +89,7 @@ pub(crate) fn decode<M: Body>(frame: &[u8]) -> Result<M, Error> {
 }
 
 pub(crate) fn decode_payload<M: Body>(header: Header, payload: &[u8]) -> Result<M, Error> {
-    let payload = payload
-        .get(..header.len as usize)
-        .ok_or(Error::Truncated)?;
+    let payload = payload.get(..header.len as usize).ok_or(Error::Truncated)?;
     let mut r = Reader(payload);
     M::read(header.kind, &mut r)
 }
