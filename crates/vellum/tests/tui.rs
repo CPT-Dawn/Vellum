@@ -4,6 +4,7 @@
 mod support;
 
 use std::io::{Read, Write};
+use std::os::unix::process::CommandExt as _;
 use std::process::{Child, ChildStdin, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -11,10 +12,41 @@ use std::time::{Duration, Instant};
 use image::{Rgb, RgbImage};
 use support::*;
 
+/// `script` running the TUI in its pty. Dropping it (a passing test, a
+/// failed assertion, a timeout) kills `script` and everything in the pty:
+/// `vellum` runs in its own session there, so it survives `script` alone.
+struct Tui(Child);
+
+impl Tui {
+    fn id(&self) -> u32 {
+        self.0.id()
+    }
+}
+
+impl Drop for Tui {
+    fn drop(&mut self) {
+        use rustix::process::{Pid, Signal, kill_process_group};
+        if matches!(self.0.try_wait(), Ok(Some(_))) {
+            // Exited cleanly, and its pid may be reused already.
+            return;
+        }
+        // Each session in the pty leads its own process group.
+        for pid in children(self.0.id()) {
+            if let Some(pid) = Pid::from_raw(pid as i32) {
+                let _ = kill_process_group(pid, Signal::KILL);
+            }
+        }
+        if let Some(group) = Pid::from_raw(self.0.id() as i32) {
+            let _ = kill_process_group(group, Signal::KILL);
+        }
+        let _ = self.0.wait();
+    }
+}
+
 /// `vellum` with no arguments in an 80x24 pseudo-terminal that answers the
 /// graphics probe like a plain xterm would. Returns the process and its
 /// keyboard.
-fn open_tui(sway: &Sway) -> (Child, Arc<Mutex<ChildStdin>>) {
+fn open_tui(sway: &Sway) -> (Tui, Arc<Mutex<ChildStdin>>) {
     let shell = format!(
         "stty cols 80 rows 24; exec '{}'",
         env!("CARGO_BIN_EXE_vellum")
@@ -26,6 +58,7 @@ fn open_tui(sway: &Sway) -> (Child, Arc<Mutex<ChildStdin>>) {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .process_group(0)
         .spawn()
         .expect("failed to run script; is util-linux installed?");
     let keys = Arc::new(Mutex::new(tui.stdin.take().unwrap()));
@@ -50,7 +83,7 @@ fn open_tui(sway: &Sway) -> (Child, Arc<Mutex<ChildStdin>>) {
             }
         }
     });
-    (tui, keys)
+    (Tui(tui), keys)
 }
 
 fn press(keys: &Mutex<ChildStdin>, bytes: &[u8]) {
@@ -59,15 +92,15 @@ fn press(keys: &Mutex<ChildStdin>, bytes: &[u8]) {
     keys.flush().unwrap();
 }
 
-fn wait_exit(tui: &mut Child) -> Option<std::process::ExitStatus> {
+/// Waits for the TUI to exit; `None` after 5 s (the guard then kills it).
+fn wait_exit(tui: &mut Tui) -> Option<std::process::ExitStatus> {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        if let Some(status) = tui.try_wait().unwrap() {
+        if let Some(status) = tui.0.try_wait().unwrap() {
             return Some(status);
         }
         std::thread::sleep(Duration::from_millis(30));
     }
-    let _ = tui.kill();
     None
 }
 
@@ -203,4 +236,41 @@ fn without_a_terminal_vellum_says_so() {
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("needs a terminal"), "{err}");
+}
+
+/// The direct children of `pid`.
+fn children(pid: u32) -> Vec<u32> {
+    std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter_map(|p| p.parse().ok())
+        .collect()
+}
+
+/// Whether `pid` exists and is not a zombie.
+fn running(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        let state = stat.rsplit(')').next().unwrap_or("").trim_start();
+        !state.starts_with('Z')
+    })
+}
+
+#[test]
+fn a_test_that_gives_up_on_the_tui_leaves_no_process_behind() {
+    let sway = Sway::start(&[Monitor {
+        width: 320,
+        height: 240,
+    }]);
+    let (tui, _keys) = open_tui(&sway);
+    let script = tui.id();
+    let mut inside = Vec::new();
+    eventually("vellum to start inside the pty", || {
+        inside = children(script);
+        !inside.is_empty()
+    });
+    // A failing assertion unwinds through here.
+    drop(tui);
+    eventually("every TUI process to exit", || {
+        !running(script) && !inside.iter().any(|&pid| running(pid))
+    });
 }
