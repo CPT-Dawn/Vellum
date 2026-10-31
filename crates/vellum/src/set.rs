@@ -1,24 +1,20 @@
-//! `vellum set <file>`: decode, render for each Monitor, present.
+//! `vellum set <file>`: decode, render for each targeted Monitor, present.
 
-use std::os::fd::{AsFd, BorrowedFd};
+use std::os::fd::AsFd;
 use std::path::Path;
 
-use vellum_ipc::{PixelFormat, Present, Request, Response};
+use vellum_ipc::{MonitorInfo, PixelFormat, Present, Request, Response};
 
+use crate::client::{self, ask, unexpected};
 use crate::frame::Frame;
 use crate::render::{DEFAULT_LETTERBOX, FitMode, Target, render};
 
-pub fn run(file: &Path, fit: FitMode) -> Result<(), String> {
+/// Sets `file` on the Monitor named `monitor`, or on every Monitor.
+pub fn run(file: &Path, monitor: Option<&str>, fit: FitMode) -> Result<(), String> {
     let image = crate::decode::load(file)?;
 
-    let socket = vellum_ipc::socket_path_from_env().map_err(|err| err.to_string())?;
-    let monitors = match ask(&socket, &Request::Monitors, &[])? {
-        Response::Monitors(monitors) => monitors,
-        other => return Err(unexpected(&other)),
-    };
-    if monitors.is_empty() {
-        return Err("vellumd sees no monitors".into());
-    }
+    let socket = client::socket()?;
+    let monitors = target(client::monitors(&socket)?, monitor)?;
 
     let source = std::path::absolute(file).unwrap_or_else(|_| file.to_owned());
     for monitor in monitors {
@@ -48,24 +44,20 @@ pub fn run(file: &Path, fit: FitMode) -> Result<(), String> {
     Ok(())
 }
 
-/// Sends one request to the Daemon, turning "no Daemon" into a helpful hint.
-fn ask(socket: &Path, request: &Request, fds: &[BorrowedFd<'_>]) -> Result<Response, String> {
-    vellum_ipc::request(socket, request, fds).map_err(|err| match err {
-        vellum_ipc::Error::Io(io) if is_not_running(&io) => format!(
-            "vellumd is not running (no Daemon at {}); start it with `vellumd &`",
-            socket.display()
-        ),
-        other => format!("talking to vellumd failed: {other}"),
-    })
-}
-
-fn is_not_running(err: &std::io::Error) -> bool {
-    matches!(
-        err.kind(),
-        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-    )
-}
-
-fn unexpected(response: &Response) -> String {
-    format!("vellumd sent an unexpected reply: {response:?}")
+/// The Monitors a command applies to: the one named, or all of them.
+pub fn target(monitors: Vec<MonitorInfo>, name: Option<&str>) -> Result<Vec<MonitorInfo>, String> {
+    if monitors.is_empty() {
+        return Err("vellumd sees no monitors".into());
+    }
+    let Some(name) = name else {
+        return Ok(monitors);
+    };
+    if monitors.iter().any(|m| m.name == name) {
+        return Ok(monitors.into_iter().filter(|m| m.name == name).collect());
+    }
+    let known: Vec<&str> = monitors.iter().map(|m| m.name.as_str()).collect();
+    Err(format!(
+        "no monitor named {name}; connected monitors: {}",
+        known.join(", ")
+    ))
 }
