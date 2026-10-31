@@ -58,6 +58,39 @@ pub fn render_preview(image: &RgbaImage, job: &PreviewJob, font: FontSize) -> Rg
     RgbImage::from_raw(width, height, rgb).expect("frame is width*height pixels")
 }
 
+/// A rendered preview as the disk cache stores it: the source's size, then
+/// the frame as a quickly compressed PNG.
+pub fn encode_entry(frame: &RgbImage, source: (u32, u32)) -> Option<Vec<u8>> {
+    use image::ImageEncoder as _;
+    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+    let mut out = Vec::with_capacity(frame.as_raw().len() / 2);
+    out.extend_from_slice(ENTRY_MAGIC);
+    out.extend_from_slice(&source.0.to_le_bytes());
+    out.extend_from_slice(&source.1.to_le_bytes());
+    PngEncoder::new_with_quality(&mut out, CompressionType::Fast, FilterType::Adaptive)
+        .write_image(
+            frame.as_raw(),
+            frame.width(),
+            frame.height(),
+            image::ExtendedColorType::Rgb8,
+        )
+        .ok()?;
+    Some(out)
+}
+
+/// The frame and source size from [`encode_entry`]'s bytes.
+pub fn decode_entry(bytes: &[u8]) -> Option<(RgbImage, (u32, u32))> {
+    let rest = bytes.strip_prefix(ENTRY_MAGIC)?;
+    let (w, rest) = rest.split_first_chunk::<4>()?;
+    let (h, png) = rest.split_first_chunk::<4>()?;
+    let frame = image::load_from_memory_with_format(png, image::ImageFormat::Png)
+        .ok()?
+        .into_rgb8();
+    Some((frame, (u32::from_le_bytes(*w), u32::from_le_bytes(*h))))
+}
+
+const ENTRY_MAGIC: &[u8] = b"VLMPRV1\0";
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -67,11 +100,24 @@ mod tests {
     use super::*;
     use crate::render::FitMode;
 
+    #[test]
+    fn a_cache_entry_round_trips() {
+        let mut frame = RgbImage::new(40, 30);
+        frame.put_pixel(3, 4, image::Rgb([1, 2, 3]));
+        let bytes = encode_entry(&frame, (3840, 2160)).unwrap();
+        let (back, source) = decode_entry(&bytes).unwrap();
+        assert_eq!(back, frame);
+        assert_eq!(source, (3840, 2160));
+        assert!(decode_entry(&bytes[..20]).is_none());
+        assert!(decode_entry(b"something else").is_none());
+    }
+
     const FONT: FontSize = FontSize::new(10, 20);
 
     fn job(fit: FitMode, monitor: Screen) -> PreviewJob {
         PreviewJob {
             generation: 1,
+            purpose: crate::tui::msg::Purpose::Preview,
             path: PathBuf::from("/w/x.png"),
             cells: Size::new(40, 15),
             monitor,

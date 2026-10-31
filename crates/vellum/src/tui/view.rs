@@ -11,7 +11,7 @@ use ratatui::widgets::{Block, BorderType, List, ListItem, ListState, Paragraph, 
 
 use super::keymap;
 use super::layout::{self, Areas};
-use super::model::{Daemon, Model, PreviewImage, PreviewState, Rotation, ToastKind};
+use super::model::{Daemon, Meta, Model, PreviewImage, PreviewState, Rotation, Tile, ToastKind};
 use super::theme::Theme;
 use crate::config::Named as _;
 
@@ -23,8 +23,12 @@ pub fn view(m: &Model, f: &mut Frame) {
     f.render_widget(Block::new().style(t.base), f.area());
     let areas = layout::areas(f.area());
     header(m, f, areas.header);
-    list(m, f, areas.list);
-    preview(m, f, &areas);
+    if m.grid.on {
+        grid(m, f);
+    } else {
+        list(m, f, areas.list);
+        preview(m, f, &areas);
+    }
     footer(m, f, areas.footer);
 }
 
@@ -90,23 +94,23 @@ fn pane<'a>(t: &Theme, title: String, focused: bool) -> Block<'a> {
         .title(Span::styled(title, t.text.add_modifier(Modifier::BOLD)))
 }
 
-fn list(m: &Model, f: &mut Frame, area: Rect) {
-    let t = &m.theme;
-    let title = if m.scanning {
+fn library_title(m: &Model) -> String {
+    if m.scanning {
         " Library ".to_owned()
     } else {
         format!(" Library · {} ", m.library.len())
-    };
-    let block = pane(t, title, true);
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    }
+}
 
+/// Says why there is nothing to show yet, if so. True if it did.
+fn no_wallpapers(m: &Model, f: &mut Frame, inner: Rect) -> bool {
+    let t = &m.theme;
     if m.scanning {
         f.render_widget(
             Paragraph::new(Span::styled("Scanning the Library…", t.muted)),
             pad(inner),
         );
-        return;
+        return true;
     }
     if m.library.is_empty() {
         let folders: Vec<String> = m.folders.iter().map(|p| m.tilde(p)).collect();
@@ -118,6 +122,56 @@ fn list(m: &Model, f: &mut Frame, area: Rect) {
             .wrap(Wrap { trim: true }),
             pad(inner),
         );
+        return true;
+    }
+    false
+}
+
+/// The thumbnail grid: one tile per wallpaper on screen, the selection's
+/// name highlighted, and the metadata strip below.
+fn grid(m: &Model, f: &mut Frame) {
+    let t = &m.theme;
+    let areas = layout::grid(f.area());
+    let block = pane(t, library_title(m), true);
+    let inner = block.inner(areas.pane);
+    f.render_widget(block, areas.pane);
+    if no_wallpapers(m, f, inner) {
+        return;
+    }
+    let first = m.grid.offset_row * areas.cols;
+    for (i, path) in super::update::visible(m).enumerate() {
+        let (image, name) = areas.tile(i);
+        match m.grid.tiles.get(path) {
+            Some(Tile::Ready { image: thumb, .. }) => draw_image(m, f, image, thumb),
+            Some(Tile::Failed) => centered_text(f, image, Line::styled("✗", t.error)),
+            Some(Tile::Loading) | None => centered_text(f, image, Line::styled("…", t.muted)),
+        }
+        let selected = first + i == m.selected;
+        let label = path
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        let (mark, style) = if selected {
+            ("› ", t.selection)
+        } else {
+            ("  ", t.secondary)
+        };
+        f.render_widget(Line::styled(format!("{mark}{label}"), style), name);
+    }
+    let meta = match m.selection().and_then(|p| m.grid.tiles.get(p)) {
+        Some(Tile::Ready { meta, .. }) => Some(*meta),
+        _ => None,
+    };
+    if let Some(path) = m.selection() {
+        meta_strip(m, f, areas.meta, path, meta);
+    }
+}
+
+fn list(m: &Model, f: &mut Frame, area: Rect) {
+    let t = &m.theme;
+    let block = pane(t, library_title(m), true);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if no_wallpapers(m, f, inner) {
         return;
     }
     let items: Vec<ListItem> = m
@@ -175,28 +229,38 @@ fn preview(m: &Model, f: &mut Frame, areas: &Areas) {
                 row,
             );
         }
-        PreviewState::Ready { image, .. } => {
-            let size = image.size();
-            let [row] = Layout::vertical([Constraint::Length(size.height)])
-                .flex(Flex::Center)
-                .areas(area);
-            let [cell] = Layout::horizontal([Constraint::Length(size.width)])
-                .flex(Flex::Center)
-                .areas(row);
-            match image {
-                PreviewImage::Protocol(protocol) => {
-                    f.render_widget(ratatui_image::Image::new(protocol), cell);
-                }
-                PreviewImage::Placeholder { label, .. } => {
-                    let fill = "░".repeat(usize::from(cell.width));
-                    let lines = vec![Line::styled(fill, t.muted); usize::from(cell.height)];
-                    f.render_widget(Paragraph::new(lines), cell);
-                    centered_text(f, cell, Line::styled(label.as_str(), t.text));
-                }
-            }
+        PreviewState::Ready { image, .. } => draw_image(m, f, area, image),
+    }
+    if let Some(path) = m.preview.state.path() {
+        let meta = match &m.preview.state {
+            PreviewState::Ready { meta, .. } => Some(*meta),
+            _ => None,
+        };
+        meta_strip(m, f, areas.meta, path, meta);
+    }
+}
+
+/// Draws `image` centered in `area`.
+fn draw_image(m: &Model, f: &mut Frame, area: Rect, image: &PreviewImage) {
+    let t = &m.theme;
+    let size = image.size();
+    let [row] = Layout::vertical([Constraint::Length(size.height)])
+        .flex(Flex::Center)
+        .areas(area);
+    let [cell] = Layout::horizontal([Constraint::Length(size.width)])
+        .flex(Flex::Center)
+        .areas(row);
+    match image {
+        PreviewImage::Protocol(protocol) => {
+            f.render_widget(ratatui_image::Image::new(protocol), cell);
+        }
+        PreviewImage::Placeholder { label, .. } => {
+            let fill = "░".repeat(usize::from(cell.width));
+            let lines = vec![Line::styled(fill, t.muted); usize::from(cell.height)];
+            f.render_widget(Paragraph::new(lines), cell);
+            centered_text(f, cell, Line::styled(label.as_str(), t.text));
         }
     }
-    meta(m, f, areas.meta);
 }
 
 fn centered_text(f: &mut Frame, area: Rect, line: Line) {
@@ -208,11 +272,8 @@ fn centered_text(f: &mut Frame, area: Rect, line: Line) {
 
 /// The metadata strip: name and folder, then resolution, size, Fit mode
 /// and target.
-fn meta(m: &Model, f: &mut Frame, area: Rect) {
+fn meta_strip(m: &Model, f: &mut Frame, area: Rect, path: &Path, meta: Option<Meta>) {
     let t = &m.theme;
-    let Some(path) = m.preview.state.path() else {
-        return;
-    };
     let name = path
         .file_name()
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
@@ -223,7 +284,7 @@ fn meta(m: &Model, f: &mut Frame, area: Rect) {
         Span::styled(folder, t.secondary),
     ]);
     let mut second = Vec::new();
-    if let PreviewState::Ready { meta, .. } = &m.preview.state {
+    if let Some(meta) = meta {
         second.push(Span::styled(
             format!(
                 "{}×{} · {} · ",
@@ -245,7 +306,7 @@ fn meta(m: &Model, f: &mut Frame, area: Rect) {
 fn footer(m: &Model, f: &mut Frame, area: Rect) {
     let t = &m.theme;
     let mut spans = vec![Span::raw(" ")];
-    for (keys, label) in keymap::hints(m.mode) {
+    for (keys, label) in keymap::hints(m.mode, m.grid.on) {
         spans.push(Span::styled(*keys, t.focus));
         spans.push(Span::styled(format!(" {label}  "), t.secondary));
     }

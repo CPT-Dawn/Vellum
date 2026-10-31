@@ -21,6 +21,7 @@ fn an_empty_config_is_all_defaults() {
     assert_eq!(config.fit, FitMode::Fill);
     assert_eq!(config.letterbox, [0, 0, 0]);
     assert_eq!(config.transition, Transition::default());
+    assert_eq!(config.preview_cache_mb, 200);
     assert_eq!(config, Config::defaults(Some(Path::new(HOME))));
 }
 
@@ -32,6 +33,9 @@ library = ["~/Pictures/Walls", "/srv/art"]
 fit = "center"
 letterbox = "#1A1b2e"
 on_change = "matugen image {path}"
+
+[preview]
+cache_mb = 50
 
 [transition]
 type = "slide"
@@ -60,6 +64,7 @@ easing = "ease-in-out"
         }
     );
     assert_eq!(config.settings().transition, config.transition);
+    assert_eq!(config.preview_cache_mb, 50);
     let hook = config.on_change.expect("on_change was read");
     assert_eq!(hook.argv("/w.png", "DP-1"), ["matugen", "image", "/w.png"]);
 }

@@ -13,6 +13,7 @@
 //! Tests drive update and view through [`harness`] (fake Daemon, fake
 //! Library, placeholder images), without a terminal.
 
+mod cache;
 mod keymap;
 mod layout;
 mod model;
