@@ -348,3 +348,68 @@ fn the_same_key_may_mean_different_things_in_the_list_and_in_prompts() {
     let config = parse("[keymap]\napply = \"ctrl-o\"\nconfirm = \"ctrl-o\"\n").unwrap();
     assert_eq!(config.keymap.len(), 2);
 }
+
+const CONFIGURATION_DOC: &str = include_str!("../../../../docs/configuration.md");
+const README: &str = include_str!("../../../../README.md");
+
+/// The ```toml blocks in a Markdown document, in order.
+fn toml_blocks(doc: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut current: Option<String> = None;
+    for line in doc.lines() {
+        match (&mut current, line.trim_end()) {
+            (None, "```toml") => current = Some(String::new()),
+            (Some(block), "```") => {
+                blocks.push(std::mem::take(block));
+                current = None;
+            }
+            (Some(block), _) => {
+                block.push_str(line);
+                block.push('\n');
+            }
+            (None, _) => {}
+        }
+    }
+    blocks
+}
+
+#[test]
+fn every_config_example_in_the_docs_parses() {
+    for (doc, name, at_least) in [
+        (CONFIGURATION_DOC, "docs/configuration.md", 10),
+        (README, "README.md", 1),
+    ] {
+        let blocks = toml_blocks(doc);
+        assert!(
+            blocks.len() >= at_least,
+            "{name}: only {} examples",
+            blocks.len()
+        );
+        for block in blocks {
+            if let Err(err) = parse(&block) {
+                panic!("{name}: this example is rejected:\n{block}\n{err}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_documented_complete_example_is_exactly_the_defaults() {
+    let complete = &toml_blocks(CONFIGURATION_DOC)[0];
+    assert_eq!(
+        parse(complete).unwrap(),
+        Config::defaults(Some(Path::new(HOME)))
+    );
+}
+
+#[test]
+fn every_tui_action_is_documented_in_the_keys_section() {
+    let doc = CONFIGURATION_DOC;
+    let keys = &doc[doc.find("## Keys").expect("a Keys section")..];
+    for name in Action::names() {
+        assert!(
+            keys.contains(&format!("`{name}`")),
+            "docs/configuration.md \"Keys\" does not mention the `{name}` Action"
+        );
+    }
+}
