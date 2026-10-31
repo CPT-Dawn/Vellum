@@ -126,6 +126,33 @@ fn a_malformed_config_is_reported_precisely_and_the_last_good_one_stays() {
 }
 
 #[test]
+fn a_restarted_daemon_with_a_malformed_config_keeps_the_last_good_settings() {
+    let mut sway = Sway::start(&[SMALL]);
+    sway.write_config("[transition]\ntype = \"wipe\"\nduration = 250\n");
+    sway.start_daemon();
+    sway.wait_until("the first sync", || {
+        status(&sway).contains("transition: wipe right, 250 ms")
+    });
+
+    sway.write_config("[transition]\ntype = \"slide\"\nduration = \"slow\"\n");
+    sway.wait_until("the Daemon log to mention the error", || {
+        sway.daemon_log().contains("transition.duration")
+    });
+    sway.vellum_ok(["kill"]);
+    sway.wait_daemon_exit().expect("the Daemon did not exit");
+
+    sway.start_daemon();
+    sway.wait_until("the restarted Daemon to hold the last good settings", || {
+        status(&sway).contains("transition: wipe right, 250 ms")
+    });
+    // The fresh sync also says what is wrong with the file.
+    sway.wait_until("the Daemon log to mention the error", || {
+        sway.daemon_log().contains("transition.duration")
+    });
+    assert!(sway.daemon_alive());
+}
+
+#[test]
 fn set_finds_a_wallpaper_by_name_in_the_library() {
     let mut sway = Sway::start(&[SMALL]);
     let library = sway.dir().join("walls");
