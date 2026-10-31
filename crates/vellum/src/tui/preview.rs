@@ -8,12 +8,12 @@ use image::{RgbImage, RgbaImage};
 use ratatui::layout::Size;
 use ratatui_image::FontSize;
 
-use super::msg::{PreviewJob, Screen};
+use super::msg::{MonitorShape, PreviewJob};
 use crate::render::{Target, render};
 
 /// The largest frame with `monitor`'s aspect ratio that fits in `cells`
 /// at `font`, in pixels. Never zero.
-pub fn frame_size(cells: Size, font: FontSize, monitor: Screen) -> (u32, u32) {
+pub fn frame_size(cells: Size, font: FontSize, monitor: MonitorShape) -> (u32, u32) {
     let avail_w = u64::from(cells.width) * u64::from(font.width);
     let avail_h = u64::from(cells.height) * u64::from(font.height);
     let (mw, mh) = (
@@ -114,7 +114,7 @@ mod tests {
 
     const FONT: FontSize = FontSize::new(10, 20);
 
-    fn job(fit: FitMode, monitor: Screen) -> PreviewJob {
+    fn job(fit: FitMode, monitor: MonitorShape) -> PreviewJob {
         PreviewJob {
             generation: 1,
             purpose: crate::tui::msg::Purpose::Preview,
@@ -126,7 +126,7 @@ mod tests {
         }
     }
 
-    const FOUR_BY_THREE: Screen = Screen {
+    const FOUR_BY_THREE: MonitorShape = MonitorShape {
         width: 1600,
         height: 1200,
         scale_120: 120,
@@ -141,7 +141,7 @@ mod tests {
         );
         // A 16:9 Monitor in the same pane is width-bound.
         assert_eq!(
-            frame_size(Size::new(40, 15), FONT, Screen::FALLBACK),
+            frame_size(Size::new(40, 15), FONT, MonitorShape::FALLBACK),
             (400, 225)
         );
         // A tall pane is height-bound.

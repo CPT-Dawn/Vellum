@@ -33,7 +33,7 @@ use super::model::{
     Busy, Daemon, Field, Mode, Model, Panel, PreviewState, Prompt, Rotation, Tile, TileSpec, Toast,
     ToastKind, Welcome,
 };
-use super::msg::{ApplyJob, Cmd, Msg, PreviewJob, Purpose, Screen, Wake};
+use super::msg::{ApplyJob, Cmd, MonitorShape, Msg, PreviewJob, Purpose, Wake};
 use crate::config::edit::Edit;
 use crate::config::{Named, format_interval};
 
@@ -934,7 +934,9 @@ fn preview_jobs(m: &Model) -> Vec<Cmd> {
         return Vec::new();
     };
     let cells = m.areas().image.as_size();
-    let monitor = m.targeted().map_or(Screen::FALLBACK, Screen::from);
+    let monitor = m
+        .targeted()
+        .map_or(MonitorShape::FALLBACK, MonitorShape::from);
     let job = |purpose, path: &PathBuf| {
         Cmd::RenderPreview(PreviewJob {
             generation: m.preview.generation,
@@ -978,7 +980,9 @@ fn request_tiles(m: &mut Model, when: When) -> Vec<Cmd> {
     }
     let spec = TileSpec {
         cells: layout::TILE_IMAGE,
-        monitor: m.targeted().map_or(Screen::FALLBACK, Screen::from),
+        monitor: m
+            .targeted()
+            .map_or(MonitorShape::FALLBACK, MonitorShape::from),
         fit: m.fit,
         letterbox: m.letterbox,
     };

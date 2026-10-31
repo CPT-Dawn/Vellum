@@ -168,31 +168,31 @@ pub struct PreviewJob {
     pub path: PathBuf,
     /// The most cells the preview may cover.
     pub cells: Size,
-    pub monitor: Screen,
+    pub monitor: MonitorShape,
     pub fit: FitMode,
     pub letterbox: Color,
 }
 
 /// The parts of a Monitor a preview depends on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Screen {
+pub struct MonitorShape {
     pub width: u32,
     pub height: u32,
     pub scale_120: u32,
 }
 
-impl Screen {
+impl MonitorShape {
     /// Used for previews until the Daemon reports a real Monitor.
-    pub const FALLBACK: Screen = Screen {
+    pub const FALLBACK: MonitorShape = MonitorShape {
         width: 1920,
         height: 1080,
         scale_120: 120,
     };
 }
 
-impl From<&MonitorInfo> for Screen {
-    fn from(m: &MonitorInfo) -> Screen {
-        Screen {
+impl From<&MonitorInfo> for MonitorShape {
+    fn from(m: &MonitorInfo) -> MonitorShape {
+        MonitorShape {
             width: m.physical_width,
             height: m.physical_height,
             scale_120: m.scale_120,

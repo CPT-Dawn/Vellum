@@ -396,7 +396,7 @@ pub struct Grid {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TileSpec {
     pub cells: Size,
-    pub monitor: super::msg::Screen,
+    pub monitor: super::msg::MonitorShape,
     pub fit: FitMode,
     pub letterbox: Color,
 }
