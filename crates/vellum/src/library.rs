@@ -1,6 +1,6 @@
 //! The Library: the folders Vellum searches recursively for wallpapers.
 //!
-//! [`scan`] lists every wallpaper in the Library; Rotation (#8) and the TUI
+//! [`scan`] lists every wallpaper in the Library; Rotation and the TUI
 //! index build on it. [`resolve`] lets `vellum set` take a name from the
 //! Library instead of a full path.
 

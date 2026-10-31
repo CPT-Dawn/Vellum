@@ -95,9 +95,16 @@ pub fn run(
                 .iter()
                 .map(|m| picker.previous(m).map(|p| (vec![*m], p)))
                 .collect::<Result<Vec<_>, _>>(),
-            Pick::Next | Pick::Random => picker
+            // The sync group shares one card per tick.
+            Pick::Next | Pick::Random if key == deck::GLOBAL && config.rotation.sync => picker
                 .draw(&key, &members, pick)
                 .map(|p| vec![(members, p)]),
+            // Otherwise each Monitor takes its own card, from the shared
+            // global deck or its Override's.
+            Pick::Next | Pick::Random => members
+                .iter()
+                .map(|m| picker.draw(&key, &[*m], pick).map(|p| (vec![*m], p)))
+                .collect::<Result<Vec<_>, _>>(),
         };
         let picked = match picked {
             Ok(picked) => picked,
@@ -140,17 +147,20 @@ pub fn reset_timer(socket: &Path, monitor: &str) -> Result<(), String> {
     }
 }
 
-/// The targets grouped by deck: the sync group shares one, every other
-/// Monitor has its own. In Monitor order.
+/// The targets grouped by deck: every Monitor following the global
+/// Rotation draws from one shared deck, so they get different wallpapers
+/// and nothing repeats until the whole source has been shown. A Monitor
+/// with an Override has a deck of its own. In Monitor order.
 fn groups<'a>(
     targets: &'a [MonitorInfo],
     rotation: &RotationSettings,
 ) -> Vec<(String, Vec<&'a MonitorInfo>)> {
     let mut groups: Vec<(String, Vec<&MonitorInfo>)> = Vec::new();
     for monitor in targets {
-        let key = match rotation.in_sync_group(&monitor.name) {
-            true => deck::SYNC_GROUP.to_owned(),
-            false => monitor.name.clone(),
+        let overridden = rotation.overrides.iter().any(|o| o.monitor == monitor.name);
+        let key = match overridden {
+            false => deck::GLOBAL.to_owned(),
+            true => monitor.name.clone(),
         };
         match groups.iter_mut().find(|(k, _)| *k == key) {
             Some((_, members)) => members.push(monitor),
@@ -213,9 +223,11 @@ impl Picker<'_> {
     ) -> Result<(PathBuf, image::RgbaImage), String> {
         let schedule: Schedule = *self.rotation.schedule_for(&members[0].name);
         let pool = self.pool(schedule.source)?;
-        // Something other than what any Monitor shows now, where possible.
-        let mut avoid: Vec<PathBuf> = self.chosen.clone();
-        avoid.extend(self.current.values().cloned());
+        // Above all not what another Monitor just got, then not what any
+        // Monitor shows now, where the source allows.
+        let on_screen: Vec<PathBuf> = self.current.values().cloned().collect();
+        let chosen = self.chosen.clone();
+        let avoid: [&[PathBuf]; 2] = [&chosen, &on_screen];
         let mut exclude: Vec<PathBuf> = Vec::new();
         loop {
             let candidate = match pick {
@@ -269,21 +281,17 @@ impl Picker<'_> {
     }
 }
 
-/// A random card from `pool`, preferring ones not avoided.
+/// A random card from `pool`, steering clear of `avoid` tiers as
+/// [`deck::pick`] does.
 fn random(
     pool: &[PathBuf],
-    avoid: &[PathBuf],
+    avoid: &[&[PathBuf]],
     exclude: &[PathBuf],
     rng: &mut fastrand::Rng,
 ) -> Option<PathBuf> {
-    let open: Vec<&PathBuf> = pool.iter().filter(|p| !exclude.contains(p)).collect();
-    let fresh: Vec<&PathBuf> = open
-        .iter()
-        .copied()
-        .filter(|p| !avoid.contains(p))
-        .collect();
-    let from = if fresh.is_empty() { open } else { fresh };
-    (!from.is_empty()).then(|| from[rng.usize(..from.len())].clone())
+    let mut cards = pool.to_vec();
+    rng.shuffle(&mut cards);
+    deck::pick(&cards, avoid, exclude).map(|i| cards.swap_remove(i))
 }
 
 /// `vellum rotation start` and `stop`.
@@ -447,7 +455,7 @@ mod tests {
         let mut rng = fastrand::Rng::with_seed(3);
         for _ in 0..20 {
             assert_eq!(
-                random(&pool, &pool[..1], &[], &mut rng),
+                random(&pool, &[&pool[..1]], &[], &mut rng),
                 Some(pool[1].clone())
             );
         }

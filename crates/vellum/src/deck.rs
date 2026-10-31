@@ -1,5 +1,6 @@
 //! Rotation's memory, which belongs to `vellum` (the Daemon keeps only the
-//! timer): one deck per Monitor (or per sync group), plus each Monitor's
+//! timer): one deck shared by every Monitor on the global Rotation, one
+//! per Monitor with an Override, plus each Monitor's
 //! recent wallpapers for `vellum prev`.
 //!
 //! - **Shuffle** keeps the remaining cards of a shuffled deck. When it runs
@@ -28,8 +29,8 @@ use vellum_ipc::RotationOrder;
 const HEADER: &str = "vellum-rotation 1";
 /// How far back `vellum prev` can go.
 const HISTORY: usize = 50;
-/// The deck key of the sync group.
-pub const SYNC_GROUP: &str = "*";
+/// The key of the deck the Monitors on the global Rotation share.
+pub const GLOBAL: &str = "*";
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Deck {
@@ -41,13 +42,14 @@ pub struct Deck {
 
 impl Deck {
     /// Draws the next wallpaper from `pool`. Cards in `exclude` (failed to
-    /// decode this run) are never returned; cards in `avoid` (shown on
-    /// another Monitor) only when nothing else is left.
+    /// decode this run) are never returned. `avoid` holds tiers of cards to
+    /// steer clear of, strongest first (picked for another Monitor this
+    /// run, then on screen now); see [`pick`].
     pub fn draw(
         &mut self,
         pool: &[PathBuf],
         order: RotationOrder,
-        avoid: &[PathBuf],
+        avoid: &[&[PathBuf]],
         exclude: &[PathBuf],
         rng: &mut fastrand::Rng,
     ) -> Option<PathBuf> {
@@ -62,7 +64,7 @@ impl Deck {
     fn draw_shuffled(
         &mut self,
         pool: &[PathBuf],
-        avoid: &[PathBuf],
+        avoid: &[&[PathBuf]],
         exclude: &[PathBuf],
         rng: &mut fastrand::Rng,
     ) -> Option<PathBuf> {
@@ -83,7 +85,7 @@ impl Deck {
     fn draw_sequential(
         &mut self,
         pool: &[PathBuf],
-        avoid: &[PathBuf],
+        avoid: &[&[PathBuf]],
         exclude: &[PathBuf],
     ) -> Option<PathBuf> {
         let start = self
@@ -100,13 +102,15 @@ impl Deck {
     }
 }
 
-/// The first card neither avoided nor excluded, else the first not
-/// excluded.
-fn pick(cards: &[PathBuf], avoid: &[PathBuf], exclude: &[PathBuf]) -> Option<usize> {
-    cards
-        .iter()
-        .position(|c| !exclude.contains(c) && !avoid.contains(c))
-        .or_else(|| cards.iter().position(|c| !exclude.contains(c)))
+/// The first card in no `avoid` tier and not excluded. Without one, the
+/// weakest tier gives way and the search repeats, down to the first card
+/// not excluded.
+pub fn pick(cards: &[PathBuf], avoid: &[&[PathBuf]], exclude: &[PathBuf]) -> Option<usize> {
+    (0..=avoid.len()).rev().find_map(|tiers| {
+        cards.iter().position(|c| {
+            !exclude.contains(c) && !avoid[..tiers].iter().any(|tier| tier.contains(c))
+        })
+    })
 }
 
 /// Every deck and every Monitor's history.
@@ -327,17 +331,35 @@ mod tests {
         let got = deck.draw(
             &pool,
             RotationOrder::Sequential,
-            &[pool[1].clone()],
+            &[&[pool[1].clone()]],
             &[pool[0].clone()],
             &mut rng,
         );
         assert_eq!(got, Some(pool[2].clone()));
-        let only_avoided = deck.draw(&pool[..1], RotationOrder::Sequential, &pool, &[], &mut rng);
+        let only_avoided = deck.draw(
+            &pool[..1],
+            RotationOrder::Sequential,
+            &[&pool],
+            &[],
+            &mut rng,
+        );
         assert_eq!(only_avoided, Some(pool[0].clone()));
         assert_eq!(
             deck.draw(&pool, RotationOrder::Shuffle, &[], &pool, &mut rng),
             None
         );
+    }
+
+    #[test]
+    fn a_pick_for_another_monitor_outweighs_what_is_on_screen() {
+        let p = pool(3);
+        // Two Monitors show 0 and 1; the first just got 2. With every card
+        // avoided, the on-screen tier gives way, never this run's pick.
+        let chosen = [p[2].clone()];
+        let on_screen = [p[0].clone(), p[1].clone()];
+        let cards = [p[2].clone(), p[0].clone(), p[1].clone()];
+        assert_eq!(pick(&cards, &[&chosen, &on_screen], &[]), Some(1));
+        assert_eq!(pick(&cards, &[&chosen, &on_screen], &p), None);
     }
 
     #[test]
