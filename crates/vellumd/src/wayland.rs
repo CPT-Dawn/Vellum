@@ -54,8 +54,18 @@ enum Obj {
     FrameCallback,
 }
 
-/// Set to skip alpha-modifier, forcing the CPU Fade (for tests).
-const NO_ALPHA_MODIFIER_ENV: &str = "VELLUMD_NO_ALPHA_MODIFIER";
+/// Whether a test asked to skip alpha-modifier, forcing the CPU Fade, with
+/// `VELLUMD_NO_ALPHA_MODIFIER`. Debug builds only: the e2e tests run the
+/// debug Daemon, and a release Daemon never honors a test switch.
+#[cfg(debug_assertions)]
+fn alpha_modifier_disabled_for_tests() -> bool {
+    std::env::var_os("VELLUMD_NO_ALPHA_MODIFIER").is_some()
+}
+
+#[cfg(not(debug_assertions))]
+fn alpha_modifier_disabled_for_tests() -> bool {
+    false
+}
 
 /// How long startup waits for every Monitor's first configure.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(3);
@@ -567,8 +577,7 @@ impl wl_registry::EvHandler for State {
                 self.subcompositor = Some(self.bind(name, interface, 1, Obj::Subcompositor));
             }
             wp_alpha_modifier_v1::NAME
-                if self.alpha_modifier.is_none()
-                    && std::env::var_os(NO_ALPHA_MODIFIER_ENV).is_none() =>
+                if self.alpha_modifier.is_none() && !alpha_modifier_disabled_for_tests() =>
             {
                 self.alpha_modifier = Some(self.bind(name, interface, 1, Obj::AlphaModifier));
             }
