@@ -62,7 +62,7 @@ fn transition(t: &Transition) -> String {
 }
 
 /// Bytes as a short human size: "812 KB", "2.4 MB".
-fn memory(bytes: u64) -> String {
+pub fn memory(bytes: u64) -> String {
     const MB: u64 = 1024 * 1024;
     if bytes < MB {
         format!("{} KB", bytes.div_ceil(1024))

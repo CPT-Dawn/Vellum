@@ -1,4 +1,4 @@
-//! `vellum`: the CLI (and later the TUI and renderer) for the Vellum Daemon.
+//! `vellum`: the TUI, the CLI and the renderer for the Vellum Daemon.
 
 mod client;
 mod config;
@@ -12,6 +12,7 @@ mod restore;
 mod set;
 mod status;
 mod sync;
+mod tui;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -25,11 +26,11 @@ use crate::render::FitMode;
 #[command(
     version,
     about = "Wallpapers, weightless.",
-    arg_required_else_help = true
+    long_about = "Wallpapers, weightless.\n\nRun `vellum` with no command to open the TUI."
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -142,7 +143,10 @@ impl TransitionArgs {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let result = match cli.command {
+    let Some(command) = cli.command else {
+        return finish(tui::run(config::load()));
+    };
+    let result = match command {
         Command::Set {
             file,
             monitor,
@@ -166,6 +170,10 @@ fn main() -> ExitCode {
         }
         Command::Render { monitor, .. } => restore::run(&monitor.expect("clap requires it")),
     };
+    finish(result)
+}
+
+fn finish(result: Result<(), String>) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
