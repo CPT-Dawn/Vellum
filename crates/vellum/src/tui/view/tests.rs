@@ -29,8 +29,154 @@ fn scanning_before_anything_answers() {
     both_sizes("scanning", |w, h| {
         let mut harness = Harness::new(w, h);
         harness.start();
+        harness.advance(150);
         harness
     });
+}
+
+#[test]
+fn nothing_flashes_before_the_spinner_delay() {
+    let mut h = Harness::new(80, 24);
+    h.start();
+    let screen = h.screen();
+    assert!(!screen.contains("Scanning"), "{screen}");
+    assert!(!screen.contains('⠋'), "{screen}");
+}
+
+#[test]
+fn search_with_highlighted_matches() {
+    both_sizes("search", |w, h| {
+        let mut harness = Harness::started(w, h);
+        harness.press("/");
+        harness.typed("be");
+        harness
+    });
+}
+
+#[test]
+fn search_kept_after_enter() {
+    both_sizes("search_kept", |w, h| {
+        let mut harness = Harness::started(w, h);
+        harness.press("/");
+        harness.typed("tide");
+        harness.press("enter");
+        harness
+    });
+}
+
+#[test]
+fn search_with_no_matches() {
+    both_sizes("search_no_matches", |w, h| {
+        let mut harness = Harness::started(w, h);
+        harness.press("/");
+        harness.typed("xyz");
+        harness
+    });
+}
+
+#[test]
+fn favorites_filter() {
+    both_sizes("favorites_only", |w, h| {
+        let fake = Fake::default();
+        *fake.favorites.lock().unwrap() =
+            vec![wallpaper("beach/tide.webp"), wallpaper("aurora.png")];
+        let mut harness = Harness::started_with(w, h, fake);
+        harness.press("F");
+        harness
+    });
+}
+
+#[test]
+fn favorites_marked_in_the_list() {
+    let mut h = Harness::started(80, 24);
+    h.press("j");
+    h.press("f");
+    let screen = h.screen();
+    assert!(screen.contains("beach/dunes.jpg ★"), "{screen}");
+    assert!(screen.contains("dunes.jpg ★  ~/Pictures"), "{screen}");
+}
+
+#[test]
+fn help_overlay() {
+    both_sizes("help", |w, h| {
+        let mut harness = Harness::started(w, h);
+        harness.press("?");
+        harness
+    });
+}
+
+#[test]
+fn help_overlay_searched() {
+    both_sizes("help_searched", |w, h| {
+        let mut harness = Harness::started(w, h);
+        harness.press("?");
+        harness.typed("monitor");
+        harness
+    });
+}
+
+#[test]
+fn command_palette() {
+    both_sizes("palette", |w, h| {
+        let mut harness = Harness::started(w, h);
+        harness.press(":");
+        harness
+    });
+}
+
+#[test]
+fn command_palette_filtered() {
+    both_sizes("palette_filtered", |w, h| {
+        let mut harness = Harness::started(w, h);
+        harness.press(":");
+        harness.typed("fav");
+        harness.press("down");
+        harness
+    });
+}
+
+#[test]
+fn a_remap_shows_in_the_footer_help_and_palette() {
+    let toml = "[keymap]\napply = [\"o\", \"enter\"]\nhelp = \"f1\"\n";
+    let h = Harness::started_with_config(120, 40, toml);
+    let footer = h.screen().lines().last().unwrap().to_owned();
+    assert!(footer.contains("o apply"), "{footer}");
+    assert!(footer.contains("f1 help"), "{footer}");
+    assert!(!footer.contains("? help"), "{footer}");
+
+    let mut h = Harness::started_with_config(120, 40, toml);
+    h.press("f1");
+    let help = h.screen();
+    assert!(help.contains("o, ⏎"), "{help}");
+
+    let mut h = Harness::started_with_config(120, 40, toml);
+    h.press(":");
+    h.typed("targeted");
+    let palette = h.screen();
+    let row = palette
+        .lines()
+        .find(|l| l.contains("Apply to the targeted monitor"))
+        .unwrap();
+    assert!(row.contains("o, ⏎"), "{row}");
+}
+
+#[test]
+fn a_search_match_is_drawn_in_the_focus_role() {
+    let mut h = Harness::started(80, 24);
+    h.press("/");
+    // dunes and tide match equally; dunes (first) is selected, so look at
+    // tide, drawn without the selection style.
+    h.typed("beach");
+    let buffer = h.buffer();
+    let (x, y) = find(&buffer, "beach/tide.webp");
+    let hit = &buffer[(x, y)];
+    assert_eq!(hit.fg, MINT);
+    assert!(hit.modifier.contains(Modifier::UNDERLINED));
+    assert_eq!(
+        buffer[(x + 6, y)].fg,
+        TEXT,
+        "unmatched characters stay plain"
+    );
 }
 
 #[test]
@@ -41,6 +187,7 @@ fn list_before_the_preview_finishes() {
         let daemon = harness.fake.daemon.clone();
         harness.update(Msg::Daemon(daemon));
         harness.update(Msg::LibraryScanned(library));
+        harness.model.now += std::time::Duration::from_millis(200);
         harness
     });
 }

@@ -10,12 +10,15 @@
 //! ```
 
 use std::io::{self, IsTerminal, Write};
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Instant;
 
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseEventKind,
+};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use ratatui::layout::Rect;
@@ -38,8 +41,13 @@ pub fn run(config: Config) -> Result<(), String> {
     let theme = Theme::resolve(config.theme, ColorEnv::from_process());
     let mut terminal =
         ratatui::try_init().map_err(|err| format!("cannot set up the terminal: {err}"))?;
+    // Mouse capture is a nicety: a terminal without it still works.
+    let _ = execute!(terminal.backend_mut(), EnableMouseCapture);
     let result = run_in(&mut terminal, config, theme);
+    let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
     ratatui::restore();
+    // Hook failures from now on (and any the TUI missed) go to stderr.
+    crate::hook::report_to(None);
     result
 }
 
@@ -55,21 +63,49 @@ fn run_in(terminal: &mut DefaultTerminal, config: Config, theme: Theme) -> Resul
 
     let (tx, rx) = mpsc::channel();
     let picker = picker(&model.theme);
-    let services: Arc<dyn Services> = Arc::new(Live { picker, config });
+    let services: Arc<dyn Services> = Arc::new(Live {
+        picker,
+        config,
+        favorites_lock: Mutex::new(()),
+    });
     let pool = Pool::new(services, tx.clone());
+    // The on_change hook runs on its own thread; its failures become
+    // toasts instead of text across the screen.
+    let hook_tx = Mutex::new(tx.clone());
+    crate::hook::report_to(Some(Box::new(move |why| {
+        hook_tx
+            .lock()
+            .is_ok_and(|tx| tx.send(Msg::HookFailed(why)).is_ok())
+    })));
     spawn_input(tx);
 
+    let start = Instant::now();
     for cmd in update::init(&model) {
         pool.run(cmd);
     }
     draw(terminal, &model)?;
     loop {
-        let Ok(msg) = rx.recv() else {
+        // Sleep until a Msg arrives, or until the Model's next timer
+        // (toast, spinner, key sequence); with none, no wakeups at all.
+        let msg = match update::wake_at(&model) {
+            None => rx.recv().map_err(|_| ()),
+            Some(at) => {
+                let wait = at.saturating_sub(start.elapsed());
+                match rx.recv_timeout(wait) {
+                    Ok(msg) => Ok(msg),
+                    Err(RecvTimeoutError::Timeout) => Ok(Msg::Tick),
+                    Err(RecvTimeoutError::Disconnected) => Err(()),
+                }
+            }
+        };
+        let Ok(msg) = msg else {
             return Ok(());
         };
+        model.now = start.elapsed();
         let mut redraw = step(&mut model, msg, &pool);
         // Fold everything already waiting into one redraw.
         while let Ok(msg) = rx.try_recv() {
+            model.now = start.elapsed();
             redraw |= step(&mut model, msg, &pool);
         }
         if model.quit {
@@ -117,6 +153,9 @@ fn spawn_input(tx: Sender<Msg>) {
         while let Ok(event) = event::read() {
             let msg = match event {
                 Event::Key(key) if key.kind != KeyEventKind::Release => Msg::Key(key),
+                Event::Mouse(mouse) if !matches!(mouse.kind, MouseEventKind::Moved) => {
+                    Msg::Mouse(mouse)
+                }
                 Event::Resize(width, height) => Msg::Resize { width, height },
                 _ => continue,
             };

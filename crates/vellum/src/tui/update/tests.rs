@@ -7,7 +7,10 @@ use ratatui::layout::Size;
 use super::super::harness::*;
 use super::super::model::{Daemon, PreviewState, Toast, ToastKind};
 use super::super::msg::{ApplyJob, Cmd, Msg, PreviewJob, Screen};
+use super::super::update;
 use crate::render::FitMode;
+
+mod commands;
 
 fn preview_job(cmds: &[Cmd]) -> &PreviewJob {
     match cmds {
@@ -21,7 +24,11 @@ fn starting_scans_the_library_and_asks_the_daemon_at_once() {
     let mut h = Harness::new(80, 24);
     assert_eq!(
         h.start(),
-        [Cmd::ScanLibrary(vec![wallpaper("")]), Cmd::QueryDaemon]
+        [
+            Cmd::ScanLibrary(vec![wallpaper("")]),
+            Cmd::QueryDaemon,
+            Cmd::LoadFavorites
+        ]
     );
     assert!(h.model.scanning);
 }
@@ -122,7 +129,7 @@ fn a_stale_preview_is_dropped_without_a_redraw() {
     assert!(!h.model.dirty);
     assert!(matches!(
         &h.model.preview.state,
-        PreviewState::Loading { path } if *path == newer.path
+        PreviewState::Loading { path, .. } if *path == newer.path
     ));
 }
 
@@ -148,7 +155,7 @@ fn enter_applies_to_the_targeted_monitor_and_confirms() {
         cmds,
         [Cmd::Apply(ApplyJob {
             path: wallpaper("beach/dunes.jpg"),
-            monitor: "DP-1".into(),
+            monitor: Some("DP-1".into()),
             fit: FitMode::Fill,
         })]
     );
@@ -190,11 +197,33 @@ fn enter_without_a_daemon_explains_instead_of_applying() {
 }
 
 #[test]
-fn the_next_key_clears_a_toast() {
+fn a_toast_stays_through_keys_and_expires_on_its_own() {
     let mut h = Harness::started(80, 24);
     h.press("enter");
     assert!(h.model.toast.is_some());
     h.press("j");
+    assert!(h.model.toast.is_some());
+    // The runtime is asked to wake exactly when it expires.
+    assert_eq!(update::wake_at(&h.model), Some(update::TOAST_OK));
+    h.advance(2_900);
+    assert!(h.model.toast.is_some());
+    h.advance(100);
+    assert!(h.model.toast.is_none());
+    assert!(h.model.dirty);
+    assert_eq!(update::wake_at(&h.model), None, "idle: no more wakeups");
+}
+
+#[test]
+fn errors_stay_up_longer_than_confirmations() {
+    let fake = Fake {
+        apply_error: Some("DP-1: frame size mismatch".into()),
+        ..Fake::default()
+    };
+    let mut h = Harness::started_with(80, 24, fake);
+    h.press("enter");
+    h.advance(update::TOAST_OK.as_millis() as u64);
+    assert!(h.model.toast.is_some());
+    h.advance(3_000);
     assert!(h.model.toast.is_none());
 }
 

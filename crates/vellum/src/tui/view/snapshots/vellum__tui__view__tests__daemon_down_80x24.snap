@@ -25,4 +25,4 @@ expression: harness.screen()
 │                          ││ aurora.png  ~/Pictures/Wallpapers                │
 │                          ││ 3840×2160 · 2.4 MB · fill                        │
 ╰──────────────────────────╯╰──────────────────────────────────────────────────╯
- ↑↓/jk move  ⏎ apply  q quit                            ✗ vellumd did not start
+ j/k move  ⏎ apply  / search  f favorite  a all  : comm ✗ vellumd did not start

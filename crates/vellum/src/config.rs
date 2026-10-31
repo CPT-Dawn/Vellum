@@ -34,6 +34,7 @@ use vellum_ipc::{
 
 use crate::hook::Hook;
 use crate::render::{Color, DEFAULT_LETTERBOX, FitMode};
+use crate::tui::keymap::{self, Action, Remap};
 
 /// The Library folder used when the Config names none.
 pub const DEFAULT_LIBRARY: &str = "~/Pictures/Wallpapers";
@@ -55,6 +56,8 @@ pub struct Config {
     pub rotation: RotationSettings,
     /// The command run after each new wallpaper is presented.
     pub on_change: Option<Hook>,
+    /// `[keymap]`: TUI Actions whose keys the user replaced.
+    pub keymap: Vec<Remap>,
 }
 
 /// `theme`: which palette the TUI uses.
@@ -78,6 +81,7 @@ impl Config {
             theme: ThemeName::default(),
             rotation: RotationSettings::default(),
             on_change: None,
+            keymap: Vec::new(),
         }
     }
 
@@ -115,6 +119,7 @@ impl Config {
             })?;
             config.on_change = Some(hook);
         }
+        config.keymap = remaps(text, file.keymap)?;
         Ok(config)
     }
 
@@ -125,6 +130,64 @@ impl Config {
             rotation: self.rotation.clone(),
         }
     }
+}
+
+/// `[keymap]` entries, checked: known Action names, valid keys, and no
+/// key given to two Actions that are active at the same time.
+fn remaps(text: &str, section: BTreeMap<String, Spanned<Keys>>) -> Result<Vec<Remap>, ConfigError> {
+    let mut remaps: Vec<Remap> = Vec::new();
+    for (name, keys) in section {
+        let span = keys.span();
+        let action = Action::from_name(&name).ok_or_else(|| {
+            let names: Vec<&str> = Action::names().collect();
+            ConfigError::at(
+                text,
+                span.clone(),
+                format!(
+                    "unknown action `{name}`, expected one of {}",
+                    names.join(", ")
+                ),
+            )
+        })?;
+        let list = match keys.into_inner() {
+            Keys::One(key) => vec![key],
+            Keys::Many(keys) => keys,
+        };
+        let chords = list
+            .iter()
+            .map(|key| keymap::parse_chord(key))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|why| ConfigError::at(text, span.clone(), why))?;
+        for chord in &chords {
+            if let Some(other) = remaps
+                .iter()
+                .find(|r| r.action.scope() == action.scope() && r.keys.contains(chord))
+            {
+                return Err(ConfigError::at(
+                    text,
+                    span,
+                    format!(
+                        "\"{}\" is already bound to `{}`; a key can do only one thing",
+                        keymap::display_chord(chord),
+                        other.action.name()
+                    ),
+                ));
+            }
+        }
+        remaps.push(Remap {
+            action,
+            keys: chords,
+        });
+    }
+    Ok(remaps)
+}
+
+/// A `[keymap]` value: one key or a list. An empty list unbinds.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Keys {
+    One(String),
+    Many(Vec<String>),
 }
 
 /// `~` and `~/...` against `home`; other paths must be absolute.
@@ -151,6 +214,7 @@ struct File {
     on_change: Option<Spanned<String>>,
     transition: TransitionSection,
     rotation: RotationSection,
+    keymap: BTreeMap<String, Spanned<Keys>>,
 }
 
 /// `[rotation]`: the global Rotation, plus `[rotation.monitor.<name>]`

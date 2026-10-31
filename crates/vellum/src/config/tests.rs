@@ -268,3 +268,57 @@ fn intervals_print_the_way_they_are_written() {
     assert_eq!(format_interval(250), "250ms");
     assert_eq!(format_interval(1_500), "1.5s");
 }
+
+#[test]
+fn keymap_entries_take_one_key_a_list_or_none() {
+    let config = parse(
+        "[keymap]\napply_all = \"A\"\ndown = [\"n\", \"ctrl-j\"]\ntop = \"g g\"\nquit = []\n",
+    )
+    .unwrap();
+    let chord = |t: &str| keymap::parse_chord(t).unwrap();
+    assert_eq!(
+        config.keymap,
+        [
+            Remap {
+                action: Action::ApplyAll,
+                keys: vec![chord("A")]
+            },
+            Remap {
+                action: Action::Down,
+                keys: vec![chord("n"), chord("ctrl-j")]
+            },
+            Remap {
+                action: Action::Quit,
+                keys: vec![]
+            },
+            Remap {
+                action: Action::Top,
+                keys: vec![chord("g g")]
+            },
+        ]
+    );
+    assert!(parse("").unwrap().keymap.is_empty());
+}
+
+#[test]
+fn keymap_mistakes_point_at_the_entry() {
+    let err = parse("fit = \"fit\"\n\n[keymap]\napply = \"enterr\"\n").unwrap_err();
+    assert_eq!(err.line, Some(4));
+    assert_eq!(err.key.as_deref(), Some("keymap.apply"));
+    assert!(err.message.contains("\"enterr\" is not a key"), "{err}");
+
+    let err = parse("[keymap]\napplyy = \"a\"\n").unwrap_err();
+    assert_eq!(err.key.as_deref(), Some("keymap.applyy"));
+    assert!(err.message.contains("unknown action `applyy`"), "{err}");
+    assert!(err.message.contains("apply_all"), "{err}");
+
+    let err = parse("[keymap]\napply = \"x\"\nrandom = \"x\"\n").unwrap_err();
+    assert_eq!(err.line, Some(3));
+    assert!(err.message.contains("already bound to `apply`"), "{err}");
+}
+
+#[test]
+fn the_same_key_may_mean_different_things_in_the_list_and_in_prompts() {
+    let config = parse("[keymap]\napply = \"ctrl-o\"\nconfirm = \"ctrl-o\"\n").unwrap();
+    assert_eq!(config.keymap.len(), 2);
+}
