@@ -142,9 +142,10 @@ fn a_restarted_daemon_with_a_malformed_config_keeps_the_last_good_settings() {
     sway.wait_daemon_exit().expect("the Daemon did not exit");
 
     sway.start_daemon();
-    sway.wait_until("the restarted Daemon to hold the last good settings", || {
-        status(&sway).contains("transition: wipe right, 250 ms")
-    });
+    sway.wait_until(
+        "the restarted Daemon to hold the last good settings",
+        || status(&sway).contains("transition: wipe right, 250 ms"),
+    );
     // The fresh sync also says what is wrong with the file.
     sway.wait_until("the Daemon log to mention the error", || {
         sway.daemon_log().contains("transition.duration")
