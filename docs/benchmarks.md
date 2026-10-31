@@ -1,7 +1,7 @@
 # Benchmarks
 
-How Vellum backs the "lightest Wayland wallpaper manager" claim, and how to
-reproduce the numbers.
+What vellumd costs at idle and after a Transition, how it compares with
+other wallpaper daemons, and how to reproduce the numbers.
 
 ## Run it
 
@@ -54,12 +54,17 @@ Measured 2026-10-31 on headless Sway 1.12 (pixman), Monitors 2560x1440 +
 
 | Daemon | Version | Binary | Linked libs | Idle RSS | Idle PSS | Idle private | Wakeups/min idle | RSS after a Transition | Threads |
 |---|---|---|---|---|---|---|---|---|---|
-| vellumd | 2.0.0-dev | 453 KiB | 2 | 2.5 MiB | 0.6 MiB | 0.6 MiB | 0 | 2.5 MiB | 1 |
+| vellumd | 2.0.0-dev | 480 KiB | 2 | 2.5 MiB | 0.6 MiB | 0.6 MiB | 0 | 2.5 MiB | 1 |
+| swaybg | pending | pending | pending | pending | pending | pending | pending | n/a | pending |
+| hyprpaper | pending | pending | pending | pending | pending | pending | pending | n/a | pending |
+| awww | pending | pending | pending | pending | pending | pending | pending | pending | pending |
 
 swaybg, hyprpaper and awww weren't installed on the measuring machine, so
-there is no comparison yet. The Hyprland run on real Monitors is still to
-come. For reference, Vellum 1.x idled at about 30 MB RSS, about 25 MB of it a
-heap copy of every Monitor's frame.
+their rows are pending: the maintainer runs `bench/bench.sh` (headless) and
+`bench/bench.sh --live` (Hyprland, real Monitors) with all three installed
+and pastes the tables here. Until then, Vellum does not claim to be the
+lightest, only what it measures. For reference, Vellum 1.x idled at about
+30 MB RSS, about 25 MB of it a heap copy of every Monitor's frame.
 
 vellumd holds no pixels (ADR 0003). Frames live in memfds that the CLI fills
 and the compositor reads, and the Daemon only maps them during a CPU Fade.
