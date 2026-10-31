@@ -62,13 +62,8 @@ fn save(favorites: &[PathBuf]) -> Result<(), String> {
         text += &f.to_string_lossy();
         text.push('\n');
     }
-    (|| {
-        std::fs::create_dir_all(path.parent().expect("a parent"))?;
-        let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(&tmp, &path)
-    })()
-    .map_err(|err| format!("cannot save {}: {err}", path.display()))
+    crate::config::write_atomically(&path, &text)
+        .map_err(|err| format!("cannot save {}: {err}", path.display()))
 }
 
 /// Makes `path` (absolute) a Favorite, or stops it being one. Doing what

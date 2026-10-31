@@ -256,7 +256,7 @@ impl Sway {
     }
 
     /// A field of the Daemon's `/proc/PID/smaps_rollup` (`"Rss"`, `"Pss"`,
-    /// `"Private_Dirty"`, ...) in KiB. Unlike VmRSS it is exact, not a cached
+    /// `"Anonymous"`, ...) in KiB. Unlike VmRSS it is exact, not a cached
     /// per-thread counter.
     pub fn daemon_smaps_kib(&self, field: &str) -> u64 {
         let pid = self.daemon.as_ref().expect("no daemon").id();
