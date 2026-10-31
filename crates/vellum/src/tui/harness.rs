@@ -25,7 +25,9 @@ use crate::config::edit::{self, Edit, Value};
 use super::model::{Meta, Model, PreviewImage};
 use ratatui::layout::Size;
 
-use super::msg::{ApplyJob, Cmd, DaemonInfo, Msg, PreviewJob, PreviewOutput, Purpose, Screen};
+use super::msg::{
+    ApplyJob, Cmd, DaemonInfo, MonitorShape, Msg, PreviewJob, PreviewOutput, Purpose,
+};
 use super::services::{Latest, Services, perform};
 use super::theme::Theme;
 use super::{update, view};
@@ -138,7 +140,7 @@ impl Fake {
             purpose: Purpose::Preview,
             path: path.clone(),
             cells: Size::new(40, 10),
-            monitor: Screen::FALLBACK,
+            monitor: MonitorShape::FALLBACK,
             fit: FitMode::Fill,
             letterbox: [0; 3],
         };

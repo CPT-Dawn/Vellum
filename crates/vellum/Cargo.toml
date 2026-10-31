@@ -16,7 +16,7 @@ workspace = true
 
 [dependencies]
 vellum-ipc.workspace = true
-rustix = { workspace = true, features = ["net", "fs", "mm", "process"] }
+rustix = { workspace = true, features = ["net", "fs", "mm", "process", "event", "termios"] }
 clap = { version = "4.6.7", features = ["derive"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 fast_image_resize = "6.1.0"

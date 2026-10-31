@@ -68,9 +68,14 @@ fn run_in(terminal: &mut DefaultTerminal, config: Config, theme: Theme) -> Resul
     }
 
     let (tx, rx) = mpsc::channel();
-    let picker = picker(&model.theme);
+    let (picker, typed) = picker(&model.theme);
+    // Keys typed while the terminal was probed come first.
+    for key in typed {
+        let _ = tx.send(Msg::Key(key));
+    }
     // The grid is cheap where kitty graphics are; elsewhere it is opt-in.
     model.grid.on = picker.protocol_type() == ProtocolType::Kitty;
+    model.coarse = picker.protocol_type() == ProtocolType::Halfblocks;
     let thumbs = super::cache::thumbs_dir();
     let services: Arc<dyn Services> = Arc::new(Live::new(picker, config, thumbs));
     let latest = Arc::new(Latest::default());
@@ -180,14 +185,15 @@ impl Loop {
     }
 }
 
-/// The best graphics protocol the terminal answers for, else halfblocks.
-/// Must run before the input thread starts reading stdin.
-fn picker(theme: &Theme) -> Picker {
-    let mut picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
+/// The best graphics protocol the terminal answers for, else halfblocks,
+/// and the keys typed during the probe. Must run before the input thread
+/// starts reading stdin.
+fn picker(theme: &Theme) -> (Picker, Vec<event::KeyEvent>) {
+    let (mut picker, typed) = super::probe::picker();
     if theme.palette == Palette::MidnightBloom {
         picker.set_background_color(Some(image::Rgba([0x0B, 0x0D, 0x14, 0xFF])));
     }
-    picker
+    (picker, typed)
 }
 
 /// Draws one frame inside synchronized output, so the terminal shows it

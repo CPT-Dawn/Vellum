@@ -2,9 +2,10 @@
 //! settings the Daemon holds. The Daemon spawns `--sync` once at startup
 //! and whenever its inotify watch sees the Config directory change.
 //!
-//! A malformed Config is an error here and nothing is pushed, so the last
-//! good settings stay in effect. A valid one is saved as the last good
-//! Config, which commands fall back to while the file is broken.
+//! A malformed Config is an error here, and the last good settings are
+//! pushed instead, so they stay in effect even in a freshly started Daemon
+//! (which otherwise holds the defaults). A valid one is saved as the last
+//! good Config, which commands fall back to while the file is broken.
 
 use std::path::Path;
 
@@ -17,18 +18,28 @@ use crate::restore::INSTANT;
 use crate::set::{Look, present_frame};
 
 pub fn run(socket: &Path) -> Result<(), String> {
-    let (config, text) = config::read_current()?;
     let previous = config::last_good();
-    match ask(socket, &Request::Settings(config.settings()), &[])? {
-        Response::Ok => {}
-        Response::Error(err) => return Err(err),
-        other => return Err(unexpected(&other)),
-    }
+    let (config, text) = match config::read_current() {
+        Ok(current) => current,
+        Err(err) => {
+            push(socket, &previous)?;
+            return Err(err);
+        }
+    };
+    push(socket, &config)?;
     config::save_last_good(text.as_deref())?;
     if config.letterbox != previous.letterbox {
         repaint_letterboxes(socket, &config)?;
     }
     Ok(())
+}
+
+fn push(socket: &Path, config: &Config) -> Result<(), String> {
+    match ask(socket, &Request::Settings(config.settings()), &[])? {
+        Response::Ok => Ok(()),
+        Response::Error(err) => Err(err),
+        other => Err(unexpected(&other)),
+    }
 }
 
 /// Re-renders every Monitor showing a wallpaper in Fit mode, so a new

@@ -21,6 +21,7 @@ mod layout;
 mod model;
 mod msg;
 mod preview;
+mod probe;
 mod runtime;
 mod search;
 mod services;

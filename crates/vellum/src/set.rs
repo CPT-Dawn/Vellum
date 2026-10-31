@@ -35,22 +35,46 @@ pub fn run(
 ) -> Result<(), String> {
     let file = crate::library::resolve(file, &config.library)?;
     let image = crate::decode::load(&file)?;
-
     let socket = client::daemon()?;
-    let monitors = target(client::monitors(&socket)?, monitor)?;
-
-    let source = std::path::absolute(&file).unwrap_or(file);
-    let source = source.to_string_lossy();
     let look = Look {
         fit,
         letterbox: config.letterbox,
         transition,
         restore: false,
     };
+    apply(&socket, &image, &file, monitor, look)
+}
+
+/// `vellum render FILE --monitor NAME`: what `set FILE -m NAME` does with
+/// the Config's Fit mode and Transition, but for an explicit file only and
+/// never starting a Daemon (the Daemon is what runs `vellum render`).
+pub fn explicit(file: &Path, monitor: &str, config: &Config) -> Result<(), String> {
+    let image = crate::decode::load(file)?;
+    let socket = client::socket()?;
+    let look = Look {
+        fit: config.fit,
+        letterbox: config.letterbox,
+        transition: config.transition,
+        restore: false,
+    };
+    apply(&socket, &image, file, Some(monitor), look)
+}
+
+/// Presents `image` (from `file`) on `monitor`, or on every Monitor, and
+/// restarts their Rotation timers: a manual pick stays up a full interval.
+fn apply(
+    socket: &Path,
+    image: &RgbaImage,
+    file: &Path,
+    monitor: Option<&str>,
+    look: Look,
+) -> Result<(), String> {
+    let monitors = target(client::monitors(socket)?, monitor)?;
+    let source = std::path::absolute(file).unwrap_or_else(|_| file.to_owned());
+    let source = source.to_string_lossy();
     for monitor in &monitors {
-        present(&socket, &image, monitor, &source, look)?;
-        // A manual pick stays up a full Rotation interval.
-        crate::rotation::reset_timer(&socket, &monitor.name)?;
+        present(socket, image, monitor, &source, look)?;
+        crate::rotation::reset_timer(socket, &monitor.name)?;
     }
     Ok(())
 }

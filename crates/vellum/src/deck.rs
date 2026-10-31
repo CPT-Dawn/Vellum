@@ -241,9 +241,7 @@ impl Locked {
     /// where Rotation was, so it is a warning.
     pub fn save(&self) {
         let Some(path) = &self.path else { return };
-        let tmp = path.with_extension("tmp");
-        let result = fs::write(&tmp, self.decks.format()).and_then(|()| fs::rename(&tmp, path));
-        if let Err(err) = result {
+        if let Err(err) = crate::atomic::write_atomically(path, self.decks.format().as_bytes()) {
             eprintln!("vellum: cannot save {}: {err}", path.display());
         }
     }

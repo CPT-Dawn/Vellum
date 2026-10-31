@@ -52,3 +52,8 @@ jobs:
             echo "::error::vellumd is $size bytes, over the $VELLUMD_SIZE_BUDGET byte budget"
             exit 1
           fi
+          # Test-only switches exist in debug builds only.
+          if grep -aq VELLUMD_NO_ALPHA_MODIFIER target/release/vellumd; then
+            echo "::error::the release vellumd honors a test-only switch"
+            exit 1
+          fi

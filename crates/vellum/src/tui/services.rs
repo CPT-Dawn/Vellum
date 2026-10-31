@@ -17,7 +17,9 @@ use ratatui_image::picker::Picker;
 
 use super::cache::{DiskCache, Lru};
 use super::model::{Meta, Model, PreviewImage};
-use super::msg::{ApplyJob, Cmd, DaemonInfo, Msg, PreviewJob, PreviewOutput, Purpose, Screen};
+use super::msg::{
+    ApplyJob, Cmd, DaemonInfo, MonitorShape, Msg, PreviewJob, PreviewOutput, Purpose,
+};
 use super::preview::{cells_for, decode_entry, encode_entry, frame_size, render_preview};
 use vellum_ipc::{Request, Response, Settings, Status};
 
@@ -166,7 +168,7 @@ struct MemoryKey {
     path: PathBuf,
     mtime: SystemTime,
     cells: Size,
-    monitor: Screen,
+    monitor: MonitorShape,
     fit: FitMode,
     letterbox: Color,
 }

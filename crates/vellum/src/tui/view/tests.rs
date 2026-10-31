@@ -453,3 +453,19 @@ fn the_rotation_panel_marks_the_line_being_edited() {
     assert!(line.modifier.contains(Modifier::BOLD));
     assert_eq!(buffer[find(&buffer, "every 30m")].fg, TEXT);
 }
+
+#[test]
+fn halfblock_previews_say_why_they_are_coarse() {
+    both_sizes("coarse_preview", |w, h| {
+        let mut harness = Harness::started(w, h);
+        harness.model.coarse = true;
+        harness.press("j");
+        assert!(harness.screen().contains("coarse"), "{}", harness.screen());
+        harness
+    });
+    // Narrow, the preview pane alone still has room for the hint.
+    let mut harness = Harness::started(60, 24);
+    harness.model.coarse = true;
+    harness.press("p");
+    insta::assert_snapshot!("coarse_preview_narrow_60x24", harness.screen());
+}

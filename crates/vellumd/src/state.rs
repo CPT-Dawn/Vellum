@@ -159,14 +159,31 @@ fn format(wallpapers: &[(String, Wallpaper)], rotation: &Rotation) -> String {
     text
 }
 
+/// Replaces `path` in one rename. Every call writes its own temp file
+/// (pid plus counter): Daemons on different displays share the State file,
+/// and a shared temp name let one rename the other's file away.
 fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(0);
     let dir = path.parent().expect("the State path has a parent");
     fs::create_dir_all(dir)?;
-    let tmp = path.with_extension("tmp");
-    let mut file = fs::File::create(&tmp)?;
-    file.write_all(contents.as_bytes())?;
-    file.sync_all()?;
-    fs::rename(&tmp, path)
+    let mut name = path
+        .file_name()
+        .expect("the State path has a name")
+        .to_owned();
+    let unique = NEXT.fetch_add(1, Ordering::Relaxed);
+    name.push(format!(".{}.{unique}.tmp", std::process::id()));
+    let tmp = path.with_file_name(name);
+    let result = fs::File::create(&tmp)
+        .and_then(|mut file| {
+            file.write_all(contents.as_bytes())?;
+            file.sync_all()
+        })
+        .and_then(|()| fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -178,6 +195,30 @@ mod tests {
             path: path.into(),
             fit,
         }
+    }
+
+    #[test]
+    fn daemons_saving_state_at_once_all_succeed() {
+        // Two Daemons on different displays share one State file; neither
+        // may rename the other's temp file away.
+        let dir = std::env::temp_dir().join(format!("vellumd-state-{}", std::process::id()));
+        let path = dir.join("vellum/state");
+        std::thread::scope(|scope| {
+            for writer in 0..8 {
+                let path = &path;
+                scope.spawn(move || {
+                    for round in 0..100 {
+                        let text = format!("{HEADER}\n# writer {writer} round {round}\n");
+                        write_atomically(path, &text).unwrap();
+                    }
+                });
+            }
+        });
+        let text = fs::read_to_string(&path).unwrap();
+        let leftovers = fs::read_dir(path.parent().unwrap()).unwrap().count();
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(text.contains("# writer "), "{text}");
+        assert_eq!(leftovers, 1, "temp files were left behind");
     }
 
     #[test]

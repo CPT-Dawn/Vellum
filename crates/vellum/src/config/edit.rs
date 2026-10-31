@@ -163,7 +163,7 @@ pub fn save_to(file: &Path, edits: &[Edit], home: Option<&Path>) -> Result<Confi
             file.display()
         )
     })?;
-    super::write_atomically(&target, &new)
+    crate::atomic::write_atomically(&target, new.as_bytes())
         .map_err(|err| format!("cannot save {}: {err}", target.display()))?;
     Ok(config)
 }

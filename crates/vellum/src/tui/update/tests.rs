@@ -6,7 +6,7 @@ use ratatui::layout::Size;
 
 use super::super::harness::*;
 use super::super::model::{Daemon, PreviewState, Tile, Toast, ToastKind};
-use super::super::msg::{ApplyJob, Cmd, Msg, PreviewJob, Purpose, Screen, Wake};
+use super::super::msg::{ApplyJob, Cmd, MonitorShape, Msg, PreviewJob, Purpose, Wake};
 use super::super::update;
 use super::DEBOUNCE;
 use crate::render::FitMode;
@@ -87,7 +87,7 @@ fn the_list_appears_before_any_preview_finishes() {
     let job = preview_job(&cmds);
     assert_eq!(job.path, library[0]);
     // Until the Daemon answers, previews assume a 1080p Monitor.
-    assert_eq!(job.monitor, Screen::FALLBACK);
+    assert_eq!(job.monitor, MonitorShape::FALLBACK);
     assert_eq!(job.fit, FitMode::Fill);
     // The preview pane at 120x40: 78 columns minus borders, 38 rows minus
     // borders and the metadata strip.
@@ -103,7 +103,7 @@ fn the_preview_is_drawn_for_the_targeted_monitor() {
     let job = preview_job(&cmds);
     assert_eq!(
         job.monitor,
-        Screen {
+        MonitorShape {
             width: 2560,
             height: 1440,
             scale_120: 120

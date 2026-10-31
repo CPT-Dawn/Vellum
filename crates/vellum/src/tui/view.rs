@@ -400,10 +400,17 @@ fn pad(area: Rect) -> Rect {
     area.inner(ratatui::layout::Margin::new(1, 0))
 }
 
+/// Why a halfblock preview looks coarse, on the preview pane's border.
+const COARSE_HINT: &str = " coarse: terminal shows no images ";
+
 fn preview(m: &Model, f: &mut Frame, areas: &Areas) {
     let t = &m.theme;
     let narrow = areas.list.is_empty();
-    f.render_widget(pane(t, " Preview ".into(), narrow), areas.preview);
+    let mut block = pane(t, " Preview ".into(), narrow);
+    if m.coarse && usize::from(areas.preview.width) >= COARSE_HINT.chars().count() + 12 {
+        block = block.title(Line::styled(COARSE_HINT, t.muted).right_aligned());
+    }
+    f.render_widget(block, areas.preview);
     let area = areas.image;
     match &m.preview.state {
         PreviewState::Empty => {

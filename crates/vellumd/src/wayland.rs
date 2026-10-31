@@ -50,12 +50,23 @@ enum Obj {
     Subsurface,
     AlphaModifier,
     AlphaModifierSurface,
+    SinglePixelBufferManager,
     /// A `wl_surface.frame` callback pacing a Transition.
     FrameCallback,
 }
 
-/// Set to skip alpha-modifier, forcing the CPU Fade (for tests).
-const NO_ALPHA_MODIFIER_ENV: &str = "VELLUMD_NO_ALPHA_MODIFIER";
+/// Whether a test asked to skip alpha-modifier, forcing the CPU Fade, with
+/// `VELLUMD_NO_ALPHA_MODIFIER`. Debug builds only: the e2e tests run the
+/// debug Daemon, and a release Daemon never honors a test switch.
+#[cfg(debug_assertions)]
+fn alpha_modifier_disabled_for_tests() -> bool {
+    std::env::var_os("VELLUMD_NO_ALPHA_MODIFIER").is_some()
+}
+
+#[cfg(not(debug_assertions))]
+fn alpha_modifier_disabled_for_tests() -> bool {
+    false
+}
 
 /// How long startup waits for every Monitor's first configure.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(3);
@@ -78,6 +89,11 @@ struct State {
     fractional_scale_manager: Option<ObjectId>,
     subcompositor: Option<ObjectId>,
     alpha_modifier: Option<ObjectId>,
+    /// Absent on some compositors (niri); Monitors then stay blank until
+    /// their first frame.
+    single_pixel: Option<ObjectId>,
+    /// The letterbox color a Monitor is filled with until its first frame.
+    fill: [u8; 3],
     /// Buffers destroyed by us whose ids the compositor has not yet freed;
     /// a late `release` for one of them is ignored.
     dead_buffers: Vec<ObjectId>,
@@ -105,8 +121,11 @@ struct Monitor {
     /// Present only when the compositor has both viewporter and
     /// fractional-scale-v1.
     fractional_scale: Option<ObjectId>,
-    /// A frame is attached, so configure changes must be committed.
+    /// A frame (or the fill) is attached, so configure changes must be
+    /// committed.
     has_frame: bool,
+    /// Showing the solid letterbox fill, waiting for its first frame.
+    filled: bool,
     /// Logical size from the last layer-surface configure.
     size: Option<(u32, u32)>,
     /// Physical size of the frame last presented.
@@ -165,6 +184,8 @@ impl Wayland {
                 fractional_scale_manager: None,
                 subcompositor: None,
                 alpha_modifier: None,
+                single_pixel: None,
+                fill: [0, 0, 0],
                 dead_buffers: Vec::new(),
                 monitors: Vec::new(),
                 fatal: None,
@@ -261,6 +282,9 @@ impl Wayland {
                 Obj::Subsurface => wl_subsurface::event(state, &mut msgs),
                 Obj::AlphaModifier => wp_alpha_modifier_v1::event(state, &mut msgs),
                 Obj::AlphaModifierSurface => wp_alpha_modifier_surface_v1::event(state, &mut msgs),
+                Obj::SinglePixelBufferManager => {
+                    wp_single_pixel_buffer_manager_v1::event(state, &mut msgs)
+                }
                 Obj::FrameCallback => wl_callback::event(state, &mut msgs),
             };
             decoded.map_err(|err| format!("malformed Wayland event: {err:?}"))?;
@@ -274,6 +298,22 @@ impl Wayland {
         }
         state.create_missing_surfaces().map_err(io)?;
         self.flush()
+    }
+
+    /// Sets the letterbox color Monitors are filled with until their first
+    /// frame, refilling the ones still waiting.
+    pub fn set_fill(&mut self, color: [u8; 3]) -> Result<(), String> {
+        let s = &mut self.state;
+        if s.fill == color {
+            return Ok(());
+        }
+        s.fill = color;
+        for index in 0..s.monitors.len() {
+            if s.monitors[index].filled {
+                s.fill(index).map_err(io)?;
+            }
+        }
+        Ok(())
     }
 
     /// Sends queued requests to the compositor.
@@ -423,11 +463,44 @@ impl State {
             return self.destroy_buffer(buffer);
         };
         m.has_frame = true;
+        m.filled = false;
         let buffer_scale = match m.viewport {
             Some(_) => 1,
             None => m.scale.max(1),
         };
         wl_surface::req::set_buffer_scale(&mut self.backend, surface, buffer_scale)?;
+        wl_surface::req::attach(&mut self.backend, surface, Some(buffer), 0, 0)?;
+        wl_surface::req::damage_buffer(&mut self.backend, surface, 0, 0, i32::MAX, i32::MAX)?;
+        wl_surface::req::commit(&mut self.backend, surface)
+    }
+
+    /// Shows the letterbox color on Monitor `index` at once, as a 1×1
+    /// single-pixel buffer the viewport stretches over the Monitor, so it
+    /// is never blank while its first frame renders. Needs both
+    /// single-pixel-buffer-v1 and viewporter; without them, it stays blank.
+    fn fill(&mut self, index: usize) -> Result<(), rustix::io::Errno> {
+        let m = &self.monitors[index];
+        let (Some(manager), Some(surface), Some(_), Some(_)) =
+            (self.single_pixel, m.surface, m.viewport, m.size)
+        else {
+            return Ok(());
+        };
+        let buffer = self.objects.create(Obj::Buffer);
+        // 0xff becomes u32::MAX: the protocol's channels span the full u32.
+        let [r, g, b] = self.fill.map(|c| u32::from(c) * 0x0101_0101);
+        wp_single_pixel_buffer_manager_v1::req::create_u32_rgba_buffer(
+            &mut self.backend,
+            manager,
+            buffer,
+            r,
+            g,
+            b,
+            u32::MAX,
+        )?;
+        let m = &mut self.monitors[index];
+        m.has_frame = true;
+        m.filled = true;
+        wl_surface::req::set_buffer_scale(&mut self.backend, surface, 1)?;
         wl_surface::req::attach(&mut self.backend, surface, Some(buffer), 0, 0)?;
         wl_surface::req::damage_buffer(&mut self.backend, surface, 0, 0, i32::MAX, i32::MAX)?;
         wl_surface::req::commit(&mut self.backend, surface)
@@ -567,10 +640,13 @@ impl wl_registry::EvHandler for State {
                 self.subcompositor = Some(self.bind(name, interface, 1, Obj::Subcompositor));
             }
             wp_alpha_modifier_v1::NAME
-                if self.alpha_modifier.is_none()
-                    && std::env::var_os(NO_ALPHA_MODIFIER_ENV).is_none() =>
+                if self.alpha_modifier.is_none() && !alpha_modifier_disabled_for_tests() =>
             {
                 self.alpha_modifier = Some(self.bind(name, interface, 1, Obj::AlphaModifier));
+            }
+            wp_single_pixel_buffer_manager_v1::NAME if self.single_pixel.is_none() => {
+                self.single_pixel =
+                    Some(self.bind(name, interface, 1, Obj::SinglePixelBufferManager));
             }
             wl_output::NAME => {
                 let version = version.min(4);
@@ -588,6 +664,7 @@ impl wl_registry::EvHandler for State {
                     viewport: None,
                     fractional_scale: None,
                     has_frame: false,
+                    filled: false,
                     size: None,
                     frame_size: None,
                     frame_asked: None,
@@ -628,6 +705,7 @@ impl wl_subcompositor::EvHandler for State {}
 impl wl_subsurface::EvHandler for State {}
 impl wp_alpha_modifier_v1::EvHandler for State {}
 impl wp_alpha_modifier_surface_v1::EvHandler for State {}
+impl wp_single_pixel_buffer_manager_v1::EvHandler for State {}
 
 impl wp_fractional_scale_v1::EvHandler for State {
     fn preferred_scale(&mut self, fractional: ObjectId, scale: u32) -> Handled {
@@ -758,6 +836,10 @@ impl zwlr_layer_surface_v1::EvHandler for State {
                     false => Ok(()),
                 });
             if let Err(err) = result {
+                self.fatal = Some(io(err));
+            }
+            // Nothing on screen yet: the letterbox color, until a frame.
+            if !has_frame && let Err(err) = self.fill(index) {
                 self.fatal = Some(io(err));
             }
         }

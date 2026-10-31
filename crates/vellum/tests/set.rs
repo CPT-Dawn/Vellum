@@ -130,6 +130,39 @@ fn an_undecodable_file_is_a_clear_error_and_the_daemon_survives() {
 }
 
 #[test]
+fn a_monitor_without_a_wallpaper_shows_the_letterbox_color() {
+    let mut sway = Sway::start(&[SMALL]);
+    sway.write_config("letterbox = \"#0000ff\"\n[transition]\ntype = \"none\"\n");
+    // A solid fill (single-pixel-buffer-v1) instead of nothing at all.
+    sway.start_daemon();
+    let shot = sway.screenshot_until("HEADLESS-1", |s| s.get_pixel(160, 120).0 == BLUE);
+    assert_pixel(&shot, 5, 5, BLUE, 0);
+    assert_pixel(&shot, 314, 234, BLUE, 0);
+
+    // A wallpaper replaces the fill, and a restarted Daemon restores it.
+    let path = save(
+        &sway,
+        "red.png",
+        &paint(64, 48, |_, _| RED),
+        ImageFormat::Png,
+    );
+    sway.vellum_ok(["set", &path]);
+    sway.screenshot_until("HEADLESS-1", |s| s.get_pixel(160, 120).0 == RED);
+    sway.vellum_ok(["kill"]);
+    sway.wait_daemon_exit().expect("the Daemon did not exit");
+    sway.start_daemon();
+    sway.screenshot_until("HEADLESS-1", |s| s.get_pixel(160, 120).0 == RED);
+
+    // A new letterbox color reaches a Monitor still waiting for a frame.
+    sway.vellum_ok(["kill"]);
+    sway.wait_daemon_exit().expect("the Daemon did not exit");
+    std::fs::remove_file(sway.dir().join("state/vellum/state")).unwrap();
+    sway.write_config("letterbox = \"#00ff00\"\n");
+    sway.start_daemon();
+    sway.screenshot_until("HEADLESS-1", |s| s.get_pixel(160, 120).0 == GREEN);
+}
+
+#[test]
 fn the_daemon_keeps_no_frame_memory_after_presenting() {
     let mut sway = Sway::start(&[SMALL]);
     let pid = sway.start_daemon();

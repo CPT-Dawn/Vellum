@@ -136,6 +136,7 @@ impl Config {
         Settings {
             transition: self.transition,
             rotation: self.rotation.clone(),
+            letterbox: self.letterbox,
         }
     }
 }
@@ -722,28 +723,9 @@ pub fn save_last_good(text: Option<&str>) -> Result<(), String> {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
             other => other,
         },
-        Some(text) => write_atomically(&path, text),
+        Some(text) => crate::atomic::write_atomically(&path, text.as_bytes()),
     };
     result.map_err(|err| format!("cannot save {}: {err}", path.display()))
-}
-
-/// Replaces `path` with `text` in one rename, creating its directory.
-/// Every call writes its own temp file: `vellum reload` and the Daemon's
-/// `render --sync` often save at the same moment, and a shared temp name
-/// let one writer rename the other's file away (ENOENT).
-pub(crate) fn write_atomically(path: &Path, text: &str) -> std::io::Result<()> {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static NEXT: AtomicU32 = AtomicU32::new(0);
-    std::fs::create_dir_all(path.parent().expect("a parent dir"))?;
-    let unique = NEXT.fetch_add(1, Ordering::Relaxed);
-    let mut name = path.file_name().expect("file name").to_owned();
-    name.push(format!(".{}.{unique}.tmp", std::process::id()));
-    let tmp = path.with_file_name(name);
-    let result = std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, path));
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result
 }
 
 /// The Config a command should use. A malformed Config is reported on

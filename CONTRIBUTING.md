@@ -113,8 +113,8 @@ Regenerate them when the TUI changes visibly.
   example in that file parses, and that every TUI Action is documented.
 - New TUI colors go through the theme roles in
   [docs/brand.md](docs/brand.md), never a raw color.
-- Writes that two `vellum` processes can make at once go through
-  `config::write_atomically`.
+- Every file `vellum` writes goes through `atomic::write_atomically`,
+  never a fixed temp name (two `vellum` processes often save at once).
 
 ## Commits and pull requests
 
