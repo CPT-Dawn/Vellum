@@ -37,7 +37,8 @@ use std::path::{Path, PathBuf};
 pub use codec::{HEADER_LEN, MAGIC, MAX_PAYLOAD, Message, PROTOCOL_VERSION};
 pub use error::Error;
 pub use message::{
-    FitMode, MonitorInfo, MonitorStatus, PixelFormat, Present, Request, Response, Status, Wallpaper,
+    Direction, Easing, FitMode, MonitorInfo, MonitorStatus, PixelFormat, Present, Request,
+    Response, Status, Transition, TransitionKind, Wallpaper,
 };
 pub use transport::{recv, request, send};
 

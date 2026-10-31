@@ -157,17 +157,15 @@ impl Sway {
 
     /// Starts `vellumd` and waits until its socket answers.
     pub fn start_daemon(&mut self) -> u32 {
-        self.start_daemon_with_env(&[])
+        self.start_daemon_with(&[])
     }
 
-    /// [`Sway::start_daemon`] with extra environment variables.
-    pub fn start_daemon_with_env(&mut self, env: &[(&str, &std::ffi::OsStr)]) -> u32 {
+    /// Like [`Sway::start_daemon`], with extra environment variables.
+    pub fn start_daemon_with(&mut self, env: &[(&str, &str)]) -> u32 {
         let log = fs::File::create(self.dir.path().join("vellumd.log")).unwrap();
-        let mut cmd = self.command(vellumd_bin());
-        for (key, value) in env {
-            cmd.env(key, value);
-        }
-        let child = cmd
+        let child = self
+            .command(vellumd_bin())
+            .envs(env.iter().copied())
             .stdout(Stdio::null())
             .stderr(log)
             .spawn()
@@ -229,6 +227,25 @@ impl Sway {
     pub fn kill_compositor(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+
+    /// The Daemon's resident set size in KiB, from `/proc`.
+    pub fn daemon_rss_kib(&self) -> u64 {
+        let pid = self.daemon.as_ref().expect("no daemon").id();
+        let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+        status
+            .lines()
+            .find_map(|l| l.strip_prefix("VmRSS:"))
+            .and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
+            .expect("VmRSS in /proc status")
+    }
+
+    /// Whether the Daemon currently maps any memfd (pixel memory).
+    pub fn daemon_maps_memfd(&self) -> bool {
+        let pid = self.daemon.as_ref().expect("no daemon").id();
+        fs::read_to_string(format!("/proc/{pid}/maps"))
+            .unwrap()
+            .contains("memfd:")
     }
 
     pub fn daemon_log(&self) -> String {

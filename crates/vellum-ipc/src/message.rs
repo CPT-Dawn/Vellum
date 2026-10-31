@@ -58,12 +58,92 @@ pub struct Present {
     pub format: PixelFormat,
     /// The wallpaper file the frame was rendered from, recorded in State.
     pub source: String,
+    /// How the frame replaces what the Monitor shows now.
+    pub transition: Transition,
     /// The Fit mode the frame was rendered with, recorded in State.
     pub fit: FitMode,
     /// Sent by `vellum render --restore`. The Daemon drops a restore frame
     /// when the Monitor already shows an up-to-date one, so a restore never
     /// overwrites a newer `vellum set`.
     pub restore: bool,
+}
+
+/// The Transition that plays while a presented frame replaces the current
+/// wallpaper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Transition {
+    pub kind: TransitionKind,
+    /// Which way a Wipe's edge or a Slide's frame moves. Fade and None
+    /// ignore it.
+    pub direction: Direction,
+    /// Total length in milliseconds. 0 behaves like [`TransitionKind::None`].
+    pub duration_ms: u32,
+    pub easing: Easing,
+}
+
+impl Default for Transition {
+    /// Fade, 600 ms, ease-out.
+    fn default() -> Self {
+        Transition {
+            kind: TransitionKind::Fade,
+            direction: Direction::Right,
+            duration_ms: 600,
+            easing: Easing::EaseOut,
+        }
+    }
+}
+
+/// The Transition's visual effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum TransitionKind {
+    /// An immediate swap.
+    None = 0,
+    /// The new frame fades in over the old one.
+    Fade = 1,
+    /// A moving edge reveals the new frame in place.
+    Wipe = 2,
+    /// The new frame slides in over the old one.
+    Slide = 3,
+}
+
+/// The direction a Wipe's edge or a Slide's frame travels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Direction {
+    Left = 0,
+    Right = 1,
+    Up = 2,
+    Down = 3,
+}
+
+/// The timing curve of a Transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Easing {
+    Linear = 0,
+    EaseIn = 1,
+    EaseOut = 2,
+    EaseInOut = 3,
+}
+
+impl Easing {
+    /// Maps linear progress `t` in `0..=1` onto the curve (cubic).
+    pub fn apply(self, t: f32) -> f32 {
+        let t = t.clamp(0.0, 1.0);
+        match self {
+            Easing::Linear => t,
+            Easing::EaseIn => t * t * t,
+            Easing::EaseOut => 1.0 - (1.0 - t).powi(3),
+            Easing::EaseInOut => {
+                if t < 0.5 {
+                    4.0 * t * t * t
+                } else {
+                    1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
+                }
+            }
+        }
+    }
 }
 
 /// How a wallpaper is sized to a Monitor.
@@ -229,6 +309,10 @@ impl Body for Request {
                 w.u32(p.stride);
                 w.u32(p.format as u32);
                 w.str(&p.source);
+                w.u8(p.transition.kind as u8);
+                w.u8(p.transition.direction as u8);
+                w.u8(p.transition.easing as u8);
+                w.u32(p.transition.duration_ms);
                 w.u8(p.fit.code());
                 w.u8(u8::from(p.restore));
             }
@@ -248,6 +332,7 @@ impl Body for Request {
                     _ => return Err(Error::BadValue("pixel format")),
                 },
                 source: r.string()?,
+                transition: read_transition(r)?,
                 fit: FitMode::from_code(r.u8()?)?,
                 restore: r.u8()? != 0,
             }),
@@ -256,6 +341,36 @@ impl Body for Request {
             other => return Err(Error::UnknownKind(other)),
         })
     }
+}
+
+fn read_transition(r: &mut Reader<'_>) -> Result<Transition, Error> {
+    let kind = match r.u8()? {
+        0 => TransitionKind::None,
+        1 => TransitionKind::Fade,
+        2 => TransitionKind::Wipe,
+        3 => TransitionKind::Slide,
+        _ => return Err(Error::BadValue("transition kind")),
+    };
+    let direction = match r.u8()? {
+        0 => Direction::Left,
+        1 => Direction::Right,
+        2 => Direction::Up,
+        3 => Direction::Down,
+        _ => return Err(Error::BadValue("transition direction")),
+    };
+    let easing = match r.u8()? {
+        0 => Easing::Linear,
+        1 => Easing::EaseIn,
+        2 => Easing::EaseOut,
+        3 => Easing::EaseInOut,
+        _ => return Err(Error::BadValue("transition easing")),
+    };
+    Ok(Transition {
+        kind,
+        direction,
+        duration_ms: r.u32()?,
+        easing,
+    })
 }
 
 impl Body for Response {

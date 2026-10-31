@@ -161,9 +161,14 @@ fn a_daemon_from_another_release_gets_a_clear_error() {
     let listener = UnixListener::bind(sway.socket()).unwrap();
     let future = vellum_ipc::PROTOCOL_VERSION + 1;
     let fake = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut header = [0u8; vellum_ipc::HEADER_LEN];
-        stream.read_exact(&mut header).unwrap();
+        // Skip probes that connect and send nothing; answer the request.
+        let mut stream = loop {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut header = [0u8; vellum_ipc::HEADER_LEN];
+            if stream.read_exact(&mut header).is_ok() {
+                break stream;
+            }
+        };
         let mut reply = Vec::from(vellum_ipc::MAGIC);
         reply.extend_from_slice(&future.to_le_bytes());
         reply.extend_from_slice(&0x8000u16.to_le_bytes());
@@ -214,7 +219,7 @@ fn the_daemon_tells_systemd_it_is_ready() {
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
 
-    sway.start_daemon_with_env(&[("NOTIFY_SOCKET", notify.as_os_str())]);
+    sway.start_daemon_with(&[("NOTIFY_SOCKET", notify.to_str().unwrap())]);
 
     let mut buf = [0u8; 256];
     let n = systemd.recv(&mut buf).expect("no sd_notify message");

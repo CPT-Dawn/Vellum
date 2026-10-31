@@ -3,6 +3,8 @@
 //! lacks a frame (startup, hotplug, a scale change); exits right after
 //! presenting, taking all decoder memory with it.
 
+use vellum_ipc::{Transition, TransitionKind};
+
 use crate::client;
 use crate::set::present;
 
@@ -32,6 +34,12 @@ pub fn run(monitor: &str) -> Result<(), String> {
         &info,
         wallpaper.fit.into(),
         &wallpaper.path,
+        // The same wallpaper coming back, often at a new size: no effect.
+        Transition {
+            kind: TransitionKind::None,
+            duration_ms: 0,
+            ..Transition::default()
+        },
         true,
     )
 }

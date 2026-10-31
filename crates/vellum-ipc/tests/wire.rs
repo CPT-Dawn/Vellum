@@ -5,8 +5,9 @@ use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 
 use vellum_ipc::{
-    Error, FitMode, HEADER_LEN, MonitorInfo, MonitorStatus, PROTOCOL_VERSION, PixelFormat,
-    Present, Request, Response, Status, Wallpaper, recv, send,
+    Direction, Easing, Error, FitMode, HEADER_LEN, MonitorInfo, MonitorStatus, PROTOCOL_VERSION,
+    PixelFormat, Present, Request, Response, Status, Transition, TransitionKind, Wallpaper, recv,
+    send,
 };
 
 fn present() -> Present {
@@ -17,19 +18,70 @@ fn present() -> Present {
         stride: 1920 * 4,
         format: PixelFormat::Xrgb8888,
         source: "/home/me/Pictures/Wallpapers/dunes.jpg".into(),
+        transition: Transition::default(),
         fit: FitMode::Center,
         restore: true,
     }
 }
 
 #[test]
+fn the_default_transition_is_a_600ms_ease_out_fade() {
+    let t = Transition::default();
+    assert_eq!(t.kind, TransitionKind::Fade);
+    assert_eq!(t.duration_ms, 600);
+    assert_eq!(t.easing, Easing::EaseOut);
+}
+
+#[test]
+fn easing_curves_start_at_zero_end_at_one_and_bend_as_named() {
+    for easing in [
+        Easing::Linear,
+        Easing::EaseIn,
+        Easing::EaseOut,
+        Easing::EaseInOut,
+    ] {
+        assert_eq!(easing.apply(0.0), 0.0, "{easing:?}");
+        assert_eq!(easing.apply(1.0), 1.0, "{easing:?}");
+        assert_eq!(easing.apply(7.0), 1.0, "{easing:?} clamps");
+    }
+    assert_eq!(Easing::Linear.apply(0.5), 0.5);
+    assert_eq!(Easing::EaseIn.apply(0.5), 0.125);
+    assert_eq!(Easing::EaseOut.apply(0.5), 0.875);
+    assert_eq!(Easing::EaseInOut.apply(0.5), 0.5);
+    assert_eq!(Easing::EaseInOut.apply(0.25), 0.0625);
+}
+
+#[test]
 fn requests_survive_a_round_trip() {
-    for request in [
+    let mut requests = vec![
         Request::Monitors,
         Request::Present(present()),
         Request::Status,
         Request::Kill,
+    ];
+    for kind in [
+        TransitionKind::None,
+        TransitionKind::Fade,
+        TransitionKind::Wipe,
+        TransitionKind::Slide,
     ] {
+        for (direction, easing) in [
+            (Direction::Left, Easing::Linear),
+            (Direction::Right, Easing::EaseIn),
+            (Direction::Up, Easing::EaseOut),
+            (Direction::Down, Easing::EaseInOut),
+        ] {
+            let mut p = present();
+            p.transition = Transition {
+                kind,
+                direction,
+                duration_ms: 1234,
+                easing,
+            };
+            requests.push(Request::Present(p));
+        }
+    }
+    for request in requests {
         let frame = request.encode();
         assert_eq!(Request::decode(&frame).unwrap(), request);
     }
@@ -164,7 +216,12 @@ fn tempfile_with(bytes: &[u8]) -> std::fs::File {
 
 #[test]
 fn fit_modes_have_stable_names() {
-    for fit in [FitMode::Fill, FitMode::Fit, FitMode::Center, FitMode::Stretch] {
+    for fit in [
+        FitMode::Fill,
+        FitMode::Fit,
+        FitMode::Center,
+        FitMode::Stretch,
+    ] {
         assert_eq!(FitMode::from_name(fit.name()), Some(fit));
     }
     assert_eq!(FitMode::Stretch.name(), "stretch");

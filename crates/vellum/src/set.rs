@@ -5,14 +5,20 @@ use std::os::fd::AsFd;
 use std::path::Path;
 
 use image::RgbaImage;
-use vellum_ipc::{MonitorInfo, PixelFormat, Present, Request, Response};
+use vellum_ipc::{MonitorInfo, PixelFormat, Present, Request, Response, Transition};
 
 use crate::client::{self, ask, unexpected};
 use crate::frame::Frame;
 use crate::render::{DEFAULT_LETTERBOX, FitMode, Target, render};
 
-/// Sets `file` on the Monitor named `monitor`, or on every Monitor.
-pub fn run(file: &Path, monitor: Option<&str>, fit: FitMode) -> Result<(), String> {
+/// Sets `file` on the Monitor named `monitor`, or on every Monitor, playing
+/// `transition` on each.
+pub fn run(
+    file: &Path,
+    monitor: Option<&str>,
+    fit: FitMode,
+    transition: Transition,
+) -> Result<(), String> {
     let image = crate::decode::load(file)?;
 
     let socket = client::daemon()?;
@@ -21,7 +27,7 @@ pub fn run(file: &Path, monitor: Option<&str>, fit: FitMode) -> Result<(), Strin
     let source = std::path::absolute(file).unwrap_or_else(|_| file.to_owned());
     let source = source.to_string_lossy();
     for monitor in &monitors {
-        present(&socket, &image, monitor, fit, &source, false)?;
+        present(&socket, &image, monitor, fit, &source, transition, false)?;
     }
     Ok(())
 }
@@ -35,6 +41,7 @@ pub fn present(
     monitor: &MonitorInfo,
     fit: FitMode,
     source: &str,
+    transition: Transition,
     restore: bool,
 ) -> Result<(), String> {
     let (width, height) = (monitor.physical_width, monitor.physical_height);
@@ -53,6 +60,7 @@ pub fn present(
         stride,
         format: PixelFormat::Xrgb8888,
         source: source.to_owned(),
+        transition,
         fit: fit.into(),
         restore,
     });

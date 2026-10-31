@@ -159,10 +159,9 @@ impl Daemon {
                 return true;
             }
             match renderer.child.wait() {
-                Ok(status) if !status.success() => eprintln!(
-                    "vellumd: restoring {} failed ({status})",
-                    renderer.monitor
-                ),
+                Ok(status) if !status.success() => {
+                    eprintln!("vellumd: restoring {} failed ({status})", renderer.monitor)
+                }
                 Ok(_) => {}
                 Err(err) => eprintln!("vellumd: cannot reap `vellum render`: {err}"),
             }

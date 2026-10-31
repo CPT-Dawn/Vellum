@@ -42,7 +42,7 @@ fn every_fit_mode_matches_its_golden_image() {
     for fit in ["fill", "fit", "center", "stretch"] {
         let expected = golden(&format!("e2e-{fit}"));
         sway.vellum_ok(["set", &path, "--fit", fit]);
-        let shot = sway.screenshot_until("HEADLESS-1", |s| worst_diff(s, &expected) <= 2);
+        let shot = sway.screenshot_until("HEADLESS-1", |s| worst_diff(s, &expected) == 0);
         assert_eq!(worst_diff(&shot, &expected), 0, "--fit {fit}");
     }
 }
