@@ -36,6 +36,7 @@ sync = false
 
 # [keymap]                  # TUI keys: see "Keys" below
 # apply_all = "A"
+
 [preview]
 cache_mb = 200
 ```
@@ -99,8 +100,10 @@ vellum set dunes.jpg          # finds ~/Pictures/Wallpapers/desert/dunes.jpg
 vellum set desert/dunes.jpg   # more of the path, if two folders have a dunes.jpg
 ```
 
-Wallpapers are JPEG, PNG and WebP files, plus AVIF and JXL when Vellum is
-built with those features.
+Wallpapers are files ending in `.jpg`, `.jpeg`, `.png` or `.webp`.
+`.avif` and `.jxl` files are listed too, but they decode only when Vellum is
+built with the `avif` and `jxl` features; otherwise applying one reports an
+error.
 
 If none of the Library folders exist, the TUI opens on a welcome screen
 that offers `~/Pictures` or a folder you type (Tab completes it). Your
@@ -327,15 +330,17 @@ In the command, `{path}` is replaced by the wallpaper's absolute path and
 hook runs once per monitor, so `vellum set` on two monitors runs it twice,
 one after the other.
 
+Pick one:
+
 ```toml
 # matugen: Material You colors for GTK, Qt and anything with a template
 on_change = "matugen image {path}"
 
 # pywal: -n leaves the wallpaper to Vellum
-on_change = "wal -n -i {path}"
+# on_change = "wal -n -i {path}"
 
 # wallust
-on_change = "wallust run {path}"
+# on_change = "wallust run {path}"
 ```
 
 #### File names are safe
@@ -417,8 +422,9 @@ quit = []         # Ctrl-C still quits
 ```
 
 A key is a character (`"j"`, `"G"`, `"/"`), or one of `enter`, `esc`,
-`tab`, `backspace`, `space`, `up`, `down`, `left`, `right`, `home`, `end`,
-`pageup`, `pagedown` and `f1` to `f24`, optionally after `ctrl-` or `alt-`.
+`tab`, `shift-tab`, `backspace`, `delete`, `insert`, `space`, `up`, `down`,
+`left`, `right`, `home`, `end`, `pageup`, `pagedown` and `f1` to `f24`,
+optionally after `ctrl-` or `alt-`.
 Write uppercase letters as themselves (`"G"`, not `"shift-g"`). Keys
 separated by spaces form a sequence. If a key is both bound alone and the
 start of a sequence, it waits 400 ms for the rest. By default `g` toggles
