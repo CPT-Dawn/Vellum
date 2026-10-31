@@ -6,8 +6,7 @@
 //! would leave the Config invalid is refused, and a symlinked Config is
 //! written through to its target.
 
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::path::Path;
 
 use toml_edit::{Array, DocumentMut, Item, Table, TableLike, Value as TomlValue};
 
@@ -164,29 +163,9 @@ pub fn save_to(file: &Path, edits: &[Edit], home: Option<&Path>) -> Result<Confi
             file.display()
         )
     })?;
-    write(&target, &new).map_err(|err| format!("cannot save {}: {err}", target.display()))?;
+    super::write_atomically(&target, &new)
+        .map_err(|err| format!("cannot save {}: {err}", target.display()))?;
     Ok(config)
-}
-
-/// Writes `text` to `path` through a temp file of its own and a rename,
-/// so a reader (the Daemon's sync) never sees half a file and two writers
-/// never share a temp file.
-fn write(path: &Path, text: &str) -> std::io::Result<()> {
-    static NEXT: AtomicU32 = AtomicU32::new(0);
-    let dir = path.parent().unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir)?;
-    let name = path
-        .file_name()
-        .map_or_else(|| "config".into(), |n| n.to_string_lossy().into_owned());
-    let tmp: PathBuf = dir.join(format!(
-        ".{name}.{}.{}.tmp",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&tmp);
-    })
 }
 
 /// `path` as the Config spells it: `~/...` under `home`.
