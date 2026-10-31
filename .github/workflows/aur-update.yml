@@ -1,68 +1,82 @@
 name: Update AUR Package
 
+# Called by release.yml after the GitHub Release exists (a release created
+# with GITHUB_TOKEN never fires `release: published`). Run it by hand with
+# dry_run to build the PKGBUILD for a tag without pushing to the AUR.
+
 on:
-  release:
-    types: [published]
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag (example: v2.0.0)"
+        required: true
+        type: string
+      dry_run:
+        description: "Build and verify only; do not push to the AUR"
+        required: false
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (example: v1.0.0)"
+        description: "Release tag (example: v2.0.0)"
         required: true
+        type: string
+      dry_run:
+        description: "Build and verify only; do not push to the AUR"
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 jobs:
   aur-update:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    env:
+      TAG: ${{ inputs.tag }}
     steps:
+      - name: Install build tools
+        run: pacman -Syu --noconfirm --needed git openssh rust
+
       - name: Checkout source repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
 
-      - name: Resolve release tag
-        shell: bash
+      - name: Create an unprivileged build user
         run: |
-          set -euo pipefail
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            tag="${{ github.event.inputs.tag }}"
-          else
-            tag="${{ github.event.release.tag_name }}"
-          fi
-
-          if [[ -z "$tag" ]]; then
-            echo "Release tag is empty" >&2
-            exit 1
-          fi
-
-          echo "AUR_RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+          useradd -m builder
+          install -d -o builder -g builder /build /build/aur-repo
 
       - name: Configure SSH for AUR
-        shell: bash
+        if: ${{ !inputs.dry_run }}
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.ssh"
 
-          key_raw='${{ secrets.AUR_SSH_PRIVATE_KEY }}'
-          if [[ -z "$key_raw" ]]; then
+          if [[ -z "$AUR_SSH_PRIVATE_KEY" ]]; then
             echo "AUR_SSH_PRIVATE_KEY is empty." >&2
             exit 1
           fi
 
-          if grep -q "BEGIN .*PRIVATE KEY" <<< "$key_raw"; then
-            printf '%s\n' "$key_raw" | tr -d '\r' > "$HOME/.ssh/aur"
+          if grep -q "BEGIN .*PRIVATE KEY" <<< "$AUR_SSH_PRIVATE_KEY"; then
+            printf '%s\n' "$AUR_SSH_PRIVATE_KEY" | tr -d '\r' > "$HOME/.ssh/aur"
           else
-            printf '%s' "$key_raw" | tr -d '\r\n' | base64 -d > "$HOME/.ssh/aur"
+            printf '%s' "$AUR_SSH_PRIVATE_KEY" | tr -d '\r\n' | base64 -d > "$HOME/.ssh/aur"
           fi
-
           chmod 600 "$HOME/.ssh/aur"
 
-          if ! ssh-keygen -y -f "$HOME/.ssh/aur" >/dev/null 2>&1; then
+          if ! ssh-keygen -y -f "$HOME/.ssh/aur" > /dev/null 2>&1; then
             echo "Invalid private key in AUR_SSH_PRIVATE_KEY." >&2
             exit 1
           fi
 
           ssh-keyscan -t rsa,ed25519 aur.archlinux.org >> "$HOME/.ssh/known_hosts"
-
           cat > "$HOME/.ssh/config" << 'EOF'
           Host aur.archlinux.org
             User aur
@@ -72,30 +86,48 @@ jobs:
           EOF
 
       - name: Clone AUR repository
-        shell: bash
+        if: ${{ !inputs.dry_run }}
         run: |
           set -euo pipefail
-          # Make sure this matches your exact AUR package name for vellum
-          git clone ssh://aur@aur.archlinux.org/vellum.git aur-repo
+          git clone ssh://aur@aur.archlinux.org/vellum.git /build/aur-repo
+          chown -R builder:builder /build/aur-repo
 
       - name: Generate PKGBUILD and .SRCINFO
-        shell: bash
-        working-directory: aur-repo
-        env:
-          GITHUB_REF_NAME: ${{ env.AUR_RELEASE_TAG }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_SERVER_URL: ${{ github.server_url }}
-          AUR_MAINTAINER: CPT-Dawn <ping@cptdawn.dev>
-          PKGREL: "1"
+        run: >
+          sudo -u builder env
+          RELEASE_TAG="$TAG"
+          GITHUB_REPOSITORY="$GITHUB_REPOSITORY"
+          GITHUB_SERVER_URL="$GITHUB_SERVER_URL"
+          AUR_MAINTAINER="CPT-Dawn <ping@cptdawn.dev>"
+          PKGREL=1
+          bash .github/scripts/generate_aur_files.sh /build/aur-repo
+
+      - name: Build the package from the generated PKGBUILD
         run: |
           set -euo pipefail
-          bash ../.github/scripts/generate_aur_files.sh
+          install -d -o builder -g builder /build/check
+          sudo -u builder cp /build/aur-repo/PKGBUILD /build/check/
+          cd /build/check
+          sudo -u builder makepkg --noconfirm
+          files=$(pacman -Qlpq ./*.pkg.tar.*)
+          for want in \
+            /usr/bin/vellum /usr/bin/vellumd \
+            /usr/lib/systemd/user/vellumd.service \
+            /usr/share/bash-completion/completions/vellum \
+            /usr/share/zsh/site-functions/_vellum \
+            /usr/share/fish/vendor_completions.d/vellum.fish \
+            /usr/share/man/man1/vellum.1.gz \
+            /usr/share/licenses/vellum/LICENSE-MIT \
+            /usr/share/licenses/vellum/LICENSE-APACHE; do
+            grep -qx "$want" <<< "$files" || { echo "::error::package lacks $want"; exit 1; }
+          done
 
       - name: Commit and push AUR changes
-        shell: bash
-        working-directory: aur-repo
+        if: ${{ !inputs.dry_run }}
+        working-directory: /build/aur-repo
         run: |
           set -euo pipefail
+          git config --global --add safe.directory /build/aur-repo
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
@@ -106,7 +138,5 @@ jobs:
           fi
 
           pkgver=$(awk -F= '/^pkgver=/{print $2}' PKGBUILD)
-          pkgver=${pkgver// /}
-
           git commit -m "vellum: update to ${pkgver}"
           git push origin master

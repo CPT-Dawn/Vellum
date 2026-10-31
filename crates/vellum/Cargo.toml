@@ -7,6 +7,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "../../README.md"
+keywords = ["wayland", "wallpaper", "layer-shell", "tui", "cli"]
+categories = ["command-line-utilities", "multimedia::images"]
 
 [lints]
 workspace = true
@@ -18,6 +21,8 @@ clap = { version = "4.6.7", features = ["derive"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 fast_image_resize = "6.1.0"
 jxl-oxide = { version = "0.12.6", default-features = false, features = ["image"], optional = true }
+clap_complete = "4.6.11"
+clap_mangen = "0.3.3"
 
 [dev-dependencies]
 tempfile = "3.27.0"
