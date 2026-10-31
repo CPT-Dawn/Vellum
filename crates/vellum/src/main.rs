@@ -2,6 +2,7 @@
 
 mod client;
 mod decode;
+mod docs;
 mod frame;
 mod monitors;
 mod render;
@@ -12,7 +13,7 @@ mod status;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use vellum_ipc::{Direction, Transition, TransitionKind};
 
 use crate::render::FitMode;
@@ -49,6 +50,17 @@ enum Command {
     Status,
     /// Stop the Daemon.
     Kill,
+    /// Print a shell completion script, e.g. `vellum completions zsh`.
+    Completions {
+        #[arg(value_enum)]
+        shell: docs::Shell,
+    },
+    /// Write the man pages (vellum.1, vellum-set.1, ...) into DIR. Used by packaging.
+    #[command(hide = true)]
+    Man {
+        #[arg(value_name = "DIR")]
+        dir: PathBuf,
+    },
     /// Render a frame for the Daemon. Run by vellumd, not by hand.
     #[command(hide = true)]
     Render {
@@ -130,6 +142,8 @@ fn main() -> ExitCode {
         Command::Monitors => monitors::run(),
         Command::Status => status::run(),
         Command::Kill => client::kill(),
+        Command::Completions { shell } => docs::completions(Cli::command(), shell),
+        Command::Man { dir } => docs::man(Cli::command(), &dir),
         Command::Render {
             restore: _,
             monitor,
