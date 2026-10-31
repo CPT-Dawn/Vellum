@@ -25,9 +25,12 @@ clap_complete = "4.6.11"
 clap_mangen = "0.3.3"
 serde = { version = "1.0.229", features = ["derive"] }
 toml = { version = "1.1.8", default-features = false, features = ["parse", "serde"] }
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "layout-cache", "underline-color"] }
+ratatui-image = { version = "11.1.0", default-features = false, features = ["crossterm"] }
 shlex = "2.0.1"
 
 [dev-dependencies]
+insta = "1.49.0"
 tempfile = "3.27.0"
 
 [features]

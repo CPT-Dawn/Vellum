@@ -1,0 +1,28 @@
+---
+source: crates/vellum/src/tui/view/tests.rs
+expression: harness.screen()
+---
+ vellum  connecting to vellumd…                                    rotation off
+╭ Library ─────────────────╮╭ Preview ─────────────────────────────────────────╮
+│ Scanning the Library…    ││                                                  │
+│                          ││                                                  │
+│                          ││                                                  │
+│                          ││                                                  │
+│                          ││                                                  │
+│                          ││                                                  │
+│                          ││                                                  │
+│                          ││                                                  │
+│                          ││                                                  │
+│                          ││                                                  │
+│                          ││                                                  │
+│                          ││                                                  │
+│                          ││                                                  │
+│                          ││                                                  │
+│                          ││                                                  │
+│                          ││                                                  │
+│                          ││                                                  │
+│                          ││                                                  │
+│                          ││                                                  │
+│                          ││                                                  │
+╰──────────────────────────╯╰──────────────────────────────────────────────────╯
+ ↑↓/jk move  ⏎ apply  q quit

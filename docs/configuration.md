@@ -16,6 +16,7 @@ Every key, set to its default value:
 library = ["~/Pictures/Wallpapers"]
 fit = "fill"
 letterbox = "#000000"
+theme = "midnight"
 # on_change = "matugen image {path}"  # no hook by default
 
 [transition]
@@ -25,8 +26,8 @@ duration = 600
 easing = "ease-out"
 ```
 
-TOML needs top-level keys (`library`, `fit`, `letterbox`, `on_change`) to
-come before the first `[section]`.
+TOML needs top-level keys (`library`, `fit`, `letterbox`, `theme`,
+`on_change`) to come before the first `[section]`.
 
 ## Changes apply live
 
@@ -117,6 +118,25 @@ letterbox = "#1a1b2e"
 
 Changing it repaints the bars on monitors that already show a wallpaper in
 Fit mode `fit`.
+
+## Theme
+
+### `theme`
+
+The TUI's colors (run `vellum` with no command to open it).
+
+- `"midnight"`: Midnight Bloom, Vellum's own palette. This is the default.
+  It needs a truecolor terminal (`COLORTERM=truecolor` or `24bit`); other
+  terminals get the `"terminal"` look automatically.
+- `"terminal"`: your terminal's own 16 colors and background, so the TUI
+  matches your rice.
+
+```toml
+theme = "terminal"
+```
+
+If `NO_COLOR` is set, the TUI draws no color at all, whatever the theme,
+and marks the selection with reverse video and bold.
 
 ## Transition
 

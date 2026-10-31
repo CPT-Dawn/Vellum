@@ -44,8 +44,20 @@ pub struct Config {
     pub letterbox: Color,
     /// The Transition `vellum set` plays without flags.
     pub transition: Transition,
+    /// The TUI's colors.
+    pub theme: ThemeName,
     /// The command run after each new wallpaper is presented.
     pub on_change: Option<Hook>,
+}
+
+/// `theme`: which palette the TUI uses.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ThemeName {
+    /// Midnight Bloom on truecolor terminals, ANSI colors elsewhere.
+    #[default]
+    Midnight,
+    /// The terminal's own 16 colors and background.
+    Terminal,
 }
 
 impl Config {
@@ -56,6 +68,7 @@ impl Config {
             fit: FitMode::default(),
             letterbox: DEFAULT_LETTERBOX,
             transition: Transition::default(),
+            theme: ThemeName::default(),
             on_change: None,
         }
     }
@@ -86,6 +99,7 @@ impl Config {
         config.fit = file.fit.unwrap_or(config.fit);
         config.letterbox = file.letterbox.map_or(config.letterbox, |c| c.0);
         config.transition = file.transition.into();
+        config.theme = file.theme.unwrap_or(config.theme);
         if let Some(command) = file.on_change {
             let hook = Hook::parse(command.get_ref(), home).map_err(|why| {
                 ConfigError::at(text, command.span(), format!("the command {why}"))
@@ -122,6 +136,8 @@ struct File {
     #[serde(deserialize_with = "named_opt")]
     fit: Option<FitMode>,
     letterbox: Option<Hex>,
+    #[serde(deserialize_with = "named_opt")]
+    theme: Option<ThemeName>,
     on_change: Option<Spanned<String>>,
     transition: TransitionSection,
 }
@@ -186,6 +202,14 @@ impl Named for FitMode {
         ("fit", FitMode::Fit),
         ("center", FitMode::Center),
         ("stretch", FitMode::Stretch),
+    ];
+}
+
+impl Named for ThemeName {
+    const WHAT: &'static str = "theme";
+    const NAMES: &'static [(&'static str, Self)] = &[
+        ("midnight", ThemeName::Midnight),
+        ("terminal", ThemeName::Terminal),
     ];
 }
 

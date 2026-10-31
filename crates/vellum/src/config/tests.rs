@@ -156,3 +156,18 @@ fn names_round_trip() {
     }
     assert_eq!(Easing::EaseOut.name(), "ease-out");
 }
+
+#[test]
+fn the_theme_defaults_to_midnight_and_can_follow_the_terminal() {
+    assert_eq!(parse("").unwrap().theme, ThemeName::Midnight);
+    assert_eq!(
+        parse("theme = \"terminal\"\n").unwrap().theme,
+        ThemeName::Terminal
+    );
+    let err = parse("theme = \"solarized\"\n").unwrap_err();
+    assert_eq!(err.key.as_deref(), Some("theme"));
+    assert_eq!(
+        err.message,
+        "unknown theme \"solarized\", expected one of \"midnight\", \"terminal\""
+    );
+}
