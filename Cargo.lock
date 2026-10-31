@@ -2552,6 +2552,7 @@ dependencies = [
  "ratatui-image",
  "rustix 1.1.6",
  "serde",
+ "shlex",
  "tempfile",
  "toml",
  "vellum-ipc",

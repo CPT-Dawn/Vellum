@@ -5,6 +5,7 @@ mod config;
 mod decode;
 mod docs;
 mod frame;
+mod hook;
 mod library;
 mod monitors;
 mod render;
@@ -174,6 +175,8 @@ fn main() -> ExitCode {
 }
 
 fn finish(result: Result<(), String>) -> ExitCode {
+    // Let queued on_change hooks finish; their failures are only reported.
+    hook::finish();
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {

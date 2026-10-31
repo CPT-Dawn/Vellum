@@ -14,7 +14,7 @@ use crate::client::{self, ask, unexpected};
 use crate::config::{self, Config};
 use crate::render::FitMode;
 use crate::restore::INSTANT;
-use crate::set::{Look, present};
+use crate::set::{Look, present_frame};
 
 pub fn run(socket: &Path) -> Result<(), String> {
     let (config, text) = config::read_current()?;
@@ -54,7 +54,8 @@ fn repaint_letterboxes(socket: &Path, config: &Config) -> Result<(), String> {
             continue;
         };
         let image = crate::decode::load(wallpaper.path.as_ref())?;
-        present(socket, &image, info, &wallpaper.path, look)?;
+        // Same wallpaper, new bars: not a change for the on_change hook.
+        present_frame(socket, &image, info, &wallpaper.path, look)?;
     }
     Ok(())
 }
