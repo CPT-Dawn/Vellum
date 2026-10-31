@@ -55,7 +55,28 @@ pub fn run(
 
 /// Renders `image` for `monitor` and presents it, recording `source` and
 /// the Fit mode in State.
+///
+/// This is the one place a new wallpaper reaches a Monitor, so it is where
+/// the Config's `on_change` hook fires: after the Daemon accepts the frame,
+/// unless `look.restore` is set (a restore brings back a wallpaper that
+/// was already applied, so the hook ran back then).
 pub fn present(
+    socket: &Path,
+    image: &RgbaImage,
+    monitor: &MonitorInfo,
+    source: &str,
+    look: Look,
+) -> Result<(), String> {
+    present_frame(socket, image, monitor, source, look)?;
+    if !look.restore {
+        crate::hook::fire(source, &monitor.name);
+    }
+    Ok(())
+}
+
+/// [`present`] without the `on_change` hook, for re-presenting the
+/// wallpaper a Monitor already shows (a letterbox repaint).
+pub fn present_frame(
     socket: &Path,
     image: &RgbaImage,
     monitor: &MonitorInfo,
