@@ -43,7 +43,7 @@ jobs:
       # Idle RSS and wakeups are gated by crates/vellum/tests/lightness.rs above.
       - name: Release build size
         env:
-          VELLUMD_SIZE_BUDGET: 655360 # 640 KiB; vellumd is ~446 KiB at #15
+          VELLUMD_SIZE_BUDGET: 655360 # 640 KiB; vellumd is ~453 KiB at #15
         run: |
           cargo build --release --workspace --locked
           ls -l target/release/vellumd target/release/vellum

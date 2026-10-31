@@ -54,7 +54,7 @@ Measured 2026-10-31 on headless Sway 1.12 (pixman), Monitors 2560x1440 +
 
 | Daemon | Version | Binary | Linked libs | Idle RSS | Idle PSS | Idle private | Wakeups/min idle | RSS after a Transition | Threads |
 |---|---|---|---|---|---|---|---|---|---|
-| vellumd | 2.0.0-dev | 446 KiB | 2 | 2.4 MiB | 0.5 MiB | 0.5 MiB | 0 | 2.4 MiB | 1 |
+| vellumd | 2.0.0-dev | 453 KiB | 2 | 2.5 MiB | 0.6 MiB | 0.6 MiB | 0 | 2.5 MiB | 1 |
 
 swaybg, hyprpaper and awww weren't installed on the measuring machine, so
 there is no comparison yet. The Hyprland run on real Monitors is still to

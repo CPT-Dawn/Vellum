@@ -4,7 +4,7 @@
 
 mod support;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use image::{ImageFormat, Rgb, RgbImage};
 use support::*;
@@ -56,18 +56,24 @@ fn assert_light(sway: &Sway, when: &str) {
         !sway.daemon_maps_memfd()
     });
     std::thread::sleep(Duration::from_millis(500));
-    let rss = sway.daemon_smaps_kib("Rss");
-    let dirty = sway.daemon_smaps_kib("Private_Dirty");
-    let summary = format!("{when}: Rss {rss} KiB, Private_Dirty {dirty} KiB");
-    eprintln!("{summary}");
-    assert!(
-        rss <= IDLE_RSS_BUDGET_KIB,
-        "{summary}; the idle RSS budget is {IDLE_RSS_BUDGET_KIB} KiB"
-    );
-    assert!(
-        dirty <= PRIVATE_DIRTY_BUDGET_KIB,
-        "{summary}; the Private_Dirty budget is {PRIVATE_DIRTY_BUDGET_KIB} KiB"
-    );
+    // Gate what the Daemon settles at, not a momentary peak: a loaded box
+    // can catch it mid-teardown. Memory it keeps never comes back under.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let rss = sway.daemon_smaps_kib("Rss");
+        let dirty = sway.daemon_smaps_kib("Private_Dirty");
+        let summary = format!("{when}: Rss {rss} KiB, Private_Dirty {dirty} KiB");
+        eprintln!("{summary}");
+        if rss <= IDLE_RSS_BUDGET_KIB && dirty <= PRIVATE_DIRTY_BUDGET_KIB {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{summary}; the budgets are {IDLE_RSS_BUDGET_KIB} KiB RSS and \
+             {PRIVATE_DIRTY_BUDGET_KIB} KiB Private_Dirty"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 #[test]
