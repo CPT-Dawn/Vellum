@@ -190,6 +190,59 @@ fn a_daemon_from_another_release_gets_a_clear_error() {
 }
 
 #[test]
+fn a_client_stopped_and_continued_mid_request_still_gets_its_answer() {
+    // A socket with a read timeout returns EINTR after a stop and continue
+    // (job control, a cgroup freeze, a loaded CI box), handler or not.
+    let sway = Sway::start(&[SMALL]);
+    let listener = UnixListener::bind(sway.socket()).unwrap();
+    let (got_request, request_seen) = std::sync::mpsc::channel();
+    let (may_answer, answer) = std::sync::mpsc::channel::<()>();
+    let future = vellum_ipc::PROTOCOL_VERSION + 1;
+    let fake = std::thread::spawn(move || {
+        let mut stream = loop {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut header = [0u8; vellum_ipc::HEADER_LEN];
+            if stream.read_exact(&mut header).is_ok() {
+                break stream;
+            }
+        };
+        got_request.send(()).unwrap();
+        answer.recv().unwrap();
+        // Any well-formed answer will do; a version mismatch is the simplest.
+        let mut reply = Vec::from(vellum_ipc::MAGIC);
+        reply.extend_from_slice(&future.to_le_bytes());
+        reply.extend_from_slice(&0x8000u16.to_le_bytes());
+        reply.extend_from_slice(&0u32.to_le_bytes());
+        // A client that gave up has closed its end; its stderr says why.
+        let _ = stream.write_all(&reply);
+    });
+
+    let child = sway
+        .command(env!("CARGO_BIN_EXE_vellum"))
+        .arg("monitors")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    request_seen.recv().unwrap();
+    // Let vellum block in recvmsg, then stop and continue it there.
+    std::thread::sleep(Duration::from_millis(200));
+    let pid = rustix::process::Pid::from_child(&child);
+    rustix::process::kill_process(pid, rustix::process::Signal::STOP).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    rustix::process::kill_process(pid, rustix::process::Signal::CONT).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    may_answer.send(()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    fake.join().unwrap();
+
+    let text = stderr(&out);
+    assert!(!text.contains("Interrupted"), "{text}");
+    assert!(text.contains(&format!("v{future}")), "{text}");
+}
+
+#[test]
 fn the_daemon_answers_an_older_client_in_its_own_version_and_survives() {
     let mut sway = Sway::start(&[SMALL]);
     sway.start_daemon();
