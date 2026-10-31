@@ -36,7 +36,10 @@ use std::path::{Path, PathBuf};
 
 pub use codec::{HEADER_LEN, MAGIC, MAX_PAYLOAD, Message, PROTOCOL_VERSION};
 pub use error::Error;
-pub use message::{MonitorInfo, PixelFormat, Present, Request, Response};
+pub use message::{
+    Direction, Easing, MonitorInfo, PixelFormat, Present, Request, Response, Transition,
+    TransitionKind,
+};
 pub use transport::{recv, request, send};
 
 /// The Daemon's socket for a Wayland display:

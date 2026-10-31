@@ -3,14 +3,20 @@
 use std::os::fd::AsFd;
 use std::path::Path;
 
-use vellum_ipc::{MonitorInfo, PixelFormat, Present, Request, Response};
+use vellum_ipc::{MonitorInfo, PixelFormat, Present, Request, Response, Transition};
 
 use crate::client::{self, ask, unexpected};
 use crate::frame::Frame;
 use crate::render::{DEFAULT_LETTERBOX, FitMode, Target, render};
 
-/// Sets `file` on the Monitor named `monitor`, or on every Monitor.
-pub fn run(file: &Path, monitor: Option<&str>, fit: FitMode) -> Result<(), String> {
+/// Sets `file` on the Monitor named `monitor`, or on every Monitor, playing
+/// `transition` on each.
+pub fn run(
+    file: &Path,
+    monitor: Option<&str>,
+    fit: FitMode,
+    transition: Transition,
+) -> Result<(), String> {
     let image = crate::decode::load(file)?;
 
     let socket = client::socket()?;
@@ -34,6 +40,7 @@ pub fn run(file: &Path, monitor: Option<&str>, fit: FitMode) -> Result<(), Strin
             stride,
             format: PixelFormat::Xrgb8888,
             source: source.to_string_lossy().into_owned(),
+            transition,
         });
         match ask(&socket, &present, &[memfd.as_fd()])? {
             Response::Ok => {}
