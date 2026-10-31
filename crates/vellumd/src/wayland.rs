@@ -4,6 +4,13 @@
 //! Nothing here keeps pixels. A presented frame's memfd becomes a `wl_shm`
 //! pool, the buffer is attached and committed, and the fd is closed right
 //! after the flush. The buffer itself is destroyed on `wl_buffer.release`.
+//!
+//! Frames are physical-size buffers: logical size × the fractional scale from
+//! fractional-scale-v1, shown at logical size through a viewporter viewport.
+//! On a scale or size change the viewport destination follows the new
+//! logical size, so the old frame stays on screen, stretched, until a frame
+//! for the new size is presented. Without those protocols, the integer
+//! `wl_output.scale` and `set_buffer_scale` are the fallback.
 
 use std::os::fd::{AsFd, OwnedFd};
 use std::time::{Duration, Instant};
@@ -31,6 +38,10 @@ enum Obj {
     Output,
     LayerShell,
     LayerSurface,
+    Viewporter,
+    Viewport,
+    FractionalScaleManager,
+    FractionalScale,
 }
 
 /// How long startup waits for every Monitor's first configure.
@@ -50,6 +61,8 @@ struct State {
     compositor: Option<ObjectId>,
     shm: Option<ObjectId>,
     layer_shell: Option<ObjectId>,
+    viewporter: Option<ObjectId>,
+    fractional_scale_manager: Option<ObjectId>,
     monitors: Vec<Monitor>,
     fatal: Option<String>,
 }
@@ -61,19 +74,49 @@ struct Monitor {
     output_version: u32,
     /// Connector name from `wl_output.name`.
     name: String,
+    /// Integer scale from `wl_output.scale`, the fallback.
     scale: i32,
+    /// The surface's preferred scale in 120ths, from fractional-scale-v1.
+    preferred_scale: Option<u32>,
     /// Seen `wl_output.done` at least once.
     described: bool,
     surface: Option<ObjectId>,
     layer: Option<ObjectId>,
+    /// Present only when the compositor has viewporter.
+    viewport: Option<ObjectId>,
+    /// Present only when the compositor has both viewporter and
+    /// fractional-scale-v1.
+    fractional_scale: Option<ObjectId>,
+    /// A frame is attached, so configure changes must be committed.
+    has_frame: bool,
     /// Logical size from the last layer-surface configure.
     size: Option<(u32, u32)>,
 }
 
 impl Monitor {
+    /// The scale in 120ths: the fractional preferred scale, or the integer
+    /// output scale until (or unless) one arrives.
+    fn scale_120(&self) -> u32 {
+        match (self.fractional_scale, self.preferred_scale) {
+            (Some(_), Some(preferred)) => preferred,
+            _ => self.scale.max(1) as u32 * 120,
+        }
+    }
+
+    /// Configured, and its fractional scale known if one is coming. Startup
+    /// waits for this; a compositor that never sends a preferred scale
+    /// gets the integer fallback after the startup timeout.
+    fn is_settled(&self) -> bool {
+        self.size.is_some() && (self.fractional_scale.is_none() || self.preferred_scale.is_some())
+    }
+
+    /// The exact size a frame must have: logical size × scale, rounded half
+    /// away from zero as fractional-scale-v1 asks.
     fn physical_size(&self) -> Option<(u32, u32)> {
-        let scale = self.scale.max(1) as u32;
-        self.size.map(|(w, h)| (w * scale, h * scale))
+        let (w, h) = self.size?;
+        let scale = self.scale_120();
+        let scaled = |logical: u32| ((u64::from(logical) * u64::from(scale) + 60) / 120) as u32;
+        Some((scaled(w), scaled(h)))
     }
 }
 
@@ -95,6 +138,8 @@ impl Wayland {
                 compositor: None,
                 shm: None,
                 layer_shell: None,
+                viewporter: None,
+                fractional_scale_manager: None,
                 monitors: Vec::new(),
                 fatal: None,
             },
@@ -131,7 +176,7 @@ impl Wayland {
     }
 
     fn all_configured(&self) -> bool {
-        self.state.monitors.iter().all(|m| m.size.is_some())
+        self.state.monitors.iter().all(Monitor::is_settled)
     }
 
     fn wait_readable(&self, timeout: Duration) -> Result<bool, String> {
@@ -180,6 +225,12 @@ impl Wayland {
                 Obj::Output => wl_output::event(state, &mut msgs),
                 Obj::LayerShell => zwlr_layer_shell_v1::event(state, &mut msgs),
                 Obj::LayerSurface => zwlr_layer_surface_v1::event(state, &mut msgs),
+                Obj::Viewporter => wp_viewporter::event(state, &mut msgs),
+                Obj::Viewport => wp_viewport::event(state, &mut msgs),
+                Obj::FractionalScaleManager => {
+                    wp_fractional_scale_manager_v1::event(state, &mut msgs)
+                }
+                Obj::FractionalScale => wp_fractional_scale_v1::event(state, &mut msgs),
             };
             decoded.map_err(|err| format!("malformed Wayland event: {err:?}"))?;
         }
@@ -199,9 +250,10 @@ impl Wayland {
         self.state.backend.flush().map_err(io)
     }
 
-    /// Every Monitor with a configured background surface.
+    /// Every configured Monitor, sorted by name.
     pub fn monitors(&self) -> Vec<MonitorInfo> {
-        self.state
+        let mut monitors: Vec<MonitorInfo> = self
+            .state
             .monitors
             .iter()
             .filter_map(|m| {
@@ -213,10 +265,12 @@ impl Wayland {
                     logical_height,
                     physical_width,
                     physical_height,
-                    scale_120: m.scale.max(1) as u32 * 120,
+                    scale_120: m.scale_120(),
                 })
             })
-            .collect()
+            .collect();
+        monitors.sort_by(|a, b| a.name.cmp(&b.name));
+        monitors
     }
 
     /// Shows `frame` on its Monitor. The memfd is consumed: it is closed as
@@ -253,7 +307,10 @@ impl Wayland {
                 "frame memory holds {file_size} bytes but {pool_size} are needed"
             ));
         }
-        let scale = monitor.scale.max(1);
+        let buffer_scale = match monitor.viewport {
+            Some(_) => 1,
+            None => monitor.scale.max(1),
+        };
 
         let shm = s.shm.expect("bound at startup");
         let pool = s.objects.create(Obj::ShmPool);
@@ -271,7 +328,7 @@ impl Wayland {
         )
         .map_err(io)?;
         wl_shm_pool::req::destroy(&mut s.backend, pool).map_err(io)?;
-        wl_surface::req::set_buffer_scale(&mut s.backend, surface, scale).map_err(io)?;
+        wl_surface::req::set_buffer_scale(&mut s.backend, surface, buffer_scale).map_err(io)?;
         wl_surface::req::attach(&mut s.backend, surface, Some(buffer), 0, 0).map_err(io)?;
         wl_surface::req::damage_buffer(&mut s.backend, surface, 0, 0, i32::MAX, i32::MAX)
             .map_err(io)?;
@@ -279,6 +336,9 @@ impl Wayland {
         // waybackend sends fds on flush, so the memfd must outlive it.
         s.backend.flush().map_err(io)?;
         drop(memfd);
+        if let Some(m) = s.monitors.iter_mut().find(|m| m.surface == Some(surface)) {
+            m.has_frame = true;
+        }
         Ok(())
     }
 }
@@ -312,6 +372,21 @@ impl State {
             let all = Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT;
             zwlr_layer_surface_v1::req::set_anchor(&mut self.backend, layer, all)?;
             zwlr_layer_surface_v1::req::set_exclusive_zone(&mut self.backend, layer, -1)?;
+            if let Some(viewporter) = self.viewporter {
+                let viewport = self.objects.create(Obj::Viewport);
+                wp_viewporter::req::get_viewport(&mut self.backend, viewporter, viewport, surface)?;
+                m.viewport = Some(viewport);
+                if let Some(manager) = self.fractional_scale_manager {
+                    let fractional = self.objects.create(Obj::FractionalScale);
+                    wp_fractional_scale_manager_v1::req::get_fractional_scale(
+                        &mut self.backend,
+                        manager,
+                        fractional,
+                        surface,
+                    )?;
+                    m.fractional_scale = Some(fractional);
+                }
+            }
             wl_surface::req::commit(&mut self.backend, surface)?;
             m.surface = Some(surface);
             m.layer = Some(layer);
@@ -321,6 +396,12 @@ impl State {
 
     fn remove_monitor(&mut self, index: usize) {
         let m = self.monitors.remove(index);
+        if let Some(fractional) = m.fractional_scale {
+            let _ = wp_fractional_scale_v1::req::destroy(&mut self.backend, fractional);
+        }
+        if let Some(viewport) = m.viewport {
+            let _ = wp_viewport::req::destroy(&mut self.backend, viewport);
+        }
         if let Some(layer) = m.layer {
             let _ = zwlr_layer_surface_v1::req::destroy(&mut self.backend, layer);
         }
@@ -381,6 +462,13 @@ impl wl_registry::EvHandler for State {
                 self.layer_shell =
                     Some(self.bind(name, interface, version.min(4), Obj::LayerShell));
             }
+            wp_viewporter::NAME if self.viewporter.is_none() => {
+                self.viewporter = Some(self.bind(name, interface, 1, Obj::Viewporter));
+            }
+            wp_fractional_scale_manager_v1::NAME if self.fractional_scale_manager.is_none() => {
+                self.fractional_scale_manager =
+                    Some(self.bind(name, interface, 1, Obj::FractionalScaleManager));
+            }
             wl_output::NAME => {
                 let version = version.min(4);
                 let output = self.bind(name, interface, version, Obj::Output);
@@ -390,9 +478,13 @@ impl wl_registry::EvHandler for State {
                     output_version: version,
                     name: format!("monitor-{name}"),
                     scale: 1,
+                    preferred_scale: None,
                     described: false,
                     surface: None,
                     layer: None,
+                    viewport: None,
+                    fractional_scale: None,
+                    has_frame: false,
                     size: None,
                 });
             }
@@ -421,6 +513,24 @@ impl wl_callback::EvHandler for State {
 impl wl_compositor::EvHandler for State {}
 impl wl_shm_pool::EvHandler for State {}
 impl zwlr_layer_shell_v1::EvHandler for State {}
+impl wp_viewporter::EvHandler for State {}
+impl wp_viewport::EvHandler for State {}
+impl wp_fractional_scale_manager_v1::EvHandler for State {}
+
+impl wp_fractional_scale_v1::EvHandler for State {
+    fn preferred_scale(&mut self, fractional: ObjectId, scale: u32) -> Handled {
+        // Only the size of the next frame changes; the frame on screen keeps
+        // covering the logical size through the viewport.
+        if let Some(m) = self
+            .monitors
+            .iter_mut()
+            .find(|m| m.fractional_scale == Some(fractional))
+        {
+            m.preferred_scale = Some(scale);
+        }
+        Ok(())
+    }
+}
 
 impl wl_shm::EvHandler for State {
     fn format(&mut self, _: ObjectId, _: wl_shm::Format) -> Handled {
@@ -507,8 +617,26 @@ impl zwlr_layer_surface_v1::EvHandler for State {
         {
             self.fatal = Some(io(err));
         }
-        if let Some(m) = self.monitors.iter_mut().find(|m| m.layer == Some(layer)) {
-            m.size = Some((width, height));
+        let Some(m) = self.monitors.iter_mut().find(|m| m.layer == Some(layer)) else {
+            return Ok(());
+        };
+        m.size = Some((width, height));
+        // Stretch the frame on screen over the new logical size, so a scale
+        // change never uncovers black while the new frame is rendered.
+        if let (Some(viewport), Some(surface)) = (m.viewport, m.surface)
+            && width > 0
+            && height > 0
+        {
+            let has_frame = m.has_frame;
+            let (w, h) = (width as i32, height as i32);
+            let result = wp_viewport::req::set_destination(&mut self.backend, viewport, w, h)
+                .and_then(|()| match has_frame {
+                    true => wl_surface::req::commit(&mut self.backend, surface),
+                    false => Ok(()),
+                });
+            if let Err(err) = result {
+                self.fatal = Some(io(err));
+            }
         }
         Ok(())
     }
