@@ -29,6 +29,7 @@ use crate::render::FitMode;
 
 #[derive(Parser)]
 #[command(
+    name = "vellum",
     version,
     about = "Wallpapers, weightless.",
     long_about = "Wallpapers, weightless.\n\nRun `vellum` with no command to open the TUI."

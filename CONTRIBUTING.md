@@ -51,9 +51,9 @@ Running one suite with `cargo test --test monitors` does not rebuild
 Daemon. Other useful runs:
 
 ```sh
-cargo test -p vellum --all-features                     # with AVIF and JXL
-VELLUM_BLESS=1 cargo test -p vellum --bin vellum golden  # re-bless golden render images
-INSTA_UPDATE=always cargo test -p vellum --bin vellum tui # accept TUI snapshot changes
+cargo test -p vellum-wallpaper --all-features                    # with AVIF and JXL
+VELLUM_BLESS=1 cargo test -p vellum-wallpaper --bin vellum golden  # re-bless golden render images
+INSTA_UPDATE=always cargo test -p vellum-wallpaper --bin vellum tui # accept TUI snapshot changes
 ```
 
 Check re-blessed images and snapshots by eye before you commit them.

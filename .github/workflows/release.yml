@@ -40,7 +40,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${TAG#v}"
-          for crate in vellum-ipc vellumd vellum; do
+          for crate in vellum-ipc vellumd vellum-wallpaper; do
             have=$(cargo metadata --no-deps --format-version 1 --locked \
               | jq -r --arg c "$crate" '.packages[] | select(.name == $c) | .version')
             if [[ "$have" != "$version" ]]; then
@@ -140,8 +140,8 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-      - name: Publish vellum
-        run: cargo publish --locked -p vellum
+      - name: Publish vellum-wallpaper
+        run: cargo publish --locked -p vellum-wallpaper
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 

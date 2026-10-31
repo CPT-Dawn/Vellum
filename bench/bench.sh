@@ -192,7 +192,7 @@ bench() {
 vbin=${VELLUM_BIN_DIR:-$repo/target/release}
 if [[ -z ${VELLUM_BIN_DIR:-} ]]; then
     log "Building release vellum..."
-    cargo build --release --locked --quiet --manifest-path "$repo/Cargo.toml" -p vellumd -p vellum
+    cargo build --release --locked --quiet --manifest-path "$repo/Cargo.toml" -p vellumd -p vellum-wallpaper
 fi
 vsock=$run/vellum-$display.sock
 bench vellumd "$("$vbin/vellumd" --version | awk '{print $2}')" "$vbin/vellumd" \
