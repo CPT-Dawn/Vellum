@@ -10,9 +10,11 @@ use std::time::Duration;
 
 use ratatui::crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::layout::Size;
-use vellum_ipc::{MonitorInfo, Status};
+use vellum_ipc::{MonitorInfo, Settings, Status};
 
 use super::model::{Meta, PreviewImage};
+use crate::config::Config;
+use crate::config::edit::Edit;
 use crate::render::{Color, FitMode};
 
 #[derive(Debug)]
@@ -60,6 +62,24 @@ pub enum Msg {
     },
     /// The `on_change` hook failed; why.
     HookFailed(String),
+    /// Config edits of `generation` were written (the new Config), or not.
+    ConfigSaved {
+        generation: u64,
+        result: Result<Config, String>,
+    },
+    /// Rotation was started or stopped (`toggled`), or settings were
+    /// pushed: the Daemon's Status afterwards.
+    RotationUpdated {
+        toggled: bool,
+        result: Result<Status, String>,
+    },
+    /// Tab on the welcome screen: the folders `input` could complete to.
+    Completed {
+        input: String,
+        candidates: Vec<String>,
+    },
+    /// The chosen Library folder was saved to the Config, or not.
+    LibrarySaved(Result<Config, String>),
 }
 
 /// What the Daemon reports.
@@ -92,6 +112,20 @@ pub enum Cmd {
         path: PathBuf,
         favorite: bool,
     },
+    /// Write these edits to the Config.
+    SaveConfig {
+        generation: u64,
+        edits: Vec<Edit>,
+    },
+    /// Hand the Daemon new settings now, rather than when its Config
+    /// watch notices.
+    PushSettings(Settings),
+    /// Start (true) or stop Rotation.
+    RotationControl(bool),
+    /// List the folders a typed path could complete to.
+    Complete(String),
+    /// Add this folder to the Library in the Config.
+    SaveLibrary(PathBuf),
     /// Send back [`Msg::Woke`] once `delay` has passed. A newer `After`
     /// with the same kind of [`Wake`] replaces a pending one, so this is a
     /// debounce.
@@ -108,6 +142,8 @@ pub enum Wake {
     Preview { generation: u64 },
     /// Render the tiles of grid `generation`, if still current.
     Grid { generation: u64 },
+    /// Save the Config edits of `generation`, if no newer edit came.
+    Config { generation: u64 },
 }
 
 /// Why a preview is rendered. Workers drop a job once its generation is no

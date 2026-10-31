@@ -13,10 +13,10 @@ use vellum_ipc::RotationSource;
 use super::keymap::{self, Action, HelpRow};
 use super::layout::{self, Areas};
 use super::model::{
-    Daemon, Meta, Mode, Model, PreviewImage, PreviewState, Rotation, Tile, ToastKind,
+    Daemon, Field, Meta, Mode, Model, PreviewImage, PreviewState, Rotation, Tile, ToastKind,
 };
 use super::theme::Theme;
-use super::update::spinner;
+use super::update::{self, spinner};
 use crate::config::{Named as _, format_interval};
 
 #[cfg(test)]
@@ -25,20 +25,67 @@ mod tests;
 pub fn view(m: &Model, f: &mut Frame) {
     let t = &m.theme;
     f.render_widget(Block::new().style(t.base), f.area());
-    let areas = layout::areas(f.area());
+    if layout::too_small(f.area()) {
+        too_small(m, f);
+        return;
+    }
+    let areas = m.areas();
     header(m, f, areas.header);
-    if m.grid.on {
+    if m.mode == Mode::Welcome {
+        welcome(m, f);
+    } else if m.grid.on {
         grid(m, f);
     } else {
-        list(m, f, areas.list);
-        preview(m, f, &areas);
+        if !areas.list.is_empty() {
+            list(m, f, areas.list);
+        }
+        if !areas.preview.is_empty() {
+            preview(m, f, &areas);
+        }
     }
     footer(m, f, areas.footer);
     match m.mode {
         Mode::Help => help(m, f),
         Mode::Palette => palette(m, f),
-        Mode::Normal | Mode::Search => {}
+        Mode::Rotation => rotation_panel(m, f),
+        Mode::Normal | Mode::Search | Mode::Welcome => {}
     }
+}
+
+/// The whole screen when the terminal is below [`layout::MIN`].
+fn too_small(m: &Model, f: &mut Frame) {
+    let t = &m.theme;
+    let area = f.area();
+    let lines = vec![
+        Line::styled("Terminal too small", t.text.add_modifier(Modifier::BOLD)),
+        Line::styled(
+            format!(
+                "{}×{}, needs {}×{}",
+                area.width,
+                area.height,
+                layout::MIN.width,
+                layout::MIN.height
+            ),
+            t.secondary,
+        ),
+    ];
+    let [row] = Layout::vertical([Constraint::Length(2)])
+        .flex(Flex::Center)
+        .areas(area);
+    f.render_widget(
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }),
+        row,
+    );
+}
+
+/// `key` in the focus role, then `text`: `o choose a folder`.
+fn key_hint<'a>(t: &Theme, key: Option<String>, text: &'a str) -> Option<Line<'a>> {
+    Some(Line::from(vec![
+        Span::styled(key?, t.focus),
+        Span::styled(format!(" {text}"), t.secondary),
+    ]))
 }
 
 fn header(m: &Model, f: &mut Frame, area: Rect) {
@@ -55,7 +102,13 @@ fn header(m: &Model, f: &mut Frame, area: Rect) {
                 t.muted,
             ));
         }
-        Daemon::Down(_) => spans.push(Span::styled("✗ vellumd is not running", t.error)),
+        Daemon::Down(_) => {
+            spans.push(Span::styled("✗ vellumd is not running", t.error));
+            if let Some(hint) = key_hint(t, m.keymap.primary(Action::Reconnect), "reconnect") {
+                spans.push(Span::raw("  "));
+                spans.extend(hint.spans);
+            }
+        }
         Daemon::Up { monitors, .. } => {
             for (i, (_, label)) in layout::monitor_tabs(monitors).into_iter().enumerate() {
                 let (mark, style) = if i == m.target {
@@ -67,21 +120,28 @@ fn header(m: &Model, f: &mut Frame, area: Rect) {
             }
         }
     }
-    f.render_widget(Line::from(spans), area);
+    let left = Line::from(spans);
+    let used = left.width();
+    f.render_widget(left, area);
     let rotation = match m.rotation {
         Rotation::Off => "rotation off ".to_owned(),
         Rotation::On {
             interval_ms,
             source,
+            overridden,
         } => {
             let from = match source {
                 RotationSource::Library => "",
                 RotationSource::Favorites => " · Favorites",
             };
-            format!("⟳ every {}{from} ", format_interval(interval_ms))
+            let own = if overridden { " · Override" } else { "" };
+            format!("⟳ every {}{from}{own} ", format_interval(interval_ms))
         }
     };
-    right_aligned(f, area, Line::styled(rotation, t.secondary));
+    // Only where it fits beside the Monitors.
+    if used + rotation.chars().count() < usize::from(area.width) {
+        right_aligned(f, area, Line::styled(rotation, t.secondary));
+    }
 }
 
 /// Draws `line` at the right end of `area`, leaving the rest untouched.
@@ -130,9 +190,73 @@ fn library_block<'a>(m: &Model) -> Block<'a> {
     block
 }
 
+/// Why the list is empty and the key that fixes it: an empty Library,
+/// no matches, no Favorites. `None` while scanning or when there is
+/// something to show.
+fn empty_state(m: &Model) -> Option<Vec<Line<'static>>> {
+    let t = &m.theme;
+    if m.scanning || !m.visible.is_empty() {
+        return None;
+    }
+    let title = |text: String| Line::styled(text, t.text.add_modifier(Modifier::BOLD));
+    let mut lines = Vec::new();
+    if m.library.is_empty() {
+        let folders: Vec<String> = m.folders.iter().map(|p| m.tilde(p)).collect();
+        lines.push(title("No wallpapers yet".into()));
+        lines.push(Line::styled(
+            format!("Nothing to show in {}.", folders.join(", ")),
+            t.secondary,
+        ));
+        lines.push(Line::styled(
+            "Add JPEG, PNG or WebP images there.",
+            t.secondary,
+        ));
+        lines.extend(key_hint(
+            t,
+            m.keymap.primary(Action::Library),
+            "choose another folder",
+        ));
+    } else if !m.query.is_empty() {
+        lines.push(title(format!("No matches for “{}”", m.query)));
+        let clear = match m.mode {
+            Mode::Search => Action::Cancel,
+            _ => Action::Back,
+        };
+        lines.extend(key_hint(t, m.keymap.primary(clear), "clear the search"));
+    } else {
+        lines.push(title("No Favorites yet".into()));
+        lines.extend(key_hint(
+            t,
+            m.keymap.primary(Action::Favorite),
+            "on a wallpaper adds it",
+        ));
+        lines.extend(key_hint(
+            t,
+            m.keymap.primary(Action::FavoritesOnly),
+            "show everything",
+        ));
+    }
+    Some(lines)
+}
+
+/// Draws `lines` centered in `area`.
+fn centered_lines(f: &mut Frame, area: Rect, lines: Vec<Line>) {
+    let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let [row] = Layout::vertical([Constraint::Length(height)])
+        .flex(Flex::Center)
+        .areas(area);
+    f.render_widget(
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }),
+        row,
+    );
+}
+
 /// Says why there is nothing to show, if so: still scanning, an empty
-/// Library, no matches, no Favorites. True if it did.
-fn no_wallpapers(m: &Model, f: &mut Frame, inner: Rect) -> bool {
+/// Library, no matches, no Favorites. True if it did. Beside a preview
+/// pane only a word goes here and the pane says the rest.
+fn no_wallpapers(m: &Model, f: &mut Frame, inner: Rect, beside_preview: bool) -> bool {
     let t = &m.theme;
     if m.scanning {
         if let Some(mark) = spinner(m, std::time::Duration::ZERO) {
@@ -146,39 +270,20 @@ fn no_wallpapers(m: &Model, f: &mut Frame, inner: Rect) -> bool {
         }
         return true;
     }
-    if m.library.is_empty() {
-        let folders: Vec<String> = m.folders.iter().map(|p| m.tilde(p)).collect();
-        f.render_widget(
-            Paragraph::new(vec![
-                Line::styled("No wallpapers found in", t.secondary),
-                Line::styled(folders.join(", "), t.text),
-            ])
-            .wrap(Wrap { trim: true }),
-            pad(inner),
-        );
-        return true;
-    }
-    if m.visible.is_empty() {
-        let (what, fix) = if !m.query.is_empty() {
-            (format!("No matches for “{}”", m.query), Action::Back)
+    let Some(lines) = empty_state(m) else {
+        return false;
+    };
+    if beside_preview {
+        let word = if m.library.is_empty() {
+            "Empty"
         } else {
-            ("No Favorites yet".to_owned(), Action::Favorite)
+            "None"
         };
-        let mut lines = vec![Line::styled(what, t.secondary)];
-        if let Some(key) = m.keymap.primary(fix) {
-            let how = match fix {
-                Action::Favorite => " on a wallpaper to add it",
-                _ => " to show everything",
-            };
-            lines.push(Line::from(vec![
-                Span::styled(key, t.focus),
-                Span::styled(how, t.secondary),
-            ]));
-        }
-        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), pad(inner));
-        return true;
+        f.render_widget(Line::styled(word, t.muted), pad(inner));
+    } else {
+        centered_lines(f, inner, lines);
     }
-    false
+    true
 }
 
 /// The thumbnail grid: one tile per wallpaper on screen, the selection's
@@ -189,7 +294,7 @@ fn grid(m: &Model, f: &mut Frame) {
     let block = library_block(m);
     let inner = block.inner(areas.pane);
     f.render_widget(block, areas.pane);
-    if no_wallpapers(m, f, inner) {
+    if no_wallpapers(m, f, inner, false) {
         return;
     }
     let first = m.grid.offset_row * areas.cols;
@@ -228,7 +333,8 @@ fn list(m: &Model, f: &mut Frame, area: Rect) {
     let block = library_block(m);
     let inner = block.inner(area);
     f.render_widget(block, area);
-    if no_wallpapers(m, f, inner) {
+    let beside_preview = !m.areas().preview.is_empty();
+    if no_wallpapers(m, f, inner, beside_preview) {
         return;
     }
     let rows = usize::from(inner.height);
@@ -296,10 +402,19 @@ fn pad(area: Rect) -> Rect {
 
 fn preview(m: &Model, f: &mut Frame, areas: &Areas) {
     let t = &m.theme;
-    f.render_widget(pane(t, " Preview ".into(), false), areas.preview);
+    let narrow = areas.list.is_empty();
+    f.render_widget(pane(t, " Preview ".into(), narrow), areas.preview);
     let area = areas.image;
     match &m.preview.state {
-        PreviewState::Empty => {}
+        PreviewState::Empty => {
+            if let Some(lines) = empty_state(m) {
+                centered_lines(
+                    f,
+                    areas.preview.inner(ratatui::layout::Margin::new(2, 1)),
+                    lines,
+                );
+            }
+        }
         PreviewState::Loading { since, .. } => {
             if let Some(mark) = spinner(m, *since) {
                 centered_text(
@@ -310,18 +425,19 @@ fn preview(m: &Model, f: &mut Frame, areas: &Areas) {
             }
         }
         PreviewState::Failed { error, .. } => {
-            let [row] = Layout::vertical([Constraint::Length(3)])
-                .flex(Flex::Center)
-                .areas(area);
-            f.render_widget(
-                Paragraph::new(vec![
-                    Line::styled("✗ Cannot preview this wallpaper", t.error),
-                    Line::styled(error.as_str(), t.secondary),
-                ])
-                .alignment(Alignment::Center)
-                .wrap(Wrap { trim: true }),
-                row,
+            let moves = format!(
+                "{}/{}",
+                m.keymap.primary(Action::Down).unwrap_or_default(),
+                m.keymap.primary(Action::Up).unwrap_or_default()
             );
+            let mut lines = vec![
+                Line::styled("✗ Cannot preview this wallpaper", t.error),
+                Line::styled(error.as_str(), t.secondary),
+                Line::raw(""),
+                Line::styled("The file may be damaged or not an image.", t.secondary),
+            ];
+            lines.extend(key_hint(t, Some(moves), "pick another wallpaper"));
+            centered_lines(f, area, lines);
         }
         PreviewState::Ready { image, .. } => draw_image(m, f, area, image),
     }
@@ -403,7 +519,7 @@ fn meta_strip(m: &Model, f: &mut Frame, area: Rect, path: &Path, meta: Option<Me
 
 fn footer(m: &Model, f: &mut Frame, area: Rect) {
     let t = &m.theme;
-    for hint in keymap::footer(&m.keymap, m.mode, m.filtered(), m.grid.on, area.width) {
+    for hint in keymap::footer(&m.keymap, m.mode, m.footer_context(), area.width) {
         let cell = Rect {
             x: area.x + hint.x,
             width: hint.width.min(area.width.saturating_sub(hint.x)),
@@ -546,4 +662,184 @@ fn palette(m: &Model, f: &mut Frame) {
         };
         right_aligned(f, cell, Line::styled(format!("{} ", row.keys), keys_style));
     }
+}
+
+/// The welcome screen, in place of the list and preview: where the
+/// Library is, `~/Pictures`, or a typed folder with Tab completion.
+fn welcome(m: &Model, f: &mut Frame) {
+    let t = &m.theme;
+    let a = m.areas();
+    let body = Rect {
+        y: a.header.bottom(),
+        height: a.footer.y.saturating_sub(a.header.bottom()),
+        ..f.area()
+    };
+    let w = &m.welcome;
+    let folders: Vec<String> = m.folders.iter().map(|p| m.tilde(p)).collect();
+    let folders = match folders.as_slice() {
+        [] => "no folder yet".to_owned(),
+        _ => folders.join(", "),
+    };
+    let first_run = m.library.is_empty();
+    let mut lines = vec![
+        Line::styled(
+            if first_run {
+                "Welcome to vellum"
+            } else {
+                "Add a Library folder"
+            },
+            t.focus.add_modifier(Modifier::BOLD),
+        ),
+        Line::styled("Wallpapers, weightless.", t.secondary),
+        Line::raw(""),
+        Line::styled(format!("Vellum looks for wallpapers in {folders}."), t.text),
+        Line::styled(
+            if first_run {
+                "Nothing is there yet. Where do yours live?"
+            } else {
+                "Pick another folder to add to it."
+            },
+            t.text,
+        ),
+        Line::raw(""),
+    ];
+    let mark = |i: usize| {
+        if w.choice == i {
+            ("› ", t.selection)
+        } else {
+            ("  ", t.text)
+        }
+    };
+    let (m0, s0) = mark(0);
+    lines.push(Line::from(vec![
+        Span::styled(m0, s0),
+        Span::styled("Use ~/Pictures", s0),
+    ]));
+    let (m1, s1) = mark(1);
+    let mut typed = vec![
+        Span::styled(m1, s1),
+        Span::styled("Another folder ", s1),
+        Span::raw(" "),
+    ];
+    if w.input.is_empty() {
+        typed.push(Span::styled("▏", t.focus));
+        typed.push(Span::styled("type a path, like ~/Wallpapers", t.muted));
+    } else {
+        typed.push(Span::styled(w.input.clone(), t.text));
+        typed.push(Span::styled("▏", t.focus));
+    }
+    lines.push(Line::from(typed));
+    if !w.candidates.is_empty() {
+        lines.push(Line::styled(
+            format!("    {}", w.candidates.join("  ")),
+            t.secondary,
+        ));
+    }
+    lines.push(Line::raw(""));
+    if let Some(error) = &w.error {
+        lines.push(Line::styled(format!("✗ {error}"), t.error));
+    } else if w.saving {
+        lines.push(Line::styled("Saving…", t.muted));
+    } else {
+        lines.push(Line::styled("Your choice is saved to the Config.", t.muted));
+    }
+    let width = body.width.saturating_sub(4).min(64);
+    let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let [row] = Layout::vertical([Constraint::Length(height)])
+        .flex(Flex::Center)
+        .areas(body);
+    let [cell] = Layout::horizontal([Constraint::Length(width)])
+        .flex(Flex::Center)
+        .areas(row);
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), cell);
+}
+
+/// The Rotation panel over the body: running, scope, interval, source and
+/// order, the highlighted line's value between ‹ ›.
+fn rotation_panel(m: &Model, f: &mut Frame) {
+    let t = &m.theme;
+    let (outer, rows) = layout::panel(f.area());
+    f.render_widget(Clear, outer);
+    f.render_widget(
+        Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(t.panel.patch(t.focus))
+            .style(t.panel)
+            .title(Span::styled(
+                " Rotation ",
+                t.panel.patch(t.text).add_modifier(Modifier::BOLD),
+            )),
+        outer,
+    );
+    let schedule = update::panel_schedule(m);
+    let running = update::rotation_running(m);
+    let label_width = 12;
+    let mut lines = Vec::new();
+    for (i, field) in update::panel_fields(m).into_iter().enumerate() {
+        let (label, value) = match field {
+            Field::Running => (
+                "Rotation",
+                if running {
+                    "● running"
+                } else {
+                    "○ stopped"
+                }
+                .to_owned(),
+            ),
+            Field::Scope => (
+                "Applies to",
+                match &m.panel.monitor {
+                    None => "every monitor".to_owned(),
+                    Some(name) if update::has_override(m) => format!("{name} (Override)"),
+                    Some(name) => format!("{name} (no Override yet)"),
+                },
+            ),
+            Field::Interval => (
+                "Interval",
+                format!("every {}", format_interval(schedule.interval_ms)),
+            ),
+            Field::Source => (
+                "Source",
+                match schedule.source {
+                    RotationSource::Library => "Library".to_owned(),
+                    RotationSource::Favorites => "Favorites".to_owned(),
+                },
+            ),
+            Field::Order => (
+                "Order",
+                match schedule.order {
+                    vellum_ipc::RotationOrder::Shuffle => "shuffle".to_owned(),
+                    vellum_ipc::RotationOrder::Sequential => "sequential".to_owned(),
+                },
+            ),
+        };
+        let selected = i == m.panel.row;
+        let (mark, label_style, value_style) = if selected {
+            ("› ", t.panel.patch(t.selection), t.panel.patch(t.focus))
+        } else {
+            ("  ", t.panel.patch(t.secondary), t.panel.patch(t.text))
+        };
+        let value = if selected && field != Field::Running {
+            format!("‹ {value} ›")
+        } else {
+            value
+        };
+        lines.push(Line::from(vec![
+            Span::styled(mark, label_style),
+            Span::styled(format!("{label:<label_width$}"), label_style),
+            Span::styled(value, value_style),
+        ]));
+    }
+    lines.push(Line::raw(""));
+    let note = match &m.panel.monitor {
+        Some(_) if update::has_override(m) => key_hint(
+            t,
+            m.keymap.primary(Action::RemoveOverride),
+            "use the global Rotation here",
+        ),
+        _ => None,
+    }
+    .unwrap_or_else(|| Line::styled("Changes are saved to the Config.", t.muted));
+    lines.push(note.patch_style(t.panel));
+    f.render_widget(Paragraph::new(lines), rows);
 }

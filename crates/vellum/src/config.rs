@@ -761,5 +761,8 @@ pub fn load() -> Config {
     config
 }
 
+/// Writing the Config from the TUI, keeping the user's formatting.
+pub mod edit;
+
 #[cfg(test)]
 mod tests;

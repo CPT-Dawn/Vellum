@@ -41,4 +41,4 @@ expression: harness.screen()
 │ 001.png  ~/Pictures/Wallpapers                                                                                       │
 │ 3840×2160 · 2.4 MB · fill on DP-1                                                                                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- h/j/k/l move  g list  ⏎ apply  / search  f favorite  F favorites  a all  r random  : commands  ? help  q quit
+ h/j/k/l move  g list  ⏎ apply  / search  f favorite  a all  r random  m monitor  s rotation  : commands  ? help  q quit

@@ -2,7 +2,10 @@
 //! preview requests and hit-test clicks), so a preview is always rendered
 //! for the cells it will occupy and a click lands on what is drawn there.
 //!
-//! #13 adds the narrow (list only) and too-small layouts here.
+//! Three layouts, by terminal size:
+//! - wide (80 columns or more): the list beside the preview;
+//! - narrow: the list or the preview, full width, `p` switching;
+//! - too small (under [`MIN`]): only a message saying so.
 
 use ratatui::layout::{Constraint, Flex, Layout, Margin, Rect, Size};
 
@@ -23,15 +26,44 @@ pub struct Areas {
     pub footer: Rect,
 }
 
-pub fn areas(area: Rect) -> Areas {
+/// Below this many columns the list and the preview take turns.
+pub const NARROW: u16 = 80;
+/// The smallest terminal the TUI draws in.
+pub const MIN: Size = Size::new(40, 10);
+
+/// Whether `area` is too narrow for the list and the preview side by side.
+pub fn is_narrow(area: Rect) -> bool {
+    area.width < NARROW
+}
+
+/// Whether `area` is too small to draw anything but a message.
+pub fn too_small(area: Rect) -> bool {
+    area.width < MIN.width || area.height < MIN.height
+}
+
+/// Where everything goes in `area`. On a narrow terminal the body holds
+/// the list, or the preview if `preview_only`; the other is empty.
+pub fn areas(area: Rect, preview_only: bool) -> Areas {
     let [header, body, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Fill(1),
         Constraint::Length(1),
     ])
     .areas(area);
-    let [list, preview] =
-        Layout::horizontal([Constraint::Percentage(35), Constraint::Fill(1)]).areas(body);
+    let [list, preview] = if !is_narrow(area) {
+        Layout::horizontal([Constraint::Percentage(35), Constraint::Fill(1)]).areas(body)
+    } else if preview_only {
+        [Rect { width: 0, ..body }, body]
+    } else {
+        [
+            body,
+            Rect {
+                width: 0,
+                x: body.right(),
+                ..body
+            },
+        ]
+    };
     let inner = preview.inner(ratatui::layout::Margin::new(1, 1));
     let [image, meta] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(META_ROWS)]).areas(inner);
@@ -46,8 +78,12 @@ pub fn areas(area: Rect) -> Areas {
 }
 
 /// How many wallpapers the list shows at once in `area`.
-pub fn list_rows(area: Rect) -> u16 {
-    areas(area).list.height.saturating_sub(2)
+pub fn list_rows(area: Rect, preview_only: bool) -> u16 {
+    let list = areas(area, preview_only).list;
+    if list.width == 0 {
+        return 0;
+    }
+    list.height.saturating_sub(2)
 }
 
 /// Where the help overlay and the palette go.
@@ -63,7 +99,7 @@ pub struct Overlay {
 
 /// A box centered over the body, about two thirds of it.
 pub fn overlay(area: Rect) -> Overlay {
-    let a = areas(area);
+    let a = areas(area, false);
     let body = Rect {
         y: a.header.bottom(),
         height: a.footer.y.saturating_sub(a.header.bottom()),
@@ -89,6 +125,29 @@ pub fn overlay(area: Rect) -> Overlay {
         prompt,
         rows,
     }
+}
+
+/// Rows of the Rotation panel at most: running, scope, interval, source,
+/// order.
+pub const PANEL_ROWS: u16 = 5;
+
+/// Where the Rotation panel goes: a box centered over the body.
+/// Returns the box (border included) and the rows inside it, one per
+/// setting, then a blank line and a line for notes.
+pub fn panel(area: Rect) -> (Rect, Rect) {
+    let a = areas(area, false);
+    let body = Rect {
+        y: a.header.bottom(),
+        height: a.footer.y.saturating_sub(a.header.bottom()),
+        ..area
+    };
+    let [row] = Layout::vertical([Constraint::Length(PANEL_ROWS + 6)])
+        .flex(Flex::Center)
+        .areas(body);
+    let [outer] = Layout::horizontal([Constraint::Length(body.width.min(56))])
+        .flex(Flex::Center)
+        .areas(row);
+    (outer, outer.inner(Margin::new(2, 2)))
 }
 
 /// The first palette row shown, so `selected` stays within `height` rows.

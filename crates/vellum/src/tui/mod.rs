@@ -14,6 +14,7 @@
 //! Library, placeholder images), without a terminal.
 
 mod cache;
+mod complete;
 /// The Config's `[keymap]` section parses into this module's types.
 pub mod keymap;
 mod layout;

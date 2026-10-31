@@ -531,12 +531,13 @@ fn the_header_shows_rotation_for_the_targeted_monitor() {
         h.model.rotation,
         Rotation::On {
             interval_ms: 30 * 60_000,
-            source: RotationSource::Library
+            source: RotationSource::Library,
+            overridden: false,
         }
     );
     assert!(h.screen().contains("⟳ every 30m"));
     h.press("m");
-    assert!(h.screen().contains("⟳ every 1m30s · Favorites"));
+    assert!(h.screen().contains("⟳ every 1m30s · Favorites · Override"));
 }
 
 #[test]

@@ -8,18 +8,20 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use ratatui::layout::{Rect, Size};
-use vellum_ipc::{MonitorInfo, RotationSource, Status};
+use vellum_ipc::{MonitorInfo, RotationSettings, RotationSource, Status};
 
-use super::keymap::{Key, Keymap};
+use super::keymap::{self, Key, Keymap};
+use super::layout::{self, Areas};
 use super::search::{Index, Match};
 use super::theme::Theme;
 use crate::config::Config;
+use crate::config::edit::Edit;
 use crate::render::{Color, FitMode};
 
 /// The whole TUI state.
 #[derive(Debug)]
 pub struct Model {
-    /// Which keys mean what right now. #13 adds Rotation and Welcome.
+    /// Which keys mean what right now.
     pub mode: Mode,
     /// Every key binding, Config remaps applied.
     pub keymap: Keymap,
@@ -62,6 +64,20 @@ pub struct Model {
     pub status: Option<Status>,
     /// Rotation on the targeted Monitor, as shown in the header.
     pub rotation: Rotation,
+    /// The Rotation schedule as the Config has it (what the panel edits),
+    /// with edits not yet saved already applied.
+    pub schedules: RotationSettings,
+    /// The Rotation panel's cursor and scope.
+    pub panel: Panel,
+    /// Config edits waiting for the user to stop changing things.
+    pub config_edits: Vec<Edit>,
+    /// Bumped by every Config edit; a save of an older one does not
+    /// overwrite what the panel shows.
+    pub config_generation: u64,
+    /// The welcome screen's choice and typed folder.
+    pub welcome: Welcome,
+    /// On a narrow terminal: the preview is shown instead of the list.
+    pub preview_only: bool,
     /// The Fit mode the preview and Enter use.
     pub fit: FitMode,
     /// The letterbox color the preview and Enter use.
@@ -121,6 +137,12 @@ impl Model {
             target: 0,
             status: None,
             rotation: Rotation::Off,
+            schedules: config.rotation.clone(),
+            panel: Panel::default(),
+            config_edits: Vec::new(),
+            config_generation: 0,
+            welcome: Welcome::default(),
+            preview_only: false,
             fit: config.fit,
             letterbox: config.letterbox,
             preview: Preview::default(),
@@ -136,6 +158,28 @@ impl Model {
             theme,
             quit: false,
             dirty: true,
+        }
+    }
+
+    /// Opens the welcome screen, for a first run with no Library folder.
+    pub fn first_run(&mut self) {
+        self.mode = Mode::Welcome;
+    }
+
+    /// Where everything goes on screen now.
+    pub fn areas(&self) -> Areas {
+        layout::areas(self.area, self.preview_only)
+    }
+
+    /// What the footer depends on besides the mode.
+    pub fn footer_context(&self) -> keymap::Context {
+        keymap::Context {
+            filtered: self.filtered(),
+            grid: self.grid.on,
+            narrow: layout::is_narrow(self.area),
+            preview_only: self.preview_only,
+            daemon_down: matches!(self.daemon, Daemon::Down(_)),
+            overriding: self.panel.monitor.is_some(),
         }
     }
 
@@ -200,6 +244,47 @@ pub enum Mode {
     Help,
     /// The command palette.
     Palette,
+    /// The Rotation panel (`s`).
+    Rotation,
+    /// The welcome screen: choose a Library folder.
+    Welcome,
+}
+
+/// The Rotation panel's state.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Panel {
+    /// The highlighted setting, an index into `update::panel_fields`.
+    pub row: usize,
+    /// `None` edits the global Rotation; a name edits that Monitor's
+    /// Override.
+    pub monitor: Option<String>,
+}
+
+/// One line of the Rotation panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    /// Running or stopped.
+    Running,
+    /// Every Monitor, or one Monitor's Override.
+    Scope,
+    Interval,
+    Source,
+    Order,
+}
+
+/// The welcome screen's state.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Welcome {
+    /// 0: `~/Pictures`; 1: the typed folder.
+    pub choice: usize,
+    /// The folder typed so far.
+    pub input: String,
+    /// Folders the last Tab could complete to, when there were several.
+    pub candidates: Vec<String>,
+    /// Why the last choice was refused.
+    pub error: Option<String>,
+    /// A save is in flight.
+    pub saving: bool,
 }
 
 /// The query and cursor of the help overlay or the palette.
@@ -238,6 +323,8 @@ pub enum Rotation {
     On {
         interval_ms: u64,
         source: RotationSource,
+        /// The targeted Monitor follows its own Override.
+        overridden: bool,
     },
 }
 
@@ -253,6 +340,7 @@ impl Rotation {
         Rotation::On {
             interval_ms: schedule.interval_ms,
             source: schedule.source,
+            overridden: monitor.is_some_and(|m| rotation.overrides.iter().any(|o| o.monitor == m)),
         }
     }
 }

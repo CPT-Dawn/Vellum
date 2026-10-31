@@ -374,3 +374,82 @@ fn no_color_marks_the_selection_by_style() {
     let selected = &buffer[find(&buffer, "aurora.png")];
     assert!(selected.modifier.contains(Modifier::REVERSED));
 }
+
+#[test]
+fn rotation_panel() {
+    both_sizes("rotation_panel", |w, h| {
+        let mut harness = Harness::started(w, h);
+        harness.press("s");
+        harness.press("j");
+        harness.press("j");
+        harness
+    });
+}
+
+#[test]
+fn rotation_panel_editing_an_override() {
+    both_sizes("rotation_panel_override", |w, h| {
+        let mut harness = Harness::started(w, h);
+        harness.press("s");
+        harness.press("enter");
+        harness.press("j");
+        harness.press("l");
+        harness.press("j");
+        harness.press("j");
+        harness.press("l");
+        harness
+    });
+}
+
+#[test]
+fn welcome_screen() {
+    both_sizes("welcome", Harness::first_run);
+}
+
+#[test]
+fn welcome_screen_completing_a_typed_folder() {
+    both_sizes("welcome_completing", |w, h| {
+        let mut harness = Harness::first_run(w, h);
+        harness.typed("~/Pi");
+        harness.press("tab");
+        harness
+    });
+}
+
+#[test]
+fn no_favorites_yet() {
+    both_sizes("no_favorites", |w, h| {
+        let mut harness = Harness::started(w, h);
+        harness.press("F");
+        harness
+    });
+}
+
+#[test]
+fn narrow_layouts() {
+    for (w, h) in [(60, 24), (40, 10)] {
+        let mut harness = Harness::started(w, h);
+        insta::assert_snapshot!(format!("narrow_list_{w}x{h}"), harness.screen());
+        harness.press("p");
+        insta::assert_snapshot!(format!("narrow_preview_{w}x{h}"), harness.screen());
+    }
+}
+
+#[test]
+fn too_small() {
+    for (w, h) in [(39, 24), (80, 9)] {
+        let harness = Harness::started(w, h);
+        insta::assert_snapshot!(format!("too_small_{w}x{h}"), harness.screen());
+    }
+}
+
+#[test]
+fn the_rotation_panel_marks_the_line_being_edited() {
+    let mut h = Harness::started(120, 40);
+    h.press("s");
+    let buffer = h.buffer();
+    let line = &buffer[find(&buffer, "Rotation  ")];
+    assert_eq!(line.bg, BLUE);
+    assert!(line.modifier.contains(Modifier::BOLD));
+    assert_eq!(buffer[find(&buffer, "every 30m")].fg, TEXT);
+}

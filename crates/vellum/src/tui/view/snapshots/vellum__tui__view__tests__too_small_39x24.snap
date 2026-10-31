@@ -1,0 +1,17 @@
+---
+source: crates/vellum/src/tui/view/tests.rs
+expression: harness.screen()
+---
+
+
+
+
+
+
+
+
+
+
+
+          Terminal too small
+          39×24, needs 40×10

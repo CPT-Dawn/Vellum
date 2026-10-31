@@ -102,6 +102,20 @@ vellum set desert/dunes.jpg   # more of the path, if two folders have a dunes.jp
 Wallpapers are JPEG, PNG and WebP files, plus AVIF and JXL when Vellum is
 built with those features.
 
+If none of the Library folders exist, the TUI opens on a welcome screen
+that offers `~/Pictures` or a folder you type (Tab completes it). Your
+choice is added to `library` in the Config. `o` in the TUI brings the
+screen back to add another folder. CLI commands print a one-line hint
+instead.
+
+## When the TUI writes the Config
+
+The welcome screen and the Rotation panel (`s`) save what you choose to
+the Config. They change only the keys involved: your comments, blank
+lines, key order and formatting stay as they are, and a symlinked Config
+is written through to its target. If the Config already has a mistake,
+the TUI says so and writes nothing.
+
 ## Fit mode and letterbox
 
 ### `fit`
@@ -429,16 +443,38 @@ Browsing the list:
 | `search` | `/` | Fuzzy search the Library |
 | `help` | `?` | Show every key |
 | `palette` | `:` `ctrl-p` | Run any Action by name |
+| `rotation` | `s` | Open the Rotation panel |
+| `library` | `o` | Choose a Library folder (the welcome screen) |
+| `preview` | `p` | Below 80 columns: show the preview instead of the list, or back |
+| `reconnect` | `R` | Reconnect to vellumd, starting it if needed |
 | `back` | `esc` | Clear the search and filter, or quit |
 | `quit` | `q` | Quit |
 
-In search, help and the palette (other keys type into the prompt):
+In search, help, the palette and the welcome screen (other keys type into
+the prompt):
 
 | Action | Default | Does |
 |---|---|---|
 | `next`, `prev` | `down` `ctrl-n`, `up` `ctrl-p` | Next or previous row |
-| `confirm` | `enter` | Keep the search, run the command, close help |
-| `cancel` | `esc` | Clear and close |
+| `confirm` | `enter` | Keep the search, run the command, close help, choose the folder |
+| `cancel` | `esc` | Clear and close (on the welcome screen: not now) |
+| `complete` | `tab` | Complete a folder name on the welcome screen |
+
+In the Rotation panel. It starts and stops Rotation and edits the
+interval, source and order, of every monitor or, under "Applies to", of
+one monitor's Override. Edits are saved to the Config about 300 ms after
+the last key and take effect at once:
+
+| Action | Default | Does |
+|---|---|---|
+| `panel_down`, `panel_up` | `j` `down` `tab`, `k` `up` `shift-tab` | Next or previous setting |
+| `decrease`, `increase` | `h` `left` `-`, `l` `right` `+` | Previous or next value |
+| `toggle` | `space` `enter` | Start or stop Rotation, or the next value |
+| `remove_override` | `x` `delete` | Drop the monitor's Override |
+| `close` | `esc` `s` `q` | Close the panel |
+
+Below 80 columns the list and the preview take turns (`p`), and below
+40×10 the TUI shows "Terminal too small" until it is resized.
 
 `ctrl-c` always quits. The mouse works too: click to select a wallpaper, a
 monitor in the header or a footer hint; double-click to apply; scroll with

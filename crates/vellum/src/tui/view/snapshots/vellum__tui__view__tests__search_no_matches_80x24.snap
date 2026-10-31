@@ -4,8 +4,7 @@ expression: harness.screen()
 ---
  vellum  ● DP-1 2560×1440  ○ HDMI-A-1 1920×1080                    rotation off
 ╭ Library · 0 matches ─────╮╭ Preview ─────────────────────────────────────────╮
-│ No matches for “xyz”     ││                                                  │
-│ esc to show everything   ││                                                  │
+│ None                     ││                                                  │
 │                          ││                                                  │
 │                          ││                                                  │
 │                          ││                                                  │
@@ -14,7 +13,8 @@ expression: harness.screen()
 │                          ││                                                  │
 │                          ││                                                  │
 │                          ││                                                  │
-│                          ││                                                  │
+│                          ││               No matches for “xyz”               │
+│                          ││               esc clear the search               │
 │                          ││                                                  │
 │                          ││                                                  │
 │                          ││                                                  │

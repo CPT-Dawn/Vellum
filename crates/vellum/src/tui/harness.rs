@@ -20,6 +20,8 @@ use ratatui::crossterm::event::{
 use ratatui::layout::Rect;
 use vellum_ipc::{MonitorInfo, MonitorStatus, Settings, Status};
 
+use crate::config::edit::{self, Edit, Value};
+
 use super::model::{Meta, Model, PreviewImage};
 use ratatui::layout::Size;
 
@@ -65,6 +67,19 @@ pub struct Fake {
     pub favorite_error: Option<String>,
     /// Every preview job that was rendered, not dropped as stale.
     pub rendered: Mutex<Vec<PreviewJob>>,
+    /// The Config file's text; Config edits really apply to it.
+    pub config_text: Mutex<String>,
+    /// Every batch of Config edits saved.
+    pub config_saves: Mutex<Vec<Vec<Edit>>>,
+    /// If set, every Config write fails with this.
+    pub config_error: Option<String>,
+    /// The Daemon's Rotation: running, and the settings it holds.
+    pub rotation_running: Mutex<bool>,
+    pub settings: Mutex<Settings>,
+    /// Folders Tab completion knows about, as typed (`~/Pictures/`).
+    pub folders: Vec<String>,
+    /// Folders the welcome screen may not choose (they do not exist).
+    pub missing: Vec<PathBuf>,
 }
 
 impl Default for Fake {
@@ -86,11 +101,35 @@ impl Default for Fake {
             favorites: Mutex::new(Vec::new()),
             favorite_error: None,
             rendered: Mutex::new(Vec::new()),
+            config_text: Mutex::new(String::new()),
+            config_saves: Mutex::new(Vec::new()),
+            config_error: None,
+            rotation_running: Mutex::new(false),
+            settings: Mutex::new(Settings::default()),
+            folders: vec![
+                "~/Pictures/".into(),
+                "~/Pictures-old/".into(),
+                "~/Wallpapers/".into(),
+            ],
+            missing: Vec::new(),
         }
     }
 }
 
 impl Fake {
+    /// The Daemon's Status now.
+    fn status(&self) -> Result<Status, String> {
+        let mut status = self.daemon.clone()?.status;
+        status.rotation_running = *self.rotation_running.lock().unwrap();
+        status.settings = self.settings.lock().unwrap().clone();
+        Ok(status)
+    }
+
+    /// The Config the fake file holds.
+    pub fn config(&self) -> crate::config::Config {
+        config(&self.config_text.lock().unwrap())
+    }
+
     /// The [`Msg::PreviewDone`] a worker that took preview `generation`
     /// would send for `path` if it never checked the generation.
     pub fn preview_done(&self, generation: u64, path: PathBuf) -> Msg {
@@ -195,6 +234,48 @@ impl Services for Fake {
         }
         Ok(())
     }
+
+    fn save_config(&self, edits: &[Edit]) -> Result<crate::config::Config, String> {
+        if let Some(err) = &self.config_error {
+            return Err(err.clone());
+        }
+        self.config_saves.lock().unwrap().push(edits.to_vec());
+        let mut text = self.config_text.lock().unwrap();
+        *text = edit::apply(&text, edits)?;
+        Ok(config(&text))
+    }
+
+    fn push_settings(&self, settings: &Settings) -> Result<Status, String> {
+        *self.settings.lock().unwrap() = settings.clone();
+        self.status()
+    }
+
+    fn rotation(&self, start: bool) -> Result<Status, String> {
+        self.daemon.clone()?;
+        *self.rotation_running.lock().unwrap() = start;
+        self.status()
+    }
+
+    fn complete(&self, input: &str) -> Vec<String> {
+        let input = if input.is_empty() { "~/" } else { input };
+        self.folders
+            .iter()
+            .filter(|f| f.starts_with(input))
+            .cloned()
+            .collect()
+    }
+
+    fn save_library(&self, folder: &Path) -> Result<crate::config::Config, String> {
+        let shown = edit::tilde(folder, Some(Path::new(HOME)));
+        if self.missing.iter().any(|m| m == folder) {
+            return Err(format!("{shown} is not a folder"));
+        }
+        self.save_config(&[Edit::Set {
+            table: Vec::new(),
+            key: "library".into(),
+            value: Value::List(vec![shown]),
+        }])
+    }
 }
 
 pub struct Harness {
@@ -229,6 +310,19 @@ impl Harness {
             fake,
             latest: Latest::default(),
         }
+    }
+
+    /// Opened on a first run (no Library folder): the welcome screen.
+    pub fn first_run(width: u16, height: u16) -> Harness {
+        let fake = Fake {
+            library: Vec::new(),
+            ..Fake::default()
+        };
+        let mut h = Harness::with(width, height, fake);
+        h.model.first_run();
+        let cmds = h.start();
+        h.run(cmds);
+        h
     }
 
     /// Started with a Config parsed from `toml`.
@@ -387,6 +481,9 @@ pub fn key(name: &str) -> KeyEvent {
         "esc" => KeyCode::Esc,
         "up" => KeyCode::Up,
         "down" => KeyCode::Down,
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
+        "delete" => KeyCode::Delete,
         "home" => KeyCode::Home,
         "end" => KeyCode::End,
         "pagedown" => KeyCode::PageDown,

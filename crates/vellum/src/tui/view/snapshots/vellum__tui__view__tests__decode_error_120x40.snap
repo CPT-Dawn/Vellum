@@ -19,11 +19,11 @@ expression: harness.screen()
 │                                        ││                                                                            │
 │                                        ││                                                                            │
 │                                        ││                                                                            │
-│                                        ││                                                                            │
 │                                        ││                       ✗ Cannot preview this wallpaper                      │
 │                                        ││                    cannot decode: invalid PNG signature                    │
 │                                        ││                                                                            │
-│                                        ││                                                                            │
+│                                        ││                  The file may be damaged or not an image.                  │
+│                                        ││                         j/k pick another wallpaper                         │
 │                                        ││                                                                            │
 │                                        ││                                                                            │
 │                                        ││                                                                            │
@@ -41,4 +41,4 @@ expression: harness.screen()
 │                                        ││ aurora.png  ~/Pictures/Wallpapers                                          │
 │                                        ││ fill on DP-1                                                               │
 ╰────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────────────╯
- j/k move  g grid  ⏎ apply  / search  f favorite  F favorites  a all  r random  m monitor  : commands  ? help  q quit
+ j/k move  g grid  ⏎ apply  / search  f favorite  F favorites  a all  r random  s rotation  : commands  ? help  q quit

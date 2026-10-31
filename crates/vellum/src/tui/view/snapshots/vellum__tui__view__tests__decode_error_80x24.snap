@@ -11,11 +11,11 @@ expression: harness.screen()
 │                          ││                                                  │
 │                          ││                                                  │
 │                          ││                                                  │
-│                          ││                                                  │
 │                          ││          ✗ Cannot preview this wallpaper         │
 │                          ││       cannot decode: invalid PNG signature       │
 │                          ││                                                  │
-│                          ││                                                  │
+│                          ││     The file may be damaged or not an image.     │
+│                          ││            j/k pick another wallpaper            │
 │                          ││                                                  │
 │                          ││                                                  │
 │                          ││                                                  │

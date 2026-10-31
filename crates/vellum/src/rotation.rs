@@ -196,6 +196,9 @@ impl Picker<'_> {
         }
         Err(match source {
             RotationSource::Library => {
+                if let Some(hint) = crate::library::missing_hint(&config.library) {
+                    return Err(hint);
+                }
                 let folders: Vec<String> = config
                     .library
                     .iter()

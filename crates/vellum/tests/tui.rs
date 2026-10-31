@@ -126,6 +126,69 @@ fn enter_puts_the_selected_wallpaper_on_the_monitor_and_q_quits() {
     assert!(exit.success(), "{exit:?}");
 }
 
+/// Polls `what` for up to 5 s.
+fn eventually(what: &str, mut ok: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !ok() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_first_run_saves_the_library_and_the_rotation_panel_drives_the_daemon() {
+    let mut sway = Sway::start(&[Monitor {
+        width: 320,
+        height: 240,
+    }]);
+    sway.start_daemon();
+    // No Config and no ~/Pictures/Wallpapers, but a ~/Pictures.
+    let pictures = sway.dir().join("Pictures");
+    std::fs::create_dir_all(&pictures).unwrap();
+    RgbImage::from_pixel(32, 24, Rgb(RED))
+        .save(pictures.join("red.png"))
+        .unwrap();
+    let config = sway.config_path();
+
+    let (mut tui, keys) = open_tui(&sway);
+    // The welcome screen offers ~/Pictures first; Enter takes it. Keys
+    // typed during the graphics probe can be lost, so press until saved.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !config.exists() {
+        press(&keys, b"\r");
+        assert!(Instant::now() < deadline, "the welcome screen never saved");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let text = std::fs::read_to_string(&config).unwrap();
+    assert_eq!(text, "library = [\"~/Pictures\"]\n");
+
+    // s opens the Rotation panel; Enter on its first line starts Rotation.
+    press(&keys, b"s");
+    std::thread::sleep(Duration::from_millis(100));
+    press(&keys, b"\r");
+    eventually("Rotation to start", || {
+        sway.vellum_stdout(["status"]).contains("running")
+    });
+    // Down to the interval (past the scope line), one step up: 1h, saved
+    // to the Config and held by the Daemon.
+    press(&keys, b"jjl");
+    eventually("the interval in the Config", || {
+        std::fs::read_to_string(&config).is_ok_and(|t| t.contains("interval = \"1h\""))
+    });
+    eventually("the Daemon to hold the interval", || {
+        sway.vellum_stdout(["status"]).contains("every 1h")
+    });
+    let text = std::fs::read_to_string(&config).unwrap();
+    assert!(text.starts_with("library = [\"~/Pictures\"]\n"), "{text}");
+
+    // q closes the panel, then quits.
+    press(&keys, b"q");
+    std::thread::sleep(Duration::from_millis(100));
+    press(&keys, b"q");
+    let exit = wait_exit(&mut tui).expect("q did not quit the TUI");
+    assert!(exit.success(), "{exit:?}");
+}
+
 #[test]
 fn without_a_terminal_vellum_says_so() {
     let sway = Sway::start(&[Monitor {

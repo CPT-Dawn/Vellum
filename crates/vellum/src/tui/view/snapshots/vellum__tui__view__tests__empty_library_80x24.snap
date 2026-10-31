@@ -4,8 +4,7 @@ expression: harness.screen()
 ---
  vellum  ● DP-1 2560×1440  ○ HDMI-A-1 1920×1080                    rotation off
 ╭ Library · 0 ─────────────╮╭ Preview ─────────────────────────────────────────╮
-│ No wallpapers found in   ││                                                  │
-│ ~/Pictures/Wallpapers    ││                                                  │
+│ Empty                    ││                                                  │
 │                          ││                                                  │
 │                          ││                                                  │
 │                          ││                                                  │
@@ -13,9 +12,10 @@ expression: harness.screen()
 │                          ││                                                  │
 │                          ││                                                  │
 │                          ││                                                  │
-│                          ││                                                  │
-│                          ││                                                  │
-│                          ││                                                  │
+│                          ││                 No wallpapers yet                │
+│                          ││     Nothing to show in ~/Pictures/Wallpapers.    │
+│                          ││        Add JPEG, PNG or WebP images there.       │
+│                          ││              o choose another folder             │
 │                          ││                                                  │
 │                          ││                                                  │
 │                          ││                                                  │
