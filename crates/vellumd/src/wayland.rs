@@ -109,6 +109,10 @@ struct Monitor {
     has_frame: bool,
     /// Logical size from the last layer-surface configure.
     size: Option<(u32, u32)>,
+    /// Physical size of the frame last presented.
+    frame_size: Option<(u32, u32)>,
+    /// Physical size a frame was last asked for by [`Wayland::take_frame_needs`].
+    frame_asked: Option<(u32, u32)>,
     animation: Option<transition::Animation>,
 }
 
@@ -300,6 +304,35 @@ impl Wayland {
         monitors
     }
 
+    /// Names the settled Monitors whose frame is missing or the wrong size
+    /// for them now. Each Monitor is named once per physical size.
+    pub fn take_frame_needs(&mut self) -> Vec<String> {
+        let mut needs = Vec::new();
+        for m in &mut self.state.monitors {
+            if !m.is_settled() {
+                continue;
+            }
+            let Some(size) = m.physical_size() else {
+                continue;
+            };
+            if m.frame_size != Some(size) && m.frame_asked != Some(size) {
+                m.frame_asked = Some(size);
+                needs.push(m.name.clone());
+            }
+        }
+        needs
+    }
+
+    /// Whether `frame` fits its Monitor now, and the Monitor lacks a frame
+    /// of that size.
+    pub fn wants_frame(&self, frame: &Present) -> bool {
+        self.state.monitors.iter().any(|m| {
+            m.name == frame.monitor
+                && m.physical_size() == Some((frame.width, frame.height))
+                && m.frame_size != m.physical_size()
+        })
+    }
+
     /// Shows `frame` on its Monitor through its Transition. The memfd is
     /// consumed: it is closed as soon as the compositor has it.
     pub fn present(&mut self, frame: &Present, memfd: OwnedFd) -> Result<(), String> {
@@ -372,6 +405,8 @@ impl Wayland {
         // waybackend sends fds on flush, so the memfd must outlive it.
         s.backend.flush().map_err(io)?;
         drop(memfd);
+        // On screen now, or once the Transition lands.
+        s.monitors[index].frame_size = Some((width, height));
         Ok(())
     }
 }
@@ -554,6 +589,8 @@ impl wl_registry::EvHandler for State {
                     fractional_scale: None,
                     has_frame: false,
                     size: None,
+                    frame_size: None,
+                    frame_asked: None,
                     animation: None,
                 });
             }

@@ -5,8 +5,9 @@ use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 
 use vellum_ipc::{
-    Direction, Easing, Error, HEADER_LEN, MonitorInfo, PROTOCOL_VERSION, PixelFormat, Present,
-    Request, Response, Transition, TransitionKind, recv, send,
+    Direction, Easing, Error, FitMode, HEADER_LEN, MonitorInfo, MonitorStatus, PROTOCOL_VERSION,
+    PixelFormat, Present, Request, Response, Status, Transition, TransitionKind, Wallpaper, recv,
+    send,
 };
 
 fn present() -> Present {
@@ -18,6 +19,8 @@ fn present() -> Present {
         format: PixelFormat::Xrgb8888,
         source: "/home/me/Pictures/Wallpapers/dunes.jpg".into(),
         transition: Transition::default(),
+        fit: FitMode::Center,
+        restore: true,
     }
 }
 
@@ -50,7 +53,12 @@ fn easing_curves_start_at_zero_end_at_one_and_bend_as_named() {
 
 #[test]
 fn requests_survive_a_round_trip() {
-    let mut requests = vec![Request::Monitors, Request::Present(present())];
+    let mut requests = vec![
+        Request::Monitors,
+        Request::Present(present()),
+        Request::Status,
+        Request::Kill,
+    ];
     for kind in [
         TransitionKind::None,
         TransitionKind::Fade,
@@ -103,6 +111,24 @@ fn responses_survive_a_round_trip() {
         Response::Ok,
         Response::Error("monitor DP-9 is not connected".into()),
         Response::Monitors(monitors),
+        Response::Status(Status {
+            version: "2.0.0".into(),
+            pid: 4242,
+            rss_bytes: 3 << 20,
+            monitors: vec![
+                MonitorStatus {
+                    name: "DP-1".into(),
+                    wallpaper: Some(Wallpaper {
+                        path: "/w/dunes.jpg".into(),
+                        fit: FitMode::Fit,
+                    }),
+                },
+                MonitorStatus {
+                    name: "eDP-1".into(),
+                    wallpaper: None,
+                },
+            ],
+        }),
     ] {
         let frame = response.encode();
         assert_eq!(Response::decode(&frame).unwrap(), response);
@@ -186,4 +212,18 @@ fn tempfile_with(bytes: &[u8]) -> std::fs::File {
     let mut file = std::fs::File::from(fd);
     file.write_all(bytes).unwrap();
     file
+}
+
+#[test]
+fn fit_modes_have_stable_names() {
+    for fit in [
+        FitMode::Fill,
+        FitMode::Fit,
+        FitMode::Center,
+        FitMode::Stretch,
+    ] {
+        assert_eq!(FitMode::from_name(fit.name()), Some(fit));
+    }
+    assert_eq!(FitMode::Stretch.name(), "stretch");
+    assert_eq!(FitMode::from_name("tile"), None);
 }

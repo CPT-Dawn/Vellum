@@ -172,7 +172,7 @@ impl Sway {
             .expect("failed to spawn vellumd");
         let pid = child.id();
         self.daemon = Some(child);
-        let socket = vellum_ipc::socket_path(self.dir.path(), &self.display);
+        let socket = self.socket();
         let deadline = Instant::now() + TIMEOUT;
         while std::os::unix::net::UnixStream::connect(&socket).is_err() {
             if let Some(Ok(Some(status))) = self.daemon.as_mut().map(|d| d.try_wait()) {
@@ -189,6 +189,44 @@ impl Sway {
         self.daemon
             .as_mut()
             .is_some_and(|d| matches!(d.try_wait(), Ok(None)))
+    }
+
+    /// Waits for the Daemon started by [`Sway::start_daemon`] to exit and
+    /// returns its status, or `None` if it is still running after a few
+    /// seconds.
+    pub fn wait_daemon_exit(&mut self) -> Option<std::process::ExitStatus> {
+        let daemon = self.daemon.as_mut().expect("no Daemon was started");
+        let deadline = Instant::now() + TIMEOUT;
+        while Instant::now() < deadline {
+            if let Ok(Some(status)) = daemon.try_wait() {
+                return Some(status);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        None
+    }
+
+    /// The Daemon's socket for this display.
+    pub fn socket(&self) -> PathBuf {
+        vellum_ipc::socket_path(self.dir.path(), &self.display)
+    }
+
+    /// Whether any Daemon answers on this display's socket.
+    pub fn daemon_answers(&self) -> bool {
+        std::os::unix::net::UnixStream::connect(self.socket()).is_ok()
+    }
+
+    /// Runs another `vellumd` in the foreground and returns its output.
+    pub fn vellumd(&self) -> Output {
+        self.command(vellumd_bin())
+            .output()
+            .expect("failed to run vellumd")
+    }
+
+    /// Kills the compositor, as a crashed or logged-out session would.
+    pub fn kill_compositor(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 
     /// The Daemon's resident set size in KiB, from `/proc`.
@@ -222,6 +260,7 @@ impl Sway {
     {
         self.command(env!("CARGO_BIN_EXE_vellum"))
             .args(args)
+            .stdin(Stdio::null())
             .output()
             .expect("failed to run vellum")
     }

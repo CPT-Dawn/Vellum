@@ -5,7 +5,9 @@ mod decode;
 mod frame;
 mod monitors;
 mod render;
+mod restore;
 mod set;
+mod status;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -43,6 +45,20 @@ enum Command {
     },
     /// List connected monitors with their size and scale.
     Monitors,
+    /// Show the Daemon, its memory use, and each monitor's wallpaper.
+    Status,
+    /// Stop the Daemon.
+    Kill,
+    /// Render a frame for the Daemon. Run by vellumd, not by hand.
+    #[command(hide = true)]
+    Render {
+        /// Put the wallpaper State remembers back on the monitor.
+        #[arg(long, required = true)]
+        restore: bool,
+        /// The monitor to render for.
+        #[arg(short, long, value_name = "NAME")]
+        monitor: String,
+    },
 }
 
 /// Per-command Transition overrides.
@@ -112,6 +128,12 @@ fn main() -> ExitCode {
             transition,
         } => set::run(&file, monitor.as_deref(), fit, transition.resolve()),
         Command::Monitors => monitors::run(),
+        Command::Status => status::run(),
+        Command::Kill => client::kill(),
+        Command::Render {
+            restore: _,
+            monitor,
+        } => restore::run(&monitor),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

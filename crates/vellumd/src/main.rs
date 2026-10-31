@@ -3,6 +3,8 @@
 
 mod daemon;
 mod ipc;
+mod state;
+mod system;
 mod wayland;
 
 #[allow(warnings, clippy::all, clippy::pedantic)]
@@ -46,16 +48,12 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let socket = vellum_ipc::socket_path_from_env().map_err(|err| err.to_string())?;
-    // Refuse early if another Daemon owns this display.
-    if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
-        return Err(format!(
-            "another vellumd is already running on this display ({})",
-            socket.display()
-        ));
-    }
+    // One Daemon per display. Held until the process exits.
+    let _lock = system::lock_display(&socket)?;
     let wayland = wayland::Wayland::connect()?;
     // Bind only once every Monitor is configured: a socket that answers
     // means the Daemon is ready to present.
     let listener = ipc::Listener::bind(&socket)?;
-    daemon::Daemon::new(wayland, listener).run()
+    system::notify_ready();
+    daemon::Daemon::new(wayland, listener, state::State::load()).run()
 }

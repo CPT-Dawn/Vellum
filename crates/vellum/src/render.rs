@@ -24,6 +24,28 @@ pub enum FitMode {
     Stretch,
 }
 
+impl From<FitMode> for vellum_ipc::FitMode {
+    fn from(fit: FitMode) -> Self {
+        match fit {
+            FitMode::Fill => vellum_ipc::FitMode::Fill,
+            FitMode::Fit => vellum_ipc::FitMode::Fit,
+            FitMode::Center => vellum_ipc::FitMode::Center,
+            FitMode::Stretch => vellum_ipc::FitMode::Stretch,
+        }
+    }
+}
+
+impl From<vellum_ipc::FitMode> for FitMode {
+    fn from(fit: vellum_ipc::FitMode) -> Self {
+        match fit {
+            vellum_ipc::FitMode::Fill => FitMode::Fill,
+            vellum_ipc::FitMode::Fit => FitMode::Fit,
+            vellum_ipc::FitMode::Center => FitMode::Center,
+            vellum_ipc::FitMode::Stretch => FitMode::Stretch,
+        }
+    }
+}
+
 /// An opaque sRGB color, `[r, g, b]`.
 pub type Color = [u8; 3];
 
