@@ -17,6 +17,13 @@ rustix = { workspace = true, features = ["net", "fs", "mm"] }
 clap = { version = "4.6.7", features = ["derive"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 fast_image_resize = "6.1.0"
+jxl-oxide = { version = "0.12.6", default-features = false, features = ["image"], optional = true }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+[features]
+# JPEG, PNG and WebP are always built in. AVIF and JXL are opt-in (ADR 0002).
+# AVIF decodes through the system dav1d library.
+avif = ["image/avif-native"]
+jxl = ["dep:jxl-oxide"]

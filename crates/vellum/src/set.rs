@@ -6,16 +6,10 @@ use std::path::Path;
 use vellum_ipc::{PixelFormat, Present, Request, Response};
 
 use crate::frame::Frame;
-use crate::render::render_fill;
+use crate::render::{DEFAULT_LETTERBOX, FitMode, Target, render};
 
-pub fn run(file: &Path) -> Result<(), String> {
-    let image = image::ImageReader::open(file)
-        .map_err(|err| format!("cannot open {}: {err}", file.display()))?
-        .with_guessed_format()
-        .map_err(|err| format!("cannot read {}: {err}", file.display()))?
-        .decode()
-        .map_err(|err| format!("cannot decode {}: {err}", file.display()))?
-        .into_rgba8();
+pub fn run(file: &Path, fit: FitMode) -> Result<(), String> {
+    let image = crate::decode::load(file)?;
 
     let socket = vellum_ipc::socket_path_from_env().map_err(|err| err.to_string())?;
     let monitors = match ask(&socket, &Request::Monitors, &[])? {
@@ -31,7 +25,8 @@ pub fn run(file: &Path) -> Result<(), String> {
         let (width, height) = (monitor.physical_width, monitor.physical_height);
         let mut frame = Frame::new(width, height)
             .map_err(|err| format!("cannot allocate a frame for {}: {err}", monitor.name))?;
-        render_fill(&image, width, height, frame.pixels_mut());
+        let target = Target::from_scale_120(width, height, monitor.scale_120);
+        render(&image, target, fit, DEFAULT_LETTERBOX, frame.pixels_mut());
         let stride = frame.stride;
         let memfd = frame
             .finish()
