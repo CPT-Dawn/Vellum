@@ -16,6 +16,7 @@ Every key, set to its default value:
 library = ["~/Pictures/Wallpapers"]
 fit = "fill"
 letterbox = "#000000"
+# on_change = "matugen image {path}"  # no hook by default
 
 [transition]
 type = "fade"
@@ -24,8 +25,8 @@ duration = 600
 easing = "ease-out"
 ```
 
-TOML needs top-level keys (`library`, `fit`, `letterbox`) to come before
-the first `[section]`.
+TOML needs top-level keys (`library`, `fit`, `letterbox`, `on_change`) to
+come before the first `[section]`.
 
 ## Changes apply live
 
@@ -152,3 +153,81 @@ How long the Transition takes, in whole milliseconds. The default is `600`.
 
 The timing curve: `"linear"`, `"ease-in"`, `"ease-out"` (the default) or
 `"ease-in-out"`.
+
+## Change hook
+
+### `on_change`
+
+A command Vellum runs after every new wallpaper it puts on a monitor:
+`vellum set`, `next`, `prev` and `random`, and each Rotation tick. Use it to
+regenerate your color scheme so it follows your wallpaper.
+
+- Type: a command line, as a string
+- Default: none
+
+In the command, `{path}` is replaced by the wallpaper's absolute path and
+`{monitor}` by the monitor's connector name (see `vellum monitors`). The
+hook runs once per monitor, so `vellum set` on two monitors runs it twice,
+one after the other.
+
+```toml
+# matugen: Material You colors for GTK, Qt and anything with a template
+on_change = "matugen image {path}"
+
+# pywal: -n leaves the wallpaper to Vellum
+on_change = "wal -n -i {path}"
+
+# wallust
+on_change = "wallust run {path}"
+```
+
+#### File names are safe
+
+Vellum splits the command into words the way a shell would, honoring
+quotes and backslashes, and then runs it directly, without a shell. `{path}`
+always stays inside the word you wrote it in, so a wallpaper named
+`$(rm -rf ~).png` or `it's here.jpg` reaches your tool as one plain
+argument. Quoting the placeholder (`"{path}"`) is allowed and changes
+nothing. A word starting with `~/` is expanded to your home folder.
+
+Because there is no shell, pipes, `&&` and `$VARIABLES` don't work in the
+command itself. To run several commands, point `on_change` at a script:
+
+```toml
+on_change = "~/.config/vellum/on-change.sh {path} {monitor}"
+```
+
+```sh
+#!/bin/sh
+matugen image "$1"
+pkill -USR2 waybar
+```
+
+The hook also gets the values as environment variables, `VELLUM_PATH` and
+`VELLUM_MONITOR`, so an inline shell works too. The single quotes keep the
+script one word for `sh -c`:
+
+```toml
+on_change = "sh -c 'wallust run \"$VELLUM_PATH\" && pkill -USR2 waybar'"
+```
+
+Never write `{path}` inside an `sh -c` script: there it would be pasted into
+shell code. Use `"$VELLUM_PATH"` instead.
+
+#### When it runs, and when it fails
+
+The hook runs after the Daemon has accepted the new wallpaper, so it never
+delays or blocks the change. It is run by `vellum`, never by the Daemon.
+`vellum set` waits for the hook to finish before it exits.
+
+It does not run when Vellum only brings back a wallpaper you already had:
+restoring wallpapers at login, after a monitor is plugged in or after a
+scale change, or repainting the bars after a `letterbox` change.
+
+If the hook cannot start or exits with a non-zero status, Vellum prints a
+warning and nothing else changes: the wallpaper stays, and `vellum set`
+still succeeds. For Rotation ticks the warning goes to the Daemon's log.
+
+```text
+vellum: the on_change hook `matugen` failed on DP-1 (exit status: 1)
+```
