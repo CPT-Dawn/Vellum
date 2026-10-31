@@ -19,12 +19,15 @@ use ratatui::layout::Rect;
 use vellum_ipc::{MonitorInfo, MonitorStatus, Settings, Status};
 
 use super::model::{Meta, Model, PreviewImage};
-use super::msg::{ApplyJob, Cmd, DaemonInfo, Msg, PreviewJob, PreviewOutput};
-use super::services::{Services, perform};
+use ratatui::layout::Size;
+
+use super::msg::{ApplyJob, Cmd, DaemonInfo, Msg, PreviewJob, PreviewOutput, Purpose, Screen};
+use super::services::{Latest, Services, perform};
 use super::theme::Theme;
 use super::{update, view};
 use crate::config::Config;
 use crate::config::Named as _;
+use crate::render::FitMode;
 
 pub const HOME: &str = "/home/me";
 
@@ -54,6 +57,8 @@ pub struct Fake {
     pub apply_error: Option<String>,
     /// Every Apply the runtime would have sent.
     pub applied: Mutex<Vec<ApplyJob>>,
+    /// Every preview job that was rendered, not dropped as stale.
+    pub rendered: Mutex<Vec<PreviewJob>>,
 }
 
 impl Default for Fake {
@@ -72,6 +77,28 @@ impl Default for Fake {
             broken: Vec::new(),
             apply_error: None,
             applied: Mutex::new(Vec::new()),
+            rendered: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl Fake {
+    /// The [`Msg::PreviewDone`] a worker that took preview `generation`
+    /// would send for `path` if it never checked the generation.
+    pub fn preview_done(&self, generation: u64, path: PathBuf) -> Msg {
+        let job = PreviewJob {
+            generation,
+            purpose: Purpose::Preview,
+            path: path.clone(),
+            cells: Size::new(40, 10),
+            monitor: Screen::FALLBACK,
+            fit: FitMode::Fill,
+            letterbox: [0; 3],
+        };
+        Msg::PreviewDone {
+            generation,
+            path,
+            result: self.preview(&job, &|| false).expect("never stale"),
         }
     }
 }
@@ -109,14 +136,22 @@ impl Services for Fake {
         self.daemon.clone()
     }
 
-    fn preview(&self, job: &PreviewJob) -> Result<PreviewOutput, String> {
+    fn preview(
+        &self,
+        job: &PreviewJob,
+        stale: &dyn Fn() -> bool,
+    ) -> Option<Result<PreviewOutput, String>> {
+        if stale() {
+            return None;
+        }
+        self.rendered.lock().unwrap().push(job.clone());
         if self.broken.contains(&job.path) {
-            return Err("cannot decode: invalid PNG signature".into());
+            return Some(Err("cannot decode: invalid PNG signature".into()));
         }
         let (w, h) = super::preview::frame_size(job.cells, FONT.into(), job.monitor);
         let size = super::preview::cells_for((w, h), FONT.into());
         let name = job.path.file_name().unwrap().to_string_lossy();
-        Ok(PreviewOutput {
+        Some(Ok(PreviewOutput {
             image: PreviewImage::Placeholder {
                 size,
                 label: format!("{name} · {}", job.fit.name()),
@@ -126,7 +161,7 @@ impl Services for Fake {
                 height: 2160,
                 bytes: 2_516_582,
             },
-        })
+        }))
     }
 
     fn apply(&self, job: &ApplyJob) -> Result<(), String> {
@@ -141,6 +176,9 @@ impl Services for Fake {
 pub struct Harness {
     pub model: Model,
     pub fake: Fake,
+    /// The generations workers see, published after every update like the
+    /// runtime does.
+    pub latest: Latest,
 }
 
 impl Harness {
@@ -159,7 +197,11 @@ impl Harness {
             Rect::new(0, 0, width, height),
             Some(home),
         );
-        Harness { model, fake }
+        Harness {
+            model,
+            fake,
+            latest: Latest::default(),
+        }
     }
 
     /// The init Cmds, not run.
@@ -181,7 +223,9 @@ impl Harness {
 
     /// Update only: the Cmds come back unrun.
     pub fn update(&mut self, msg: Msg) -> Vec<Cmd> {
-        update::update(&mut self.model, msg)
+        let cmds = update::update(&mut self.model, msg);
+        self.latest.publish(&self.model);
+        cmds
     }
 
     /// Update, then run every resulting Cmd (and theirs) against the fake.
@@ -190,12 +234,20 @@ impl Harness {
         self.run(cmds);
     }
 
+    /// Runs `cmds` (and the Cmds their Msgs cause) to completion, in
+    /// order. Debounce timers fire at once.
     pub fn run(&mut self, cmds: Vec<Cmd>) {
         let mut queue = std::collections::VecDeque::from(cmds);
         while let Some(cmd) = queue.pop_front() {
-            let msg = perform(&self.fake, cmd);
-            queue.extend(self.update(msg));
+            if let Some(msg) = self.perform(cmd) {
+                queue.extend(self.update(msg));
+            }
         }
+    }
+
+    /// What a worker would send back for `cmd`, given the generations now.
+    pub fn perform(&self, cmd: Cmd) -> Option<Msg> {
+        perform(&self.fake, cmd, &self.latest)
     }
 
     pub fn press(&mut self, keys: &str) {

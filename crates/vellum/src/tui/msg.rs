@@ -6,6 +6,7 @@
 //! as exactly one Msg (see [`super::services::perform`]).
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Size;
@@ -31,6 +32,14 @@ pub enum Msg {
         path: PathBuf,
         result: Result<PreviewOutput, String>,
     },
+    /// A thumbnail requested with grid `generation` is ready or failed.
+    ThumbDone {
+        generation: u64,
+        path: PathBuf,
+        result: Result<PreviewOutput, String>,
+    },
+    /// A [`Cmd::After`] delay passed.
+    Woke(Wake),
     /// An Apply finished.
     Applied {
         monitor: String,
@@ -46,7 +55,7 @@ pub struct DaemonInfo {
 }
 
 /// A finished preview.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PreviewOutput {
     pub image: PreviewImage,
     pub meta: Meta,
@@ -58,14 +67,46 @@ pub enum Cmd {
     ScanLibrary(Vec<PathBuf>),
     /// Ask the Daemon (starting it if needed) for Monitors and Status.
     QueryDaemon,
+    /// Render a preview, a prefetch or a thumbnail (see [`Purpose`]).
     RenderPreview(PreviewJob),
     Apply(ApplyJob),
+    /// Send back [`Msg::Woke`] once `delay` has passed. A newer `After`
+    /// with the same kind of [`Wake`] replaces a pending one, so this is a
+    /// debounce.
+    After {
+        delay: Duration,
+        wake: Wake,
+    },
+}
+
+/// What a [`Cmd::After`] wakes update up for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wake {
+    /// Render the preview of preview `generation`, if still current.
+    Preview { generation: u64 },
+    /// Render the tiles of grid `generation`, if still current.
+    Grid { generation: u64 },
+}
+
+/// Why a preview is rendered. Workers drop a job once its generation is no
+/// longer the latest of its kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Purpose {
+    /// The preview pane. Answered with [`Msg::PreviewDone`].
+    Preview,
+    /// A neighbour of the selection, rendered at low priority into the
+    /// caches. Answered with nothing.
+    Prefetch,
+    /// A grid tile. Answered with [`Msg::ThumbDone`]; its generation is the
+    /// grid's.
+    Thumb,
 }
 
 /// Draw `path` as `monitor` would show it, to fit in `cells`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreviewJob {
     pub generation: u64,
+    pub purpose: Purpose,
     pub path: PathBuf,
     /// The most cells the preview may cover.
     pub cells: Size,

@@ -41,4 +41,4 @@ expression: harness.screen()
 │                                        ││ aurora.png  ~/Pictures/Wallpapers                                          │
 │                                        ││ fill on DP-1                                                               │
 ╰────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────────────╯
- ↑↓/jk move  ⏎ apply  q quit
+ ↑↓/jk move  g grid  ⏎ apply  q quit
