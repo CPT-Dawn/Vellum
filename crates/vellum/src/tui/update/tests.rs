@@ -12,6 +12,7 @@ use super::DEBOUNCE;
 use crate::render::FitMode;
 
 mod commands;
+mod states;
 
 /// The one preview-pane job among `cmds` (prefetches may follow it).
 fn preview_job(cmds: &[Cmd]) -> &PreviewJob {

@@ -27,10 +27,15 @@ use ratatui::layout::{Margin, Position, Rect};
 
 use super::keymap::{self, Action, CHORD_TIMEOUT, Key, Lookup, Scope};
 use super::layout;
+use vellum_ipc::{RotationOrder, RotationSource, Schedule};
+
 use super::model::{
-    Busy, Daemon, Mode, Model, PreviewState, Prompt, Rotation, Tile, TileSpec, Toast, ToastKind,
+    Busy, Daemon, Field, Mode, Model, Panel, PreviewState, Prompt, Rotation, Tile, TileSpec, Toast,
+    ToastKind, Welcome,
 };
 use super::msg::{ApplyJob, Cmd, Msg, PreviewJob, Purpose, Screen, Wake};
+use crate::config::edit::Edit;
+use crate::config::{Named, format_interval};
 
 #[cfg(test)]
 mod tests;
@@ -51,6 +56,23 @@ pub const TOAST_OK: Duration = Duration::from_secs(3);
 pub const TOAST_ERROR: Duration = Duration::from_secs(6);
 /// Two clicks on one wallpaper within this are a double-click.
 pub const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+/// Config edits are written once changes pause this long, so holding a
+/// key down writes the file once.
+pub const SAVE_DELAY: Duration = Duration::from_millis(300);
+/// The Rotation intervals the panel steps through.
+pub const INTERVALS: [u64; 11] = [
+    60_000,
+    5 * 60_000,
+    10 * 60_000,
+    15 * 60_000,
+    30 * 60_000,
+    3_600_000,
+    2 * 3_600_000,
+    3 * 3_600_000,
+    6 * 3_600_000,
+    12 * 3_600_000,
+    24 * 3_600_000,
+];
 
 /// Whether to render right away or after [`DEBOUNCE`].
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -119,7 +141,15 @@ pub fn update(m: &mut Model, msg: Msg) -> Vec<Cmd> {
                     preview_jobs(m)
                 }
                 Wake::Grid { generation } if generation == m.grid.generation => tile_jobs(m),
-                Wake::Preview { .. } | Wake::Grid { .. } => Vec::new(),
+                Wake::Config { generation }
+                    if generation == m.config_generation && !m.config_edits.is_empty() =>
+                {
+                    vec![Cmd::SaveConfig {
+                        generation,
+                        edits: std::mem::take(&mut m.config_edits),
+                    }]
+                }
+                Wake::Preview { .. } | Wake::Grid { .. } | Wake::Config { .. } => Vec::new(),
             }
         }
         Msg::PreviewDone { generation, .. } if generation != m.preview.generation => {
@@ -187,6 +217,10 @@ pub fn update(m: &mut Model, msg: Msg) -> Vec<Cmd> {
             toast(m, ToastKind::Error, why);
             Vec::new()
         }
+        Msg::ConfigSaved { generation, result } => config_saved(m, generation, result),
+        Msg::RotationUpdated { toggled, result } => rotation_updated(m, toggled, result),
+        Msg::Completed { input, candidates } => completed(m, input, candidates),
+        Msg::LibrarySaved(result) => library_saved(m, result),
     }
 }
 
@@ -324,6 +358,8 @@ fn key(m: &mut Model, event: KeyEvent) -> Vec<Cmd> {
 fn edit_prompt(m: &mut Model, key: Key) -> Vec<Cmd> {
     let query = match m.mode {
         Mode::Search => &mut m.query,
+        Mode::Welcome if m.welcome.saving => return Vec::new(),
+        Mode::Welcome => &mut m.welcome.input,
         _ => &mut m.prompt.query,
     };
     let changed = match key.code {
@@ -352,6 +388,13 @@ fn edit_prompt(m: &mut Model, key: Key) -> Vec<Cmd> {
     m.dirty = true;
     match m.mode {
         Mode::Search => refilter(m, Keep::Best, When::Soon),
+        Mode::Welcome => {
+            // Typing a folder chooses it.
+            m.welcome.choice = 1;
+            m.welcome.candidates.clear();
+            m.welcome.error = None;
+            Vec::new()
+        }
         _ => {
             m.prompt.selected = 0;
             Vec::new()
@@ -361,7 +404,7 @@ fn edit_prompt(m: &mut Model, key: Key) -> Vec<Cmd> {
 
 /// Carries out `action`. Sets `m.dirty` if the screen changes.
 fn perform(m: &mut Model, action: Action) -> Vec<Cmd> {
-    let half_page = (usize::from(layout::list_rows(m.area)) / 2).max(1);
+    let half_page = (usize::from(layout::list_rows(m.area, m.preview_only)) / 2).max(1);
     // In the grid, up and down move a whole row.
     let row = if m.grid.on {
         layout::grid(m.area).cols
@@ -424,6 +467,45 @@ fn perform(m: &mut Model, action: Action) -> Vec<Cmd> {
         Action::Next => step(m, 1),
         Action::Prev => step(m, -1),
         Action::Confirm => confirm(m),
+        Action::Rotation => {
+            m.panel = Panel {
+                row: 0,
+                monitor: None,
+            };
+            enter(m, Mode::Rotation)
+        }
+        Action::Library => {
+            m.welcome = Welcome::default();
+            enter(m, Mode::Welcome)
+        }
+        Action::TogglePreview if layout::is_narrow(m.area) && !m.grid.on => {
+            m.preview_only = !m.preview_only;
+            m.dirty = true;
+            scroll_to_selection(m);
+            refresh(m, When::Now)
+        }
+        Action::TogglePreview => Vec::new(),
+        Action::Reconnect => {
+            m.daemon = Daemon::Connecting;
+            m.dirty = true;
+            vec![Cmd::QueryDaemon]
+        }
+        Action::Complete if m.mode == Mode::Welcome && !m.welcome.saving => {
+            m.welcome.choice = 1;
+            m.dirty = true;
+            vec![Cmd::Complete(m.welcome.input.clone())]
+        }
+        Action::Complete => Vec::new(),
+        Action::FieldDown => move_field(m, 1),
+        Action::FieldUp => move_field(m, -1),
+        Action::Decrease => change_field(m, -1),
+        Action::Increase | Action::Toggle => change_field(m, 1),
+        Action::RemoveOverride => remove_override(m),
+        Action::Close => {
+            m.mode = Mode::Normal;
+            m.dirty = true;
+            Vec::new()
+        }
         Action::Cancel => {
             let was = m.mode;
             m.mode = Mode::Normal;
@@ -458,6 +540,13 @@ fn step(m: &mut Model, by: isize) -> Vec<Cmd> {
             m.prompt.selected = next;
             Vec::new()
         }
+        Mode::Welcome => {
+            let next = m.welcome.choice.saturating_add_signed(by).min(1);
+            m.dirty |= next != m.welcome.choice;
+            m.welcome.choice = next;
+            Vec::new()
+        }
+        Mode::Rotation => move_field(m, by),
         Mode::Palette => {
             let rows = keymap::palette_rows(&m.keymap, &m.prompt.query).len();
             let next = m
@@ -473,6 +562,9 @@ fn step(m: &mut Model, by: isize) -> Vec<Cmd> {
 }
 
 fn confirm(m: &mut Model) -> Vec<Cmd> {
+    if m.mode == Mode::Welcome {
+        return choose_folder(m);
+    }
     let was = m.mode;
     m.mode = Mode::Normal;
     m.dirty = true;
@@ -543,7 +635,7 @@ fn select(m: &mut Model, index: usize) -> Vec<Cmd> {
 /// Moves the list offset and the grid's first row just enough to keep the
 /// selection in view. Returns whether the grid scrolled.
 fn scroll_to_selection(m: &mut Model) -> bool {
-    let rows = usize::from(layout::list_rows(m.area)).max(1);
+    let rows = usize::from(layout::list_rows(m.area, m.preview_only)).max(1);
     m.list_offset = scrolled(m.list_offset, m.selected, rows);
     let grid = layout::grid(m.area);
     let first = scrolled(m.grid.offset_row, m.selected / grid.cols, grid.rows);
@@ -710,6 +802,18 @@ fn favorite_saved(
 
 fn mouse(m: &mut Model, event: MouseEvent) -> Vec<Cmd> {
     let at = Position::new(event.column, event.row);
+    if layout::too_small(m.area) || m.mode == Mode::Welcome {
+        return Vec::new();
+    }
+    if m.mode == Mode::Rotation {
+        let outside = !layout::panel(m.area).0.contains(at);
+        return match event.kind {
+            MouseEventKind::Down(MouseButton::Left) if outside => perform(m, Action::Close),
+            MouseEventKind::ScrollDown => move_field(m, 1),
+            MouseEventKind::ScrollUp => move_field(m, -1),
+            _ => Vec::new(),
+        };
+    }
     let overlay = matches!(m.mode, Mode::Help | Mode::Palette);
     match event.kind {
         MouseEventKind::ScrollDown if overlay => step(m, 1),
@@ -753,7 +857,7 @@ fn click_main(m: &mut Model, at: Position) -> Vec<Cmd> {
         m.last_click = Some((index, m.now));
         return select(m, index);
     }
-    let areas = layout::areas(m.area);
+    let areas = m.areas();
     if areas.header.contains(at) {
         let tabs = layout::monitor_tabs(m.monitors());
         if let Some(i) = tabs.iter().position(|(x, label)| {
@@ -778,7 +882,7 @@ fn wallpaper_at(m: &Model, at: Position) -> Option<usize> {
             (image.contains(at) || name.contains(at)).then(|| m.grid.offset_row * grid.cols + i)
         })?
     } else {
-        let rows = layout::areas(m.area).list.inner(Margin::new(1, 1));
+        let rows = m.areas().list.inner(Margin::new(1, 1));
         if !rows.contains(at) {
             return None;
         }
@@ -789,11 +893,11 @@ fn wallpaper_at(m: &Model, at: Position) -> Option<usize> {
 
 /// The footer hint under `at`, if any.
 fn hint_at(m: &Model, at: Position) -> Option<Action> {
-    let footer = layout::areas(m.area).footer;
+    let footer = m.areas().footer;
     if !footer.contains(at) {
         return None;
     }
-    keymap::footer(&m.keymap, m.mode, m.filtered(), m.grid.on, footer.width)
+    keymap::footer(&m.keymap, m.mode, m.footer_context(), footer.width)
         .into_iter()
         .find(|h| (h.x..h.x + h.width).contains(&at.x))
         .map(|h| h.action)
@@ -807,7 +911,7 @@ fn request_preview(m: &mut Model, when: When) -> Vec<Cmd> {
         m.preview.state = PreviewState::Empty;
         return Vec::new();
     };
-    if layout::areas(m.area).image.is_empty() {
+    if m.areas().image.is_empty() || layout::too_small(m.area) {
         return Vec::new();
     }
     m.preview.generation += 1;
@@ -829,7 +933,7 @@ fn preview_jobs(m: &Model) -> Vec<Cmd> {
     let PreviewState::Loading { path, .. } = &m.preview.state else {
         return Vec::new();
     };
-    let cells = layout::areas(m.area).image.as_size();
+    let cells = m.areas().image.as_size();
     let monitor = m.targeted().map_or(Screen::FALLBACK, Screen::from);
     let job = |purpose, path: &PathBuf| {
         Cmd::RenderPreview(PreviewJob {
@@ -928,4 +1032,334 @@ fn tile_jobs(m: &Model) -> Vec<Cmd> {
             })
         })
         .collect()
+}
+
+/// The Rotation panel's lines. The scope line only once Monitors are
+/// known, since an Override names one.
+pub fn panel_fields(m: &Model) -> Vec<Field> {
+    let mut fields = vec![Field::Running];
+    if !m.monitors().is_empty() {
+        fields.push(Field::Scope);
+    }
+    fields.extend([Field::Interval, Field::Source, Field::Order]);
+    fields
+}
+
+/// The schedule the panel shows: the global one, or the Monitor's.
+pub fn panel_schedule(m: &Model) -> Schedule {
+    match &m.panel.monitor {
+        Some(name) => *m.schedules.schedule_for(name),
+        None => m.schedules.schedule,
+    }
+}
+
+/// Whether the panel's Monitor has an Override in the Config.
+pub fn has_override(m: &Model) -> bool {
+    m.panel
+        .monitor
+        .as_ref()
+        .is_some_and(|name| m.schedules.overrides.iter().any(|o| &o.monitor == name))
+}
+
+/// Whether the Daemon says Rotation is running.
+pub fn rotation_running(m: &Model) -> bool {
+    m.status.as_ref().is_some_and(|s| s.rotation_running)
+}
+
+fn move_field(m: &mut Model, by: isize) -> Vec<Cmd> {
+    let last = panel_fields(m).len() - 1;
+    let next = m.panel.row.saturating_add_signed(by).min(last);
+    m.dirty |= next != m.panel.row;
+    m.panel.row = next;
+    Vec::new()
+}
+
+/// The value `by` steps from `current` in `values`, wrapping around.
+fn cycle<T: Clone + PartialEq>(values: &[T], current: &T, by: isize) -> T {
+    let i = values.iter().position(|v| v == current).unwrap_or(0);
+    let n = values.len();
+    let step = by.rem_euclid(n as isize) as usize;
+    values[(i + step) % n].clone()
+}
+
+/// The next interval preset above (`by` > 0) or below `ms`, staying put
+/// at either end.
+fn step_interval(ms: u64, by: isize) -> u64 {
+    if by > 0 {
+        INTERVALS.iter().copied().find(|&i| i > ms).unwrap_or(ms)
+    } else {
+        INTERVALS
+            .iter()
+            .copied()
+            .rev()
+            .find(|&i| i < ms)
+            .unwrap_or(ms)
+    }
+}
+
+/// Changes the highlighted setting by one step.
+fn change_field(m: &mut Model, by: isize) -> Vec<Cmd> {
+    let Some(field) = panel_fields(m).get(m.panel.row).copied() else {
+        return Vec::new();
+    };
+    let schedule = panel_schedule(m);
+    match field {
+        Field::Running => {
+            m.dirty = true;
+            vec![Cmd::RotationControl(!rotation_running(m))]
+        }
+        Field::Scope => {
+            let mut scopes: Vec<Option<String>> = vec![None];
+            scopes.extend(m.monitors().iter().map(|mon| Some(mon.name.clone())));
+            m.panel.monitor = cycle(&scopes, &m.panel.monitor, by);
+            m.dirty = true;
+            Vec::new()
+        }
+        Field::Interval => {
+            let ms = step_interval(schedule.interval_ms, by);
+            if ms == schedule.interval_ms {
+                return Vec::new();
+            }
+            edit_schedule(m, "interval", format_interval(ms), |s| s.interval_ms = ms)
+        }
+        Field::Source => {
+            let all = [RotationSource::Library, RotationSource::Favorites];
+            let source = cycle(&all, &schedule.source, by);
+            edit_schedule(m, "source", source.name(), |s| s.source = source)
+        }
+        Field::Order => {
+            let all = [RotationOrder::Shuffle, RotationOrder::Sequential];
+            let order = cycle(&all, &schedule.order, by);
+            edit_schedule(m, "order", order.name(), |s| s.order = order)
+        }
+    }
+}
+
+/// Sets one Rotation key in the panel's scope: at once in what the panel
+/// shows, and in the Config once edits pause.
+fn edit_schedule(
+    m: &mut Model,
+    key: &str,
+    value: impl Into<String>,
+    change: impl Fn(&mut Schedule),
+) -> Vec<Cmd> {
+    let edit = match m.panel.monitor.clone() {
+        None => {
+            let before = m.schedules.schedule;
+            change(&mut m.schedules.schedule);
+            // Overrides that left this key out follow the global value.
+            // Until the saved Config says which did, guess: those that had
+            // the old global value.
+            for o in &mut m.schedules.overrides {
+                let mut mine = o.schedule;
+                let mut probe = before;
+                change(&mut probe);
+                if probe.interval_ms != before.interval_ms && mine.interval_ms == before.interval_ms
+                {
+                    mine.interval_ms = probe.interval_ms;
+                }
+                if probe.source != before.source && mine.source == before.source {
+                    mine.source = probe.source;
+                }
+                if probe.order != before.order && mine.order == before.order {
+                    mine.order = probe.order;
+                }
+                o.schedule = mine;
+            }
+            Edit::set(&["rotation"], key, value)
+        }
+        Some(name) => {
+            let global = m.schedules.schedule;
+            let i = match m.schedules.overrides.iter().position(|o| o.monitor == name) {
+                Some(i) => i,
+                None => {
+                    m.schedules.overrides.push(vellum_ipc::Override {
+                        monitor: name.clone(),
+                        schedule: global,
+                    });
+                    m.schedules.overrides.len() - 1
+                }
+            };
+            change(&mut m.schedules.overrides[i].schedule);
+            Edit::set(&["rotation", "monitor", &name], key, value)
+        }
+    };
+    m.dirty = true;
+    retarget_schedules(m);
+    queue_edit(m, edit)
+}
+
+/// Drops the panel's Monitor's Override, so it follows the global
+/// Rotation again.
+fn remove_override(m: &mut Model) -> Vec<Cmd> {
+    let Some(name) = m.panel.monitor.clone() else {
+        return Vec::new();
+    };
+    if !has_override(m) {
+        return Vec::new();
+    }
+    m.schedules.overrides.retain(|o| o.monitor != name);
+    m.dirty = true;
+    retarget_schedules(m);
+    queue_edit(
+        m,
+        Edit::Remove {
+            table: vec!["rotation".into(), "monitor".into(), name],
+        },
+    )
+}
+
+/// Shows an edit in the header at once: the Daemon will hold these
+/// settings as soon as they are saved and pushed.
+fn retarget_schedules(m: &mut Model) {
+    if let Some(status) = &mut m.status {
+        status.settings.rotation = m.schedules.clone();
+    }
+    retarget(m);
+}
+
+/// Adds `edit` to those waiting (replacing one with the same target) and
+/// restarts the save timer.
+fn queue_edit(m: &mut Model, edit: Edit) -> Vec<Cmd> {
+    m.config_edits.retain(|e| e.target() != edit.target());
+    m.config_edits.push(edit);
+    m.config_generation += 1;
+    vec![Cmd::After {
+        delay: SAVE_DELAY,
+        wake: Wake::Config {
+            generation: m.config_generation,
+        },
+    }]
+}
+
+fn config_saved(
+    m: &mut Model,
+    generation: u64,
+    result: Result<crate::config::Config, String>,
+) -> Vec<Cmd> {
+    match result {
+        Ok(config) => {
+            // Newer edits are waiting: what the panel shows is newer.
+            if generation == m.config_generation && m.config_edits.is_empty() {
+                m.schedules = config.rotation.clone();
+            }
+            toast(m, ToastKind::Success, "Saved to the Config".into());
+            if matches!(m.daemon, Daemon::Up { .. }) {
+                return vec![Cmd::PushSettings(config.settings())];
+            }
+            Vec::new()
+        }
+        Err(err) => {
+            toast(m, ToastKind::Error, err);
+            Vec::new()
+        }
+    }
+}
+
+fn rotation_updated(
+    m: &mut Model,
+    toggled: bool,
+    result: Result<vellum_ipc::Status, String>,
+) -> Vec<Cmd> {
+    match result {
+        Ok(status) => {
+            let running = status.rotation_running;
+            m.status = Some(status);
+            // Edits still waiting to be saved stay on screen.
+            if !m.config_edits.is_empty() {
+                retarget_schedules(m);
+            }
+            retarget(m);
+            if toggled {
+                let text = match &m.rotation {
+                    Rotation::On { interval_ms, .. } if running => {
+                        format!("Rotation started: every {}", format_interval(*interval_ms))
+                    }
+                    _ => "Rotation stopped".into(),
+                };
+                toast(m, ToastKind::Success, text);
+            }
+        }
+        Err(err) => toast(m, ToastKind::Error, err),
+    }
+    Vec::new()
+}
+
+/// Enter on the welcome screen: save the chosen folder.
+fn choose_folder(m: &mut Model) -> Vec<Cmd> {
+    if m.welcome.saving {
+        return Vec::new();
+    }
+    m.dirty = true;
+    let folder = match m.welcome.choice {
+        0 => m.home.as_ref().map(|h| h.join("Pictures")),
+        _ if m.welcome.input.trim().is_empty() => {
+            m.welcome.error = Some("Type a folder, like ~/Wallpapers".into());
+            return Vec::new();
+        }
+        _ => super::complete::expand(&m.welcome.input, m.home.as_deref()),
+    };
+    let Some(folder) = folder else {
+        m.welcome.error = Some("Type a full path, starting with ~/ or /".into());
+        return Vec::new();
+    };
+    m.welcome.error = None;
+    m.welcome.saving = true;
+    vec![Cmd::SaveLibrary(folder)]
+}
+
+fn completed(m: &mut Model, input: String, candidates: Vec<String>) -> Vec<Cmd> {
+    // Typed on since: this is about an older input.
+    if m.mode != Mode::Welcome || input != m.welcome.input {
+        m.dirty = false;
+        return Vec::new();
+    }
+    let w = &mut m.welcome;
+    match candidates.as_slice() {
+        [] => {
+            w.candidates.clear();
+            w.error = Some("No folder starts with that".into());
+        }
+        [one] => {
+            w.input = one.clone();
+            w.candidates.clear();
+            w.error = None;
+        }
+        many => {
+            let common = super::complete::common_prefix(many);
+            if common.len() > w.input.len() {
+                w.input = common;
+            }
+            w.candidates = candidates;
+            w.error = None;
+        }
+    }
+    Vec::new()
+}
+
+fn library_saved(m: &mut Model, result: Result<crate::config::Config, String>) -> Vec<Cmd> {
+    m.welcome.saving = false;
+    match result {
+        Ok(config) => {
+            m.folders = config.library.clone();
+            m.schedules = config.rotation.clone();
+            m.mode = Mode::Normal;
+            m.scanning = true;
+            m.library.clear();
+            m.visible.clear();
+            m.selected = 0;
+            m.preview.state = PreviewState::Empty;
+            let folders: Vec<String> = m.folders.iter().map(|f| m.tilde(f)).collect();
+            toast(
+                m,
+                ToastKind::Success,
+                format!("Library: {}, saved to the Config", folders.join(", ")),
+            );
+            vec![Cmd::ScanLibrary(m.folders.clone())]
+        }
+        Err(err) => {
+            m.welcome.error = Some(err);
+            Vec::new()
+        }
+    }
 }

@@ -62,6 +62,10 @@ fn run_in(terminal: &mut DefaultTerminal, config: Config, theme: Theme) -> Resul
         Rect::new(0, 0, size.width, size.height),
         home,
     );
+    // No Library folder at all: ask where wallpapers live first.
+    if !config.library.iter().any(|folder| folder.is_dir()) {
+        model.first_run();
+    }
 
     let (tx, rx) = mpsc::channel();
     let picker = picker(&model.theme);

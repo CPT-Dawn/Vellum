@@ -151,6 +151,23 @@ fn set_finds_a_wallpaper_by_name_in_the_library() {
 }
 
 #[test]
+fn without_a_library_folder_the_cli_prints_a_one_line_hint() {
+    // No Config, and the sandbox has no ~/Pictures/Wallpapers.
+    let mut sway = Sway::start(&[SMALL]);
+    sway.start_daemon();
+    for args in [&["next"][..], &["set", "dunes.jpg"]] {
+        let out = sway.vellum(args);
+        assert!(!out.status.success());
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(stderr.lines().count(), 1, "{stderr}");
+        assert!(
+            stderr.contains("~/Pictures/Wallpapers does not exist; run `vellum` to choose one"),
+            "{stderr}"
+        );
+    }
+}
+
+#[test]
 fn changing_the_letterbox_color_repaints_fit_mode_wallpapers_live() {
     let mut sway = Sway::start(&[SMALL]);
     sway.write_config("[transition]\ntype = \"none\"\n");

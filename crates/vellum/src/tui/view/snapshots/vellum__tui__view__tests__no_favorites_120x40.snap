@@ -1,0 +1,44 @@
+---
+source: crates/vellum/src/tui/view/tests.rs
+expression: harness.screen()
+---
+ vellum  ● DP-1 2560×1440  ○ HDMI-A-1 1920×1080                                                            rotation off
+╭ Favorites · 0 ─────────────────────────╮╭ Preview ───────────────────────────────────────────────────────────────────╮
+│ None                                   ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                              No Favorites yet                              │
+│                                        ││                          f on a wallpaper adds it                          │
+│                                        ││                              F show everything                             │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+╰────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────────────╯
+ j/k move  esc clear  g grid  ⏎ apply  / search  f favorite  a all  r random  s rotation  : commands  ? help  q quit

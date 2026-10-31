@@ -27,15 +27,15 @@ expression: harness.screen()
 │                       │   f             Favorite or unfavorite                               │░░░░░░░░░░░░░░░░░░░░░░░│
 │                       │   F             Show only Favorites                                  │░░░░░░░░░░░░░░░░░░░░░░░│
 │                       │   /             Search the Library                                   │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   s             Open the Rotation panel                              │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   o             Choose a Library folder                              │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   p             Show the preview or the list (narrow terminals)      │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   R             Reconnect to vellumd, starting it if needed          │░░░░░░░░░░░░░░░░░░░░░░░│
 │                       │   ?             Show every key                                       │░░░░░░░░░░░░░░░░░░░░░░░│
-│                       │   :, ctrl-p     Open the command palette                             │░░░░░░░░░░░░░░░░░░░░░░░│
-│                       │   esc           Clear the filter, or quit                            │░░░░░░░░░░░░░░░░░░░░░░░│
-│                       │   q             Quit                                                 │░░░░░░░░░░░░░░░░░░░░░░░│
-│                       │ Search, help and palette                                             │░░░░░░░░░░░░░░░░░░░░░░░│
-│                       │   ↓, ctrl-n     Next row                                             │                       │
-│                       │   ↑, ctrl-p     Previous row                                         │                       │
-│                       │   ⏎             Keep the search or run the command                   │                       │
-│                       │   esc           Clear and close                                      │                       │
+│                       │   :, ctrl-p     Open the command palette                             │                       │
+│                       │   esc           Clear the filter, or quit                            │                       │
+│                       │   q             Quit                                                 │                       │
+│                       │ Search, help, palette and welcome                                    │                       │
 │                       ╰──────────────────────────────────────────────────────────────────────╯                       │
 │                                        ││                                                                            │
 │                                        ││ aurora.png  ~/Pictures/Wallpapers                                          │

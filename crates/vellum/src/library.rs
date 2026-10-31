@@ -59,6 +59,9 @@ pub fn resolve(file: &Path, folders: &[PathBuf]) -> Result<PathBuf, String> {
     match matches.as_slice() {
         [one] => Ok(one.clone()),
         [] => {
+            if let Some(hint) = missing_hint(folders) {
+                return Err(format!("{}: no such file, and {hint}", file.display()));
+            }
             let looked: Vec<String> = folders.iter().map(|f| f.display().to_string()).collect();
             Err(format!(
                 "{}: no such file here or in the Library ({})",
@@ -74,5 +77,51 @@ pub fn resolve(file: &Path, folders: &[PathBuf]) -> Result<PathBuf, String> {
                 list.join("\n")
             ))
         }
+    }
+}
+
+/// One line telling a CLI user what to do when none of the Library
+/// folders exist, or `None` if one does. (The TUI shows its welcome
+/// screen instead.)
+pub fn missing_hint(folders: &[PathBuf]) -> Option<String> {
+    if folders.iter().any(|f| f.is_dir()) {
+        return None;
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let names: Vec<String> = folders
+        .iter()
+        .map(|f| crate::config::edit::tilde(f, home.as_deref()))
+        .collect();
+    let what = match names.as_slice() {
+        [] => "no Library folder is set".to_owned(),
+        [one] => format!("the Library folder {one} does not exist"),
+        many => format!("none of the Library folders exist ({})", many.join(", ")),
+    };
+    Some(format!(
+        "{what}; run `vellum` to choose one, or set library = [\"~/Pictures\"] in the Config"
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_library_gets_a_one_line_hint() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("Wallpapers");
+        let hint = missing_hint(std::slice::from_ref(&missing)).unwrap();
+        assert!(!hint.contains('\n'), "{hint}");
+        assert!(hint.contains("does not exist"), "{hint}");
+        assert!(hint.contains("run `vellum`"), "{hint}");
+        assert_eq!(missing_hint(&[missing, dir.path().to_owned()]), None);
+    }
+
+    #[test]
+    fn set_by_name_without_a_library_says_how_to_get_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = resolve(Path::new("dunes.jpg"), &[dir.path().join("nope")]).unwrap_err();
+        assert!(err.contains("run `vellum` to choose one"), "{err}");
+        assert!(!err.contains('\n'), "{err}");
     }
 }

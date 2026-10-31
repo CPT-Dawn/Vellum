@@ -64,6 +64,28 @@ pub enum Action {
     Confirm,
     /// In a prompt: clear and close.
     Cancel,
+    /// On the welcome screen: complete the folder name typed so far.
+    Complete,
+    /// Open the Rotation panel.
+    Rotation,
+    /// Choose a Library folder (the welcome screen).
+    Library,
+    /// On a narrow terminal: show the preview instead of the list, or back.
+    TogglePreview,
+    /// Ask the Daemon again, starting it if needed.
+    Reconnect,
+    /// In the Rotation panel: the next or previous setting.
+    FieldDown,
+    FieldUp,
+    /// In the Rotation panel: the setting's previous or next value.
+    Decrease,
+    Increase,
+    /// In the Rotation panel: start or stop Rotation, or change the value.
+    Toggle,
+    /// In the Rotation panel: drop the Monitor's Override.
+    RemoveOverride,
+    /// Close the Rotation panel.
+    Close,
 }
 
 /// Which keymap an Action lives in.
@@ -71,16 +93,19 @@ pub enum Action {
 pub enum Scope {
     /// Browsing the list.
     Browse,
-    /// Typing in search, help or the palette. Unbound printable keys are
-    /// typed into the prompt.
+    /// Typing in search, help, the palette or the welcome screen. Unbound
+    /// printable keys are typed into the prompt.
     Prompt,
+    /// The Rotation panel.
+    Panel,
 }
 
 impl Scope {
     pub fn of(mode: Mode) -> Scope {
         match mode {
             Mode::Normal => Scope::Browse,
-            Mode::Search | Mode::Help | Mode::Palette => Scope::Prompt,
+            Mode::Search | Mode::Help | Mode::Palette | Mode::Welcome => Scope::Prompt,
+            Mode::Rotation => Scope::Panel,
         }
     }
 }
@@ -111,7 +136,7 @@ const fn info(
     }
 }
 
-use Scope::{Browse, Prompt};
+use Scope::{Browse, Panel, Prompt};
 
 /// Every Action, in help and palette order.
 const ACTIONS: &[Info] = &[
@@ -215,6 +240,34 @@ const ACTIONS: &[Info] = &[
         "Search the Library",
         &["/"],
     ),
+    info(
+        Action::Rotation,
+        "rotation",
+        Browse,
+        "Open the Rotation panel",
+        &["s"],
+    ),
+    info(
+        Action::Library,
+        "library",
+        Browse,
+        "Choose a Library folder",
+        &["o"],
+    ),
+    info(
+        Action::TogglePreview,
+        "preview",
+        Browse,
+        "Show the preview or the list (narrow terminals)",
+        &["p"],
+    ),
+    info(
+        Action::Reconnect,
+        "reconnect",
+        Browse,
+        "Reconnect to vellumd, starting it if needed",
+        &["R"],
+    ),
     info(Action::Help, "help", Browse, "Show every key", &["?"]),
     info(
         Action::Palette,
@@ -258,6 +311,62 @@ const ACTIONS: &[Info] = &[
         Prompt,
         "Clear and close",
         &["esc"],
+    ),
+    info(
+        Action::Complete,
+        "complete",
+        Prompt,
+        "Complete a folder name",
+        &["tab"],
+    ),
+    info(
+        Action::FieldDown,
+        "panel_down",
+        Panel,
+        "Next setting",
+        &["j", "down", "tab"],
+    ),
+    info(
+        Action::FieldUp,
+        "panel_up",
+        Panel,
+        "Previous setting",
+        &["k", "up", "shift-tab"],
+    ),
+    info(
+        Action::Decrease,
+        "decrease",
+        Panel,
+        "Previous value",
+        &["h", "left", "-"],
+    ),
+    info(
+        Action::Increase,
+        "increase",
+        Panel,
+        "Next value",
+        &["l", "right", "+"],
+    ),
+    info(
+        Action::Toggle,
+        "toggle",
+        Panel,
+        "Start or stop Rotation, or change the setting",
+        &["space", "enter"],
+    ),
+    info(
+        Action::RemoveOverride,
+        "remove_override",
+        Panel,
+        "Use the global Rotation on this monitor",
+        &["x", "delete"],
+    ),
+    info(
+        Action::Close,
+        "close",
+        Panel,
+        "Close the panel",
+        &["esc", "s", "q"],
     ),
 ];
 
@@ -552,13 +661,27 @@ pub struct Hint {
     pub action: Action,
 }
 
+/// What the footer depends on besides the mode.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Context {
+    /// A search or the Favorites filter narrows the list.
+    pub filtered: bool,
+    /// The thumbnail grid is on.
+    pub grid: bool,
+    /// The terminal is narrow: the list and the preview take turns.
+    pub narrow: bool,
+    /// On a narrow terminal, the preview is shown instead of the list.
+    pub preview_only: bool,
+    /// The Daemon could not be reached.
+    pub daemon_down: bool,
+    /// The Rotation panel edits a Monitor's Override.
+    pub overriding: bool,
+}
+
 /// What the footer offers in a mode, as (Actions joined into one hint,
 /// label, priority). Lower priority numbers survive a narrow footer.
-fn footer_items(
-    mode: Mode,
-    filtered: bool,
-    grid: bool,
-) -> Vec<(&'static [Action], &'static str, u8)> {
+fn footer_items(mode: Mode, ctx: Context) -> Vec<(&'static [Action], &'static str, u8)> {
+    let Context { filtered, grid, .. } = ctx;
     match mode {
         Mode::Normal => {
             let (moves, other): (&'static [Action], _) = match grid {
@@ -578,15 +701,41 @@ fn footer_items(
                 (&[Action::ApplyAll], "all", 7),
                 (&[Action::Random], "random", 8),
                 (&[Action::Monitor], "monitor", 10),
+                (&[Action::Rotation], "rotation", 8),
                 (&[Action::Palette], "commands", 6),
                 (&[Action::Help], "help", 0),
                 (&[Action::Quit], "quit", 4),
             ];
+            if ctx.narrow && !grid {
+                let label = if ctx.preview_only { "list" } else { "preview" };
+                items.insert(1, (&[Action::TogglePreview], label, 1));
+            }
             if filtered {
                 items.insert(1, (&[Action::Back], "clear", 1));
             }
+            if ctx.daemon_down {
+                items.insert(0, (&[Action::Reconnect], "reconnect", 0));
+            }
             items
         }
+        Mode::Rotation => {
+            let mut items: Vec<(&'static [Action], &'static str, u8)> = vec![
+                (&[Action::FieldDown, Action::FieldUp], "move", 1),
+                (&[Action::Decrease, Action::Increase], "change", 0),
+                (&[Action::Toggle], "toggle", 2),
+                (&[Action::Close], "close", 0),
+            ];
+            if ctx.overriding {
+                items.push((&[Action::RemoveOverride], "use global", 3));
+            }
+            items
+        }
+        Mode::Welcome => vec![
+            (&[Action::Confirm], "choose", 0),
+            (&[Action::Next, Action::Prev], "move", 1),
+            (&[Action::Complete], "complete", 1),
+            (&[Action::Cancel], "not now", 2),
+        ],
         Mode::Search => vec![
             (&[Action::Confirm], "keep", 0),
             (&[Action::Cancel], "clear", 0),
@@ -610,8 +759,8 @@ const GAP: u16 = 2;
 /// The footer hints that fit in `width` columns, laid out from column 1.
 /// Hints keep their order; when space runs out the least important go.
 /// An Action with no key gets no hint.
-pub fn footer(keymap: &Keymap, mode: Mode, filtered: bool, grid: bool, width: u16) -> Vec<Hint> {
-    let items: Vec<(Action, String, &'static str, u8)> = footer_items(mode, filtered, grid)
+pub fn footer(keymap: &Keymap, mode: Mode, ctx: Context, width: u16) -> Vec<Hint> {
+    let items: Vec<(Action, String, &'static str, u8)> = footer_items(mode, ctx)
         .into_iter()
         .filter_map(|(actions, label, priority)| {
             let keys: Vec<String> = actions.iter().filter_map(|a| keymap.primary(*a)).collect();
@@ -671,7 +820,8 @@ const MOUSE: &[(&str, &str)] = &[
 pub fn help_rows(keymap: &Keymap, query: &str) -> Vec<HelpRow> {
     let mut sections: Vec<(&'static str, Vec<(String, String)>)> = vec![
         ("Browse", Vec::new()),
-        ("Search, help and palette", Vec::new()),
+        ("Search, help, palette and welcome", Vec::new()),
+        ("Rotation panel", Vec::new()),
         ("Mouse", Vec::new()),
     ];
     for info in ACTIONS {
@@ -679,6 +829,7 @@ pub fn help_rows(keymap: &Keymap, query: &str) -> Vec<HelpRow> {
         let section = match info.scope {
             Scope::Browse => 0,
             Scope::Prompt => 1,
+            Scope::Panel => 2,
         };
         sections[section].1.push((
             if keys.is_empty() {
@@ -692,7 +843,7 @@ pub fn help_rows(keymap: &Keymap, query: &str) -> Vec<HelpRow> {
     sections[1]
         .1
         .push(("ctrl-c".into(), "Quit, from anywhere".into()));
-    sections[2].1.extend(
+    sections[3].1.extend(
         MOUSE
             .iter()
             .map(|(k, a)| ((*k).to_owned(), (*a).to_owned())),
@@ -824,11 +975,15 @@ mod tests {
     #[test]
     fn a_narrow_footer_keeps_help_and_the_most_important_hints() {
         let keymap = Keymap::default();
-        let wide = footer(&keymap, Mode::Normal, false, false, 200);
-        assert_eq!(wide.len(), 12);
-        let grid = footer(&keymap, Mode::Normal, false, true, 200);
+        let wide = footer(&keymap, Mode::Normal, Context::default(), 200);
+        assert_eq!(wide.len(), 13);
+        let grid = Context {
+            grid: true,
+            ..Context::default()
+        };
+        let grid = footer(&keymap, Mode::Normal, grid, 200);
         assert_eq!((grid[0].keys.as_str(), grid[1].label), ("h/j/k/l", "list"));
-        let narrow = footer(&keymap, Mode::Normal, false, false, 40);
+        let narrow = footer(&keymap, Mode::Normal, Context::default(), 40);
         let labels: Vec<&str> = narrow.iter().map(|h| h.label).collect();
         assert_eq!(labels, ["move", "apply", "search", "help"]);
         let last = narrow.last().unwrap();

@@ -13,11 +13,11 @@ expression: harness.screen()
 │             │   ⏎             Apply to the targeted monitor     │░░░░░░░░░░░░│
 │             │   a             Apply to every monitor            │░░░░░░░░░░░░│
 │             │   m             Target the next monitor           │░░░░░░░░░░░░│
+│             │ Rotation panel                                    │░░░░░░░░░░░░│
+│             │   x, del        Use the global Rotation on this m │░░░░░░░░░░░░│
 │             │ Mouse                                             │░░░░░░░░░░░░│
 │             │   click         Select a wallpaper, monitor or hi │░░░░░░░░░░░░│
 │             │   double-click  Apply to the targeted monitor     │░░░░░░░░░░░░│
-│             │                                                   │░░░░░░░░░░░░│
-│             │                                                   │░░░░░░░░░░░░│
 │             │                                                   │░░░░░░░░░░░░│
 │             │                                                   │░░░░░░░░░░░░│
 │             │                                                   │░░░░░░░░░░░░│

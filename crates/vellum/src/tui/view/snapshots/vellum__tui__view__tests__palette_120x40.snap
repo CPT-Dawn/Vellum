@@ -26,13 +26,13 @@ expression: harness.screen()
 │                       │   Favorite or unfavorite                                          f  │░░░░░░░░░░░░░░░░░░░░░░░│
 │                       │   Show only Favorites                                             F  │░░░░░░░░░░░░░░░░░░░░░░░│
 │                       │   Search the Library                                              /  │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   Open the Rotation panel                                         s  │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   Choose a Library folder                                         o  │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   Show the preview or the list (narrow terminals)                 p  │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   Reconnect to vellumd, starting it if needed                     R  │░░░░░░░░░░░░░░░░░░░░░░░│
 │                       │   Show every key                                                  ?  │░░░░░░░░░░░░░░░░░░░░░░░│
 │                       │   Clear the filter, or quit                                     esc  │░░░░░░░░░░░░░░░░░░░░░░░│
-│                       │   Quit                                                            q  │░░░░░░░░░░░░░░░░░░░░░░░│
-│                       │                                                                      │░░░░░░░░░░░░░░░░░░░░░░░│
-│                       │                                                                      │░░░░░░░░░░░░░░░░░░░░░░░│
-│                       │                                                                      │░░░░░░░░░░░░░░░░░░░░░░░│
-│                       │                                                                      │                       │
+│                       │   Quit                                                            q  │                       │
 │                       │                                                                      │                       │
 │                       │                                                                      │                       │
 │                       │                                                                      │                       │

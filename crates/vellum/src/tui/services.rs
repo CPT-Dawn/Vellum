@@ -19,7 +19,10 @@ use super::cache::{DiskCache, Lru};
 use super::model::{Meta, Model, PreviewImage};
 use super::msg::{ApplyJob, Cmd, DaemonInfo, Msg, PreviewJob, PreviewOutput, Purpose, Screen};
 use super::preview::{cells_for, decode_entry, encode_entry, frame_size, render_preview};
+use vellum_ipc::{Request, Response, Settings, Status};
+
 use crate::client;
+use crate::config::edit::{self, Edit, Value};
 use crate::config::{Config, Named as _};
 use crate::render::{Color, FitMode};
 use crate::set::{self, Look};
@@ -45,6 +48,16 @@ pub trait Services: Send + Sync {
     fn favorites(&self) -> Vec<PathBuf>;
     /// Make `path` a Favorite, or stop it being one.
     fn save_favorite(&self, path: &Path, favorite: bool) -> Result<(), String>;
+    /// Write `edits` to the Config; the new Config.
+    fn save_config(&self, edits: &[Edit]) -> Result<Config, String>;
+    /// Hand the Daemon `settings` (if it runs); its Status afterwards.
+    fn push_settings(&self, settings: &Settings) -> Result<Status, String>;
+    /// Start or stop Rotation; the Daemon's Status afterwards.
+    fn rotation(&self, start: bool) -> Result<Status, String>;
+    /// The folders a typed path could complete to.
+    fn complete(&self, input: &str) -> Vec<String>;
+    /// Add `folder` to the Library in the Config; the new Config.
+    fn save_library(&self, folder: &Path) -> Result<Config, String>;
 }
 
 /// The newest preview and grid generations, published by the UI thread
@@ -110,6 +123,23 @@ pub fn perform(services: &dyn Services, cmd: Cmd, latest: &Latest) -> Option<Msg
             path,
             favorite,
         },
+        Cmd::SaveConfig { generation, edits } => Msg::ConfigSaved {
+            generation,
+            result: services.save_config(&edits),
+        },
+        Cmd::PushSettings(settings) => Msg::RotationUpdated {
+            toggled: false,
+            result: services.push_settings(&settings),
+        },
+        Cmd::RotationControl(start) => Msg::RotationUpdated {
+            toggled: true,
+            result: services.rotation(start),
+        },
+        Cmd::Complete(input) => Msg::Completed {
+            candidates: services.complete(&input),
+            input,
+        },
+        Cmd::SaveLibrary(folder) => Msg::LibrarySaved(services.save_library(&folder)),
         Cmd::After { wake, .. } => Msg::Woke(wake),
     })
 }
@@ -125,6 +155,8 @@ pub struct Live {
     disk: Option<DiskCache>,
     /// Favorites saves read, edit and write the whole file: one at a time.
     favorites_lock: Mutex<()>,
+    /// Config writes too.
+    config_lock: Mutex<()>,
 }
 
 /// What an encoded preview depends on: the file, its mtime, and the cells
@@ -150,6 +182,7 @@ impl Live {
             config,
             memory: Mutex::new(Lru::new(MEMORY_PREVIEWS)),
             favorites_lock: Mutex::new(()),
+            config_lock: Mutex::new(()),
         }
     }
 
@@ -318,6 +351,71 @@ impl Services for Live {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         crate::favorites::set(path, favorite)
+    }
+
+    fn save_config(&self, edits: &[Edit]) -> Result<Config, String> {
+        let _one_at_a_time = self.config_lock.lock().unwrap_or_else(|e| e.into_inner());
+        edit::save(edits)
+    }
+
+    fn push_settings(&self, settings: &Settings) -> Result<Status, String> {
+        // Not running: it reads the Config when it starts.
+        let socket = client::socket()?;
+        if !client::is_running(&socket) {
+            return Err("vellumd is not running; the new settings apply when it starts".into());
+        }
+        expect_ok(client::ask(
+            &socket,
+            &Request::Settings(settings.clone()),
+            &[],
+        )?)?;
+        client::status(&socket)
+    }
+
+    fn rotation(&self, start: bool) -> Result<Status, String> {
+        let socket = client::daemon()?;
+        let request = match start {
+            true => Request::RotationStart,
+            false => Request::RotationStop,
+        };
+        expect_ok(client::ask(&socket, &request, &[])?)?;
+        client::status(&socket)
+    }
+
+    fn complete(&self, input: &str) -> Vec<String> {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        super::complete::folders(input, home.as_deref())
+    }
+
+    fn save_library(&self, folder: &Path) -> Result<Config, String> {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let shown = edit::tilde(folder, home.as_deref());
+        if !folder.is_dir() {
+            return Err(format!("{shown} is not a folder"));
+        }
+        let _one_at_a_time = self.config_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let (current, _) = crate::config::read_current()?;
+        // Keep the folders that exist; the chosen one joins them.
+        let mut folders: Vec<String> = current
+            .library
+            .iter()
+            .filter(|f| f.is_dir() && f.as_path() != folder)
+            .map(|f| edit::tilde(f, home.as_deref()))
+            .collect();
+        folders.push(shown);
+        edit::save(&[Edit::Set {
+            table: Vec::new(),
+            key: "library".into(),
+            value: Value::List(folders),
+        }])
+    }
+}
+
+fn expect_ok(response: Response) -> Result<(), String> {
+    match response {
+        Response::Ok => Ok(()),
+        Response::Error(err) => Err(err),
+        other => Err(client::unexpected(&other)),
     }
 }
 

@@ -2,7 +2,7 @@
 source: crates/vellum/src/tui/view/tests.rs
 expression: harness.screen()
 ---
- vellum  ✗ vellumd is not running                                                                          rotation off
+ vellum  ✗ vellumd is not running  R reconnect                                                             rotation off
 ╭ Library · 4 ───────────────────────────╮╭ Preview ───────────────────────────────────────────────────────────────────╮
 │› aurora.png                            ││                                                                            │
 │  beach/dunes.jpg                       ││                                                                            │
@@ -41,4 +41,4 @@ expression: harness.screen()
 │                                        ││ aurora.png  ~/Pictures/Wallpapers                                          │
 │                                        ││ 3840×2160 · 2.4 MB · fill                                                  │
 ╰────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────────────╯
- j/k move  g grid  ⏎ apply  / search  f favorite  F favorites  a all  r random  m monitor  : co ✗ vellumd did not start
+ R reconnect  j/k move  g grid  ⏎ apply  / search  f favorite  a all  r random  s rotation  : c ✗ vellumd did not start
