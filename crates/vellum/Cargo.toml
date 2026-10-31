@@ -29,6 +29,7 @@ ratatui = { version = "0.30.2", default-features = false, features = ["crossterm
 ratatui-image = { version = "11.1.0", default-features = false, features = ["crossterm"] }
 fastrand = "2.5.0"
 shlex = "2.0.1"
+nucleo-matcher = "0.3.1"
 
 [dev-dependencies]
 insta = "1.49.0"

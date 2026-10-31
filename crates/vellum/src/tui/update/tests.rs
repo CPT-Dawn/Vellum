@@ -7,8 +7,11 @@ use ratatui::layout::Size;
 use super::super::harness::*;
 use super::super::model::{Daemon, PreviewState, Tile, Toast, ToastKind};
 use super::super::msg::{ApplyJob, Cmd, Msg, PreviewJob, Purpose, Screen, Wake};
+use super::super::update;
 use super::DEBOUNCE;
 use crate::render::FitMode;
+
+mod commands;
 
 /// The one preview-pane job among `cmds` (prefetches may follow it).
 fn preview_job(cmds: &[Cmd]) -> &PreviewJob {
@@ -59,7 +62,11 @@ fn starting_scans_the_library_and_asks_the_daemon_at_once() {
     let mut h = Harness::new(80, 24);
     assert_eq!(
         h.start(),
-        [Cmd::ScanLibrary(vec![wallpaper("")]), Cmd::QueryDaemon]
+        [
+            Cmd::ScanLibrary(vec![wallpaper("")]),
+            Cmd::QueryDaemon,
+            Cmd::LoadFavorites
+        ]
     );
     assert!(h.model.scanning);
 }
@@ -113,7 +120,7 @@ fn moving_selects_and_asks_for_a_newer_preview_once_it_settles() {
     // The old preview is gone at once; the new one waits for the debounce.
     assert!(matches!(
         &h.model.preview.state,
-        PreviewState::Loading { path } if *path == wallpaper("beach/dunes.jpg")
+        PreviewState::Loading { path, .. } if *path == wallpaper("beach/dunes.jpg")
     ));
     let Wake::Preview { generation } = wake(&cmds) else {
         panic!("expected a preview wake");
@@ -167,7 +174,7 @@ fn a_stale_preview_is_dropped_without_a_redraw() {
     assert!(!h.model.dirty);
     assert!(matches!(
         &h.model.preview.state,
-        PreviewState::Loading { path } if *path == wallpaper("beach/dunes.jpg")
+        PreviewState::Loading { path, .. } if *path == wallpaper("beach/dunes.jpg")
     ));
 }
 
@@ -273,7 +280,7 @@ fn enter_applies_to_the_targeted_monitor_and_confirms() {
         cmds,
         [Cmd::Apply(ApplyJob {
             path: wallpaper("beach/dunes.jpg"),
-            monitor: "DP-1".into(),
+            monitor: Some("DP-1".into()),
             fit: FitMode::Fill,
         })]
     );
@@ -315,11 +322,33 @@ fn enter_without_a_daemon_explains_instead_of_applying() {
 }
 
 #[test]
-fn the_next_key_clears_a_toast() {
+fn a_toast_stays_through_keys_and_expires_on_its_own() {
     let mut h = Harness::started(80, 24);
     h.press("enter");
     assert!(h.model.toast.is_some());
     h.press("j");
+    assert!(h.model.toast.is_some());
+    // The runtime is asked to wake exactly when it expires.
+    assert_eq!(update::wake_at(&h.model), Some(update::TOAST_OK));
+    h.advance(2_900);
+    assert!(h.model.toast.is_some());
+    h.advance(100);
+    assert!(h.model.toast.is_none());
+    assert!(h.model.dirty);
+    assert_eq!(update::wake_at(&h.model), None, "idle: no more wakeups");
+}
+
+#[test]
+fn errors_stay_up_longer_than_confirmations() {
+    let fake = Fake {
+        apply_error: Some("DP-1: frame size mismatch".into()),
+        ..Fake::default()
+    };
+    let mut h = Harness::started_with(80, 24, fake);
+    h.press("enter");
+    h.advance(update::TOAST_OK.as_millis() as u64);
+    assert!(h.model.toast.is_some());
+    h.advance(3_000);
     assert!(h.model.toast.is_none());
 }
 
@@ -359,7 +388,7 @@ fn a_resize_asks_for_a_preview_that_fits_the_new_pane_once_it_settles() {
 fn g_toggles_the_grid_which_renders_only_the_tiles_on_screen() {
     let mut h = Harness::started_with(80, 24, big_library(50));
     assert!(!h.model.grid.on);
-    let cmds = h.update(Msg::Key(key("g")));
+    let cmds = h.toggle_grid();
     assert!(h.model.grid.on);
     assert!(h.model.dirty);
     // 80x24 fits 3 columns by 2 rows of tiles.
@@ -384,7 +413,7 @@ fn g_toggles_the_grid_which_renders_only_the_tiles_on_screen() {
     );
 
     // Back to the list: the preview pane renders again.
-    let cmds = h.update(Msg::Key(key("g")));
+    let cmds = h.toggle_grid();
     assert!(!h.model.grid.on);
     assert_eq!(preview_job(&cmds).path, wallpaper("000.png"));
 }
@@ -392,7 +421,8 @@ fn g_toggles_the_grid_which_renders_only_the_tiles_on_screen() {
 #[test]
 fn moving_in_the_grid_goes_by_tile_and_row_and_scrolls_by_rows() {
     let mut h = Harness::started_with(80, 24, big_library(50));
-    h.press("g");
+    let cmds = h.toggle_grid();
+    h.run(cmds);
     // Within the page: no rendering at all.
     assert!(h.update(Msg::Key(key("l"))).is_empty());
     assert_eq!(h.model.selected, 1);
@@ -415,7 +445,8 @@ fn moving_in_the_grid_goes_by_tile_and_row_and_scrolls_by_rows() {
     h.press("k");
     h.press("k");
     assert!(h.update(Msg::Key(key("k"))).is_empty());
-    h.press("g");
+    let cmds = h.toggle_grid();
+    h.run(cmds);
     assert!(h.update(Msg::Key(key("l"))).is_empty());
     assert!(!h.model.dirty);
 }
@@ -423,7 +454,8 @@ fn moving_in_the_grid_goes_by_tile_and_row_and_scrolls_by_rows() {
 #[test]
 fn down_from_above_a_short_last_row_lands_on_the_last_tile() {
     let mut h = Harness::started_with(80, 24, big_library(5));
-    h.press("g");
+    let cmds = h.toggle_grid();
+    h.run(cmds);
     h.press("l");
     h.press("l");
     h.press("j");
@@ -434,7 +466,7 @@ fn down_from_above_a_short_last_row_lands_on_the_last_tile() {
 #[test]
 fn a_stale_thumbnail_is_dropped() {
     let mut h = Harness::started_with(80, 24, big_library(50));
-    let cmds = h.update(Msg::Key(key("g")));
+    let cmds = h.toggle_grid();
     let Cmd::RenderPreview(old) = cmds[0].clone() else {
         unreachable!()
     };

@@ -21,7 +21,9 @@ use std::thread;
 use std::time::Instant;
 
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseEventKind,
+};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use ratatui::layout::Rect;
@@ -41,8 +43,13 @@ pub fn run(config: Config) -> Result<(), String> {
     let theme = Theme::resolve(config.theme, ColorEnv::from_process());
     let mut terminal =
         ratatui::try_init().map_err(|err| format!("cannot set up the terminal: {err}"))?;
+    // Mouse capture is a nicety: a terminal without it still works.
+    let _ = execute!(terminal.backend_mut(), EnableMouseCapture);
     let result = run_in(&mut terminal, config, theme);
+    let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
     ratatui::restore();
+    // Hook failures from now on (and any the TUI missed) go to stderr.
+    crate::hook::report_to(None);
     result
 }
 
@@ -64,23 +71,37 @@ fn run_in(terminal: &mut DefaultTerminal, config: Config, theme: Theme) -> Resul
     let services: Arc<dyn Services> = Arc::new(Live::new(picker, config, thumbs));
     let latest = Arc::new(Latest::default());
     let pool = Pool::new(services, Arc::clone(&latest), tx.clone());
+    // The on_change hook runs on its own thread; its failures become
+    // toasts instead of text across the screen.
+    let hook_tx = Mutex::new(tx.clone());
+    crate::hook::report_to(Some(Box::new(move |why| {
+        hook_tx
+            .lock()
+            .is_ok_and(|tx| tx.send(Msg::HookFailed(why)).is_ok())
+    })));
     spawn_input(tx);
 
     let mut rt = Loop {
         pool,
         latest,
         timers: Vec::new(),
+        start: Instant::now(),
     };
     for cmd in update::init(&model) {
         rt.run(cmd);
     }
     draw(terminal, &model)?;
     loop {
-        let msg = match rt.timers.iter().map(|t| t.0).min() {
+        // Sleep until a Msg arrives or the next timer: a debounce
+        // (`Cmd::After`) or what the Model shows (toast, spinner, key
+        // sequence). With neither, there are no wakeups at all.
+        let after = rt.timers.iter().map(|t| t.0).min();
+        let model_wake = update::wake_at(&model).map(|at| rt.start + at);
+        let msg = match after.into_iter().chain(model_wake).min() {
             None => rx.recv().map_err(|_| ()),
             Some(at) => match rx.recv_timeout(at.saturating_duration_since(Instant::now())) {
                 Ok(msg) => Ok(msg),
-                Err(RecvTimeoutError::Timeout) => Ok(rt.fire_due()),
+                Err(RecvTimeoutError::Timeout) => Ok(rt.fire_due().unwrap_or(Msg::Tick)),
                 Err(RecvTimeoutError::Disconnected) => Err(()),
             },
         };
@@ -111,12 +132,15 @@ struct Loop {
     latest: Arc<Latest>,
     /// Pending [`Cmd::After`]s: when, and what to wake update with.
     timers: Vec<(Instant, Wake)>,
+    /// When the TUI started: `Model::now` counts from here.
+    start: Instant,
 }
 
 impl Loop {
     /// Feeds one Msg to update and runs its Cmds. Returns whether to
     /// redraw.
     fn step(&mut self, model: &mut Model, msg: Msg) -> bool {
+        model.now = self.start.elapsed();
         let cmds = update::update(model, msg);
         // Before any job is queued, so workers see the new generations.
         self.latest.publish(model);
@@ -141,12 +165,14 @@ impl Loop {
         }
     }
 
-    /// Removes the earliest due timer and returns its Msg.
-    fn fire_due(&mut self) -> Msg {
+    /// Removes the earliest due [`Cmd::After`] timer and returns its Msg,
+    /// or `None` if none is due (the Model's own timer woke us).
+    fn fire_due(&mut self) -> Option<Msg> {
+        let now = Instant::now();
         let index = (0..self.timers.len())
-            .min_by_key(|&i| self.timers[i].0)
-            .expect("only called with a timer pending");
-        Msg::Woke(self.timers.swap_remove(index).1)
+            .filter(|&i| self.timers[i].0 <= now)
+            .min_by_key(|&i| self.timers[i].0)?;
+        Some(Msg::Woke(self.timers.swap_remove(index).1))
     }
 }
 
@@ -178,6 +204,9 @@ fn spawn_input(tx: Sender<Msg>) {
         while let Ok(event) = event::read() {
             let msg = match event {
                 Event::Key(key) if key.kind != KeyEventKind::Release => Msg::Key(key),
+                Event::Mouse(mouse) if !matches!(mouse.kind, MouseEventKind::Moved) => {
+                    Msg::Mouse(mouse)
+                }
                 Event::Resize(width, height) => Msg::Resize { width, height },
                 _ => continue,
             };

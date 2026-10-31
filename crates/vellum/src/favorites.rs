@@ -71,6 +71,19 @@ fn save(favorites: &[PathBuf]) -> Result<(), String> {
     .map_err(|err| format!("cannot save {}: {err}", path.display()))
 }
 
+/// Makes `path` (absolute) a Favorite, or stops it being one. Doing what
+/// is already so is not an error and leaves the file alone. The TUI's `f`.
+pub fn set(path: &Path, favorite: bool) -> Result<(), String> {
+    let mut favorites = load();
+    let there = favorites.iter().any(|f| f == path);
+    match (favorite, there) {
+        (true, false) => favorites.push(path.to_owned()),
+        (false, true) => favorites.retain(|f| f != path),
+        _ => return Ok(()),
+    }
+    save(&favorites)
+}
+
 /// The wallpaper a `vellum fav` command means: `file` (a path or Library
 /// name), else the one on `monitor`, else the one on the first Monitor
 /// showing anything.

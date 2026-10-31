@@ -2,9 +2,9 @@
 source: crates/vellum/src/tui/view/tests.rs
 expression: harness.screen()
 ---
- vellum  connecting to vellumd…                                                                            rotation off
+ vellum  ⠋ connecting to vellumd…                                                                          rotation off
 ╭ Library ───────────────────────────────╮╭ Preview ───────────────────────────────────────────────────────────────────╮
-│ Scanning the Library…                  ││                                                                            │
+│ ⠋ Scanning the Library…                ││                                                                            │
 │                                        ││                                                                            │
 │                                        ││                                                                            │
 │                                        ││                                                                            │
@@ -41,4 +41,4 @@ expression: harness.screen()
 │                                        ││                                                                            │
 │                                        ││                                                                            │
 ╰────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────────────╯
- ↑↓/jk move  g grid  ⏎ apply  q quit
+ j/k move  g grid  ⏎ apply  / search  f favorite  F favorites  a all  r random  m monitor  : commands  ? help  q quit
