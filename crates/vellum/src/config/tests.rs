@@ -268,3 +268,24 @@ fn intervals_print_the_way_they_are_written() {
     assert_eq!(format_interval(250), "250ms");
     assert_eq!(format_interval(1_500), "1.5s");
 }
+
+#[test]
+fn concurrent_saves_of_the_last_good_config_all_succeed() {
+    // `vellum reload` and the Daemon's inotify `render --sync` can save the
+    // last good Config at the same moment; neither may lose its rename.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state/vellum/config.last-good.toml");
+    std::thread::scope(|scope| {
+        for writer in 0..8 {
+            let path = &path;
+            scope.spawn(move || {
+                for round in 0..200 {
+                    let text = format!("# writer {writer} round {round}\n");
+                    write_atomically(path, &text).unwrap();
+                }
+            });
+        }
+    });
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.starts_with("# writer "), "{text}");
+}
