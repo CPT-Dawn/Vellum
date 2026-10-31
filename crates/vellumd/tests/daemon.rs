@@ -2,9 +2,9 @@
 
 use std::process::Command;
 
-/// ADR 0003: the Daemon links no image-decoding code.
+/// ADR 0003: the Daemon links no image-decoding or Config-parsing code.
 #[test]
-fn vellumd_links_no_image_decoders() {
+fn vellumd_links_no_image_decoders_or_config_parsers() {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let out = Command::new(cargo)
         .args([
@@ -42,11 +42,24 @@ fn vellumd_links_no_image_decoders() {
         "dav1d",
         "resvg",
     ];
+    // ...and no Config parsing: only `vellum` reads TOML.
+    let config_parsers = [
+        "toml",
+        "toml_parser",
+        "toml_edit",
+        "serde",
+        "serde_core",
+        "serde_spanned",
+    ];
     for line in tree.lines() {
         let krate = line.trim();
         assert!(
             !decoders.contains(&krate),
             "vellumd depends on the decoder crate `{krate}`:\n{tree}"
+        );
+        assert!(
+            !config_parsers.contains(&krate),
+            "vellumd depends on the Config-parsing crate `{krate}` (ADR 0003):\n{tree}"
         );
     }
     assert!(tree.lines().any(|l| l.trim() == "waybackend"), "{tree}");

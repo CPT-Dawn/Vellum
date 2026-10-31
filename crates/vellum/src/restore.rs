@@ -3,10 +3,18 @@
 //! lacks a frame (startup, hotplug, a scale change); exits right after
 //! presenting, taking all decoder memory with it.
 
-use vellum_ipc::{Transition, TransitionKind};
+use vellum_ipc::{Direction, Easing, Transition, TransitionKind};
 
 use crate::client;
-use crate::set::present;
+use crate::set::{Look, present};
+
+/// For the same wallpaper coming back, often at a new size: no effect.
+pub const INSTANT: Transition = Transition {
+    kind: TransitionKind::None,
+    direction: Direction::Right,
+    duration_ms: 0,
+    easing: Easing::Linear,
+};
 
 pub fn run(monitor: &str) -> Result<(), String> {
     // Never auto-starts a Daemon: the Daemon is what runs this.
@@ -28,18 +36,11 @@ pub fn run(monitor: &str) -> Result<(), String> {
     };
     let image = crate::decode::load(wallpaper.path.as_ref())
         .map_err(|err| format!("cannot restore {monitor}: {err}"))?;
-    present(
-        &socket,
-        &image,
-        &info,
-        wallpaper.fit.into(),
-        &wallpaper.path,
-        // The same wallpaper coming back, often at a new size: no effect.
-        Transition {
-            kind: TransitionKind::None,
-            duration_ms: 0,
-            ..Transition::default()
-        },
-        true,
-    )
+    let look = Look {
+        fit: wallpaper.fit.into(),
+        letterbox: crate::config::load().letterbox,
+        transition: INSTANT,
+        restore: true,
+    };
+    present(&socket, &image, &info, &wallpaper.path, look)
 }
