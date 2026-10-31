@@ -55,7 +55,13 @@ pub struct Config {
     pub rotation: RotationSettings,
     /// The command run after each new wallpaper is presented.
     pub on_change: Option<Hook>,
+    /// The most the TUI's on-disk preview cache may hold, in MiB. 0 turns
+    /// the disk cache off.
+    pub preview_cache_mb: u32,
 }
+
+/// The preview cache cap used when the Config sets none.
+pub const DEFAULT_PREVIEW_CACHE_MB: u32 = 200;
 
 /// `theme`: which palette the TUI uses.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -78,6 +84,7 @@ impl Config {
             theme: ThemeName::default(),
             rotation: RotationSettings::default(),
             on_change: None,
+            preview_cache_mb: DEFAULT_PREVIEW_CACHE_MB,
         }
     }
 
@@ -109,6 +116,7 @@ impl Config {
         config.transition = file.transition.into();
         config.theme = file.theme.unwrap_or(config.theme);
         config.rotation = file.rotation.resolve();
+        config.preview_cache_mb = file.preview.cache_mb;
         if let Some(command) = file.on_change {
             let hook = Hook::parse(command.get_ref(), home).map_err(|why| {
                 ConfigError::at(text, command.span(), format!("the command {why}"))
@@ -151,6 +159,23 @@ struct File {
     on_change: Option<Spanned<String>>,
     transition: TransitionSection,
     rotation: RotationSection,
+    preview: PreviewSection,
+}
+
+/// `[preview]`: the TUI's preview cache.
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct PreviewSection {
+    /// The disk cache cap in MiB.
+    cache_mb: u32,
+}
+
+impl Default for PreviewSection {
+    fn default() -> Self {
+        PreviewSection {
+            cache_mb: DEFAULT_PREVIEW_CACHE_MB,
+        }
+    }
 }
 
 /// `[rotation]`: the global Rotation, plus `[rotation.monitor.<name>]`

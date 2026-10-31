@@ -89,6 +89,42 @@ fn empty_library() {
     });
 }
 
+/// A Library of `n` wallpapers named 000.png, 001.png, ...
+/// with `broken` ones failing to decode, in the grid.
+fn grid_harness(w: u16, h: u16, n: usize, broken: &[&str]) -> Harness {
+    let fake = Fake {
+        library: (0..n).map(|i| wallpaper(&format!("{i:03}.png"))).collect(),
+        broken: broken.iter().map(|b| wallpaper(b)).collect(),
+        ..Fake::default()
+    };
+    let mut harness = Harness::started_with(w, h, fake);
+    harness.press("g");
+    harness
+}
+
+#[test]
+fn thumbnail_grid() {
+    both_sizes("grid", |w, h| {
+        let mut harness = grid_harness(w, h, 50, &[]);
+        harness.press("l");
+        harness
+    });
+}
+
+#[test]
+fn thumbnail_grid_scrolled_with_tiles_loading_and_broken() {
+    both_sizes("grid_scrolled", |w, h| {
+        let mut harness = grid_harness(w, h, 50, &["006.png", "013.png"]);
+        let rows = super::super::layout::grid(harness.model.area).rows;
+        for _ in 0..rows {
+            harness.press("j");
+        }
+        // The next scroll is still settling: its new row shows as loading.
+        harness.update(Msg::Key(key("j")));
+        harness
+    });
+}
+
 #[test]
 fn the_list_scrolls_to_keep_the_selection_in_view() {
     let fake = Fake {

@@ -25,4 +25,4 @@ expression: harness.screen()
 │                          ││                                                  │
 │                          ││                                                  │
 ╰──────────────────────────╯╰──────────────────────────────────────────────────╯
- ↑↓/jk move  ⏎ apply  q quit
+ ↑↓/jk move  g grid  ⏎ apply  q quit

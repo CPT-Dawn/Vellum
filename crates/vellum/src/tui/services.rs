@@ -1,17 +1,27 @@
-//! Running Cmds: [`perform`] turns one Cmd into its one Msg using a
+//! Running Cmds: [`perform`] turns one Cmd into its Msg using a
 //! [`Services`] implementation. The runtime calls it on worker threads
 //! with [`Live`]; tests call it inline with the harness's fake.
+//!
+//! Preview work checks [`Latest`] before it decodes, before it encodes and
+//! before it sends, and gives up as soon as its generation is stale.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::SystemTime;
 
 use image::DynamicImage;
+use ratatui::layout::Size;
 use ratatui_image::Resize;
 use ratatui_image::picker::Picker;
 
-use super::model::{Meta, PreviewImage};
-use super::msg::{ApplyJob, Cmd, DaemonInfo, Msg, PreviewJob, PreviewOutput};
+use super::cache::{DiskCache, Lru};
+use super::model::{Meta, Model, PreviewImage};
+use super::msg::{ApplyJob, Cmd, DaemonInfo, Msg, PreviewJob, PreviewOutput, Purpose, Screen};
+use super::preview::{cells_for, decode_entry, encode_entry, frame_size, render_preview};
 use crate::client;
-use crate::config::Config;
+use crate::config::{Config, Named as _};
+use crate::render::{Color, FitMode};
 use crate::set::{self, Look};
 
 /// The outside world, as the TUI needs it. Each method blocks; the runtime
@@ -21,33 +31,166 @@ pub trait Services: Send + Sync {
     fn scan(&self, folders: &[PathBuf]) -> Vec<PathBuf>;
     /// The Daemon's Monitors and Status, starting it if needed.
     fn daemon(&self) -> Result<DaemonInfo, String>;
-    /// Decode, render and encode one preview.
-    fn preview(&self, job: &PreviewJob) -> Result<PreviewOutput, String>;
+    /// Decode, render and encode one preview. Returns `None` as soon as
+    /// `stale()` says nobody wants it any more; implementations check it
+    /// before decoding and before encoding.
+    fn preview(
+        &self,
+        job: &PreviewJob,
+        stale: &dyn Fn() -> bool,
+    ) -> Option<Result<PreviewOutput, String>>;
     /// Put a wallpaper on a Monitor.
     fn apply(&self, job: &ApplyJob) -> Result<(), String>;
 }
 
-/// Runs `cmd` and reports the result as a Msg.
-pub fn perform(services: &dyn Services, cmd: Cmd) -> Msg {
-    match cmd {
+/// The newest preview and grid generations, published by the UI thread
+/// after every update and read by workers.
+#[derive(Debug, Default)]
+pub struct Latest {
+    preview: AtomicU64,
+    grid: AtomicU64,
+}
+
+impl Latest {
+    /// Records `m`'s generations. Call before queueing update's Cmds.
+    pub fn publish(&self, m: &Model) {
+        self.preview.store(m.preview.generation, Ordering::Release);
+        self.grid.store(m.grid.generation, Ordering::Release);
+    }
+
+    /// Whether `job` is still wanted.
+    pub fn is_current(&self, job: &PreviewJob) -> bool {
+        let latest = match job.purpose {
+            Purpose::Preview | Purpose::Prefetch => &self.preview,
+            Purpose::Thumb => &self.grid,
+        };
+        latest.load(Ordering::Acquire) == job.generation
+    }
+}
+
+/// Runs `cmd` and reports the result as a Msg. Stale preview work and
+/// prefetches report nothing. [`Cmd::After`] fires at once here; the
+/// runtime holds it for its delay instead of calling this.
+pub fn perform(services: &dyn Services, cmd: Cmd, latest: &Latest) -> Option<Msg> {
+    Some(match cmd {
         Cmd::ScanLibrary(folders) => Msg::LibraryScanned(services.scan(&folders)),
         Cmd::QueryDaemon => Msg::Daemon(services.daemon()),
-        Cmd::RenderPreview(job) => Msg::PreviewDone {
-            generation: job.generation,
-            result: services.preview(&job),
-            path: job.path,
-        },
+        Cmd::RenderPreview(job) => {
+            let stale = || !latest.is_current(&job);
+            let result = services.preview(&job, &stale)?;
+            if stale() {
+                return None;
+            }
+            let (generation, path) = (job.generation, job.path);
+            match job.purpose {
+                Purpose::Preview => Msg::PreviewDone {
+                    generation,
+                    path,
+                    result,
+                },
+                Purpose::Thumb => Msg::ThumbDone {
+                    generation,
+                    path,
+                    result,
+                },
+                Purpose::Prefetch => return None,
+            }
+        }
         Cmd::Apply(job) => Msg::Applied {
             result: services.apply(&job),
             monitor: job.monitor,
         },
-    }
+        Cmd::After { wake, .. } => Msg::Woke(wake),
+    })
 }
+
+/// Encoded previews kept in memory. Thumbnails live in the Model instead.
+const MEMORY_PREVIEWS: usize = 12;
 
 /// The real Library, Daemon and terminal graphics.
 pub struct Live {
-    pub picker: Picker,
-    pub config: Config,
+    picker: Picker,
+    config: Config,
+    memory: Mutex<Lru<MemoryKey, PreviewOutput>>,
+    disk: Option<DiskCache>,
+}
+
+/// What an encoded preview depends on: the file, its mtime, and the cells
+/// and look it was rendered for.
+#[derive(Debug, PartialEq)]
+struct MemoryKey {
+    path: PathBuf,
+    mtime: SystemTime,
+    cells: Size,
+    monitor: Screen,
+    fit: FitMode,
+    letterbox: Color,
+}
+
+impl Live {
+    /// Live services, with the disk cache in `thumbs` (if known) capped by
+    /// the Config.
+    pub fn new(picker: Picker, config: Config, thumbs: Option<PathBuf>) -> Live {
+        let cap = u64::from(config.preview_cache_mb) << 20;
+        Live {
+            picker,
+            disk: thumbs.map(|dir| DiskCache::new(dir, cap)),
+            config,
+            memory: Mutex::new(Lru::new(MEMORY_PREVIEWS)),
+        }
+    }
+
+    /// The frame for `job` and its source's size, from the disk cache or
+    /// freshly decoded and rendered (and then cached). `None` if stale.
+    fn frame(
+        &self,
+        job: &PreviewJob,
+        file: &FileId,
+        stale: &dyn Fn() -> bool,
+    ) -> Option<Result<Rendered, String>> {
+        let font = self.picker.font_size();
+        let (w, h) = frame_size(job.cells, font, job.monitor);
+        let key = format!(
+            "{}\0{}\0{}\0{w}x{h}\0{}x{}@{}\0{}\0{:02x?}",
+            job.path.display(),
+            file.mtime_ns,
+            file.bytes,
+            job.monitor.width,
+            job.monitor.height,
+            job.monitor.scale_120,
+            job.fit.name(),
+            job.letterbox,
+        );
+        if let Some(hit) = self.disk.as_ref().and_then(|d| decode_entry(&d.get(&key)?)) {
+            return Some(Ok(hit));
+        }
+        if stale() {
+            return None;
+        }
+        let source = match crate::decode::load(&job.path) {
+            Ok(source) => source,
+            Err(err) => return Some(Err(err)),
+        };
+        let frame = render_preview(&source, job, font);
+        let dims = source.dimensions();
+        drop(source);
+        if let Some(disk) = &self.disk
+            && let Some(entry) = encode_entry(&frame, dims)
+        {
+            disk.put(&key, &entry);
+        }
+        Some(Ok((frame, dims)))
+    }
+}
+
+/// A rendered frame and its source's size in pixels.
+type Rendered = (image::RgbImage, (u32, u32));
+
+/// A file's identity for caching.
+struct FileId {
+    mtime: SystemTime,
+    mtime_ns: u128,
+    bytes: u64,
 }
 
 impl Services for Live {
@@ -63,27 +206,71 @@ impl Services for Live {
         })
     }
 
-    fn preview(&self, job: &PreviewJob) -> Result<PreviewOutput, String> {
-        let bytes = std::fs::metadata(&job.path)
-            .map_err(|err| format!("cannot read {}: {err}", job.path.display()))?
-            .len();
-        let source = crate::decode::load(&job.path)?;
-        let meta = Meta {
-            width: source.width(),
-            height: source.height(),
-            bytes,
+    fn preview(
+        &self,
+        job: &PreviewJob,
+        stale: &dyn Fn() -> bool,
+    ) -> Option<Result<PreviewOutput, String>> {
+        if stale() {
+            return None;
+        }
+        let file = match std::fs::metadata(&job.path) {
+            Ok(meta) => {
+                let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                FileId {
+                    mtime,
+                    mtime_ns: mtime
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_nanos()),
+                    bytes: meta.len(),
+                }
+            }
+            Err(err) => return Some(Err(format!("cannot read {}: {err}", job.path.display()))),
         };
-        let font = self.picker.font_size();
-        let frame = super::preview::render_preview(&source, job, font);
-        let cells = super::preview::cells_for(frame.dimensions(), font);
-        let protocol = self
-            .picker
-            .new_protocol(DynamicImage::ImageRgb8(frame), cells, Resize::Fit(None))
-            .map_err(|err| format!("cannot encode the preview: {err}"))?;
-        Ok(PreviewOutput {
+        let memory_key = (job.purpose != Purpose::Thumb).then(|| MemoryKey {
+            path: job.path.clone(),
+            mtime: file.mtime,
+            cells: job.cells,
+            monitor: job.monitor,
+            fit: job.fit,
+            letterbox: job.letterbox,
+        });
+        if let Some(key) = &memory_key
+            && let Some(hit) = self.memory.lock().ok()?.get(key)
+        {
+            return Some(Ok(hit.clone()));
+        }
+
+        let (frame, (width, height)) = match self.frame(job, &file, stale)? {
+            Ok(found) => found,
+            Err(err) => return Some(Err(err)),
+        };
+        if stale() {
+            return None;
+        }
+        let cells = cells_for(frame.dimensions(), self.picker.font_size());
+        let protocol =
+            match self
+                .picker
+                .new_protocol(DynamicImage::ImageRgb8(frame), cells, Resize::Fit(None))
+            {
+                Ok(protocol) => protocol,
+                Err(err) => return Some(Err(format!("cannot encode the preview: {err}"))),
+            };
+        let out = PreviewOutput {
             image: PreviewImage::Protocol(Box::new(protocol)),
-            meta,
-        })
+            meta: Meta {
+                width,
+                height,
+                bytes: file.bytes,
+            },
+        };
+        if let Some(key) = memory_key
+            && let Ok(mut memory) = self.memory.lock()
+        {
+            memory.put(key, out.clone());
+        }
+        Some(Ok(out))
     }
 
     fn apply(&self, job: &ApplyJob) -> Result<(), String> {

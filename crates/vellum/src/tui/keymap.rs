@@ -15,6 +15,12 @@ use super::model::Mode;
 pub enum Action {
     Down,
     Up,
+    /// The tile to the left, in the grid.
+    Left,
+    /// The tile to the right, in the grid.
+    Right,
+    /// Switch between the list and the thumbnail grid.
+    ToggleGrid,
     /// Apply the selection to the targeted Monitor.
     Apply,
     Quit,
@@ -29,6 +35,9 @@ pub fn action(mode: Mode, key: KeyEvent) -> Option<Action> {
             _ if ctrl => None,
             KeyCode::Char('j') | KeyCode::Down => Some(Action::Down),
             KeyCode::Char('k') | KeyCode::Up => Some(Action::Up),
+            KeyCode::Char('h') | KeyCode::Left => Some(Action::Left),
+            KeyCode::Char('l') | KeyCode::Right => Some(Action::Right),
+            KeyCode::Char('g') => Some(Action::ToggleGrid),
             KeyCode::Enter => Some(Action::Apply),
             KeyCode::Char('q') | KeyCode::Esc => Some(Action::Quit),
             _ => None,
@@ -36,9 +45,21 @@ pub fn action(mode: Mode, key: KeyEvent) -> Option<Action> {
     }
 }
 
-/// The footer's key hints in `mode`: (keys, what they do).
-pub fn hints(mode: Mode) -> &'static [(&'static str, &'static str)] {
-    match mode {
-        Mode::Normal => &[("↑↓/jk", "move"), ("⏎", "apply"), ("q", "quit")],
+/// The footer's key hints in `mode`, in the grid or the list: (keys, what
+/// they do).
+pub fn hints(mode: Mode, grid: bool) -> &'static [(&'static str, &'static str)] {
+    match (mode, grid) {
+        (Mode::Normal, false) => &[
+            ("↑↓/jk", "move"),
+            ("g", "grid"),
+            ("⏎", "apply"),
+            ("q", "quit"),
+        ],
+        (Mode::Normal, true) => &[
+            ("←↓↑→/hjkl", "move"),
+            ("g", "list"),
+            ("⏎", "apply"),
+            ("q", "quit"),
+        ],
     }
 }
