@@ -14,7 +14,9 @@ use std::sync::Mutex;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{
+    KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::layout::Rect;
 use vellum_ipc::{MonitorInfo, MonitorStatus, Settings, Status};
 
@@ -57,6 +59,10 @@ pub struct Fake {
     pub apply_error: Option<String>,
     /// Every Apply the runtime would have sent.
     pub applied: Mutex<Vec<ApplyJob>>,
+    /// The Favorites file.
+    pub favorites: Mutex<Vec<PathBuf>>,
+    /// If set, saving a Favorite fails with this.
+    pub favorite_error: Option<String>,
     /// Every preview job that was rendered, not dropped as stale.
     pub rendered: Mutex<Vec<PreviewJob>>,
 }
@@ -77,6 +83,8 @@ impl Default for Fake {
             broken: Vec::new(),
             apply_error: None,
             applied: Mutex::new(Vec::new()),
+            favorites: Mutex::new(Vec::new()),
+            favorite_error: None,
             rendered: Mutex::new(Vec::new()),
         }
     }
@@ -171,6 +179,22 @@ impl Services for Fake {
             None => Ok(()),
         }
     }
+
+    fn favorites(&self) -> Vec<PathBuf> {
+        self.favorites.lock().unwrap().clone()
+    }
+
+    fn save_favorite(&self, path: &Path, favorite: bool) -> Result<(), String> {
+        if let Some(err) = &self.favorite_error {
+            return Err(err.clone());
+        }
+        let mut favorites = self.favorites.lock().unwrap();
+        favorites.retain(|f| f != path);
+        if favorite {
+            favorites.push(path.to_owned());
+        }
+        Ok(())
+    }
 }
 
 pub struct Harness {
@@ -189,19 +213,87 @@ impl Harness {
     }
 
     pub fn with(width: u16, height: u16, fake: Fake) -> Harness {
-        let home = PathBuf::from(HOME);
-        let config = Config::defaults(Some(&home));
-        let model = Model::new(
+        Harness::with_config(width, height, fake, config(""))
+    }
+
+    pub fn with_config(width: u16, height: u16, fake: Fake, config: Config) -> Harness {
+        let mut model = Model::new(
             &config,
             Theme::midnight_bloom(),
             Rect::new(0, 0, width, height),
-            Some(home),
+            Some(PathBuf::from(HOME)),
         );
+        model.rng = fastrand::Rng::with_seed(7);
         Harness {
             model,
             fake,
             latest: Latest::default(),
         }
+    }
+
+    /// Started with a Config parsed from `toml`.
+    pub fn started_with_config(width: u16, height: u16, toml: &str) -> Harness {
+        let mut h = Harness::with_config(width, height, Fake::default(), config(toml));
+        let cmds = h.start();
+        h.run(cmds);
+        h
+    }
+
+    /// Moves the clock on by `ms` and delivers the Tick the runtime would.
+    pub fn advance(&mut self, ms: u64) {
+        self.model.now += std::time::Duration::from_millis(ms);
+        self.dispatch(Msg::Tick);
+    }
+
+    /// Presses `g` and lets it time out (it also starts `g g`), so the grid
+    /// toggles. The Cmds come back unrun.
+    pub fn toggle_grid(&mut self) -> Vec<Cmd> {
+        let mut cmds = self.update(Msg::Key(key("g")));
+        self.model.now += super::keymap::CHORD_TIMEOUT;
+        cmds.extend(self.update(Msg::Tick));
+        cmds
+    }
+
+    /// Presses each character of `text` in turn.
+    pub fn typed(&mut self, text: &str) {
+        for c in text.chars() {
+            self.press(&c.to_string());
+        }
+    }
+
+    /// A left click at column `x`, row `y`.
+    pub fn click(&mut self, x: u16, y: u16) {
+        self.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+    }
+
+    /// One wheel notch at column `x`, row `y`.
+    pub fn wheel(&mut self, down: bool, x: u16, y: u16) {
+        let kind = match down {
+            true => MouseEventKind::ScrollDown,
+            false => MouseEventKind::ScrollUp,
+        };
+        self.mouse(kind, x, y);
+    }
+
+    fn mouse(&mut self, kind: MouseEventKind, column: u16, row: u16) {
+        self.dispatch(Msg::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+
+    /// Where `text` first appears on screen: (column, row).
+    pub fn find(&self, text: &str) -> Option<(u16, u16)> {
+        let buffer = self.buffer();
+        (0..buffer.area.height).find_map(|y| {
+            let row: String = (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect();
+            row.find(text)
+                .map(|byte| (u16::try_from(row[..byte].chars().count()).unwrap(), y))
+        })
     }
 
     /// The init Cmds, not run.
@@ -278,9 +370,15 @@ impl Harness {
     }
 }
 
-/// A key from a name: "j", "enter", "esc", "down", "ctrl-c".
+/// A Config parsed from `toml`, with `~` at [`HOME`].
+pub fn config(toml: &str) -> Config {
+    Config::parse(toml, Some(Path::new(HOME))).unwrap()
+}
+
+/// A key from a name: "j", "G", "enter", "esc", "down", "ctrl-c". Like a
+/// terminal, uppercase letters and symbols come with Shift.
 pub fn key(name: &str) -> KeyEvent {
-    let (mods, name) = match name.strip_prefix("ctrl-") {
+    let (mut mods, name) = match name.strip_prefix("ctrl-") {
         Some(rest) => (KeyModifiers::CONTROL, rest),
         None => (KeyModifiers::NONE, name),
     };
@@ -289,8 +387,22 @@ pub fn key(name: &str) -> KeyEvent {
         "esc" => KeyCode::Esc,
         "up" => KeyCode::Up,
         "down" => KeyCode::Down,
+        "home" => KeyCode::Home,
+        "end" => KeyCode::End,
+        "pagedown" => KeyCode::PageDown,
+        "backspace" => KeyCode::Backspace,
         "tab" => KeyCode::Tab,
-        c if c.chars().count() == 1 => KeyCode::Char(c.chars().next().unwrap()),
+        "space" => KeyCode::Char(' '),
+        c if c.chars().count() == 1 => {
+            let c = c.chars().next().unwrap();
+            if c.is_ascii_uppercase() || "?:".contains(c) {
+                mods |= KeyModifiers::SHIFT;
+            }
+            KeyCode::Char(c)
+        }
+        f if f.starts_with('f') && f[1..].parse::<u8>().is_ok() => {
+            KeyCode::F(f[1..].parse().unwrap())
+        }
         other => panic!("unknown key {other}"),
     };
     KeyEvent::new(code, mods)

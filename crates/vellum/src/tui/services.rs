@@ -41,6 +41,10 @@ pub trait Services: Send + Sync {
     ) -> Option<Result<PreviewOutput, String>>;
     /// Put a wallpaper on a Monitor.
     fn apply(&self, job: &ApplyJob) -> Result<(), String>;
+    /// Every Favorite, missing files included.
+    fn favorites(&self) -> Vec<PathBuf>;
+    /// Make `path` a Favorite, or stop it being one.
+    fn save_favorite(&self, path: &Path, favorite: bool) -> Result<(), String>;
 }
 
 /// The newest preview and grid generations, published by the UI thread
@@ -100,6 +104,12 @@ pub fn perform(services: &dyn Services, cmd: Cmd, latest: &Latest) -> Option<Msg
             result: services.apply(&job),
             monitor: job.monitor,
         },
+        Cmd::LoadFavorites => Msg::FavoritesLoaded(services.favorites()),
+        Cmd::SaveFavorite { path, favorite } => Msg::FavoriteSaved {
+            result: services.save_favorite(&path, favorite),
+            path,
+            favorite,
+        },
         Cmd::After { wake, .. } => Msg::Woke(wake),
     })
 }
@@ -113,6 +123,8 @@ pub struct Live {
     config: Config,
     memory: Mutex<Lru<MemoryKey, PreviewOutput>>,
     disk: Option<DiskCache>,
+    /// Favorites saves read, edit and write the whole file: one at a time.
+    favorites_lock: Mutex<()>,
 }
 
 /// What an encoded preview depends on: the file, its mtime, and the cells
@@ -137,6 +149,7 @@ impl Live {
             disk: thumbs.map(|dir| DiskCache::new(dir, cap)),
             config,
             memory: Mutex::new(Lru::new(MEMORY_PREVIEWS)),
+            favorites_lock: Mutex::new(()),
         }
     }
 
@@ -276,7 +289,7 @@ impl Services for Live {
     fn apply(&self, job: &ApplyJob) -> Result<(), String> {
         let image = crate::decode::load(&job.path)?;
         let socket = client::daemon()?;
-        let monitors = set::target(client::monitors(&socket)?, Some(&job.monitor))?;
+        let monitors = set::target(client::monitors(&socket)?, job.monitor.as_deref())?;
         let source = absolute(&job.path);
         let look = Look {
             fit: job.fit,
@@ -286,8 +299,25 @@ impl Services for Live {
         };
         for monitor in &monitors {
             set::present(&socket, &image, monitor, &source, look)?;
+            // A pick by hand stays up a full Rotation interval, as with
+            // `vellum set`.
+            crate::rotation::reset_timer(&socket, &monitor.name)?;
         }
         Ok(())
+    }
+
+    fn favorites(&self) -> Vec<PathBuf> {
+        crate::favorites::load()
+    }
+
+    fn save_favorite(&self, path: &Path, favorite: bool) -> Result<(), String> {
+        // Workers may run two saves at once; each reads, edits and writes
+        // the whole file.
+        let _one_at_a_time = self
+            .favorites_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::favorites::set(path, favorite)
     }
 }
 

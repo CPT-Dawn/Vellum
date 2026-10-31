@@ -1,0 +1,28 @@
+---
+source: crates/vellum/src/tui/view/tests.rs
+expression: harness.screen()
+---
+ vellum  ● DP-1 2560×1440  ○ HDMI-A-1 1920×1080                    rotation off
+╭ Library · 4 ─────────────╮╭ Preview ─────────────────────────────────────────╮
+│› aurora.png              ││                                                  │
+│  beach/dunes.jpg         ││                                                  │
+│  beach/tide.╭ Keys ─────────────────────────────────────────────╮░░░░░░░░░░░░│
+│  city/neon-r│ / ▏type to filter                                 │░░░░░░░░░░░░│
+│             │                                                   │░░░░░░░░░░░░│
+│             │ Browse                                            │░░░░░░░░░░░░│
+│             │   j, ↓          Move down                         │░░░░░░░░░░░░│
+│             │   k, ↑          Move up                           │░░░░░░░░░░░░│
+│             │   h, ←          Move left in the grid             │░░░░░░░░░░░░│
+│             │   l, →          Move right in the grid            │░░░░░░░░░░░░│
+│             │   g             Switch between list and grid      │░░░░░░░░░░░░│
+│             │   gg, home      Jump to the top                   │░░░░░░░░░░░░│
+│             │   G, end        Jump to the bottom                │░░░░░░░░░░░░│
+│             │   ctrl-d, pgdn  Half a page down                  │░░░░░░░░░░░░│
+│             │   ctrl-u, pgup  Half a page up                    │░░░░░░░░░░░░│
+│             │   ⏎             Apply to the targeted monitor     │░░░░░░░░░░░░│
+│             │   a             Apply to every monitor            │░░░░░░░░░░░░│
+│             │   r             Apply a random wallpaper          │            │
+│             ╰───────────────────────────────────────────────────╯            │
+│                          ││ 3840×2160 · 2.4 MB · fill on DP-1                │
+╰──────────────────────────╯╰──────────────────────────────────────────────────╯
+ esc close  ↓/↑ scroll

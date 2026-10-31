@@ -14,12 +14,14 @@
 //! Library, placeholder images), without a terminal.
 
 mod cache;
-mod keymap;
+/// The Config's `[keymap]` section parses into this module's types.
+pub mod keymap;
 mod layout;
 mod model;
 mod msg;
 mod preview;
 mod runtime;
+mod search;
 mod services;
 mod theme;
 mod update;

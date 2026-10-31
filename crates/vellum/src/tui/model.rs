@@ -5,10 +5,13 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use ratatui::layout::{Rect, Size};
-use vellum_ipc::{MonitorInfo, Status};
+use vellum_ipc::{MonitorInfo, RotationSource, Status};
 
+use super::keymap::{Key, Keymap};
+use super::search::{Index, Match};
 use super::theme::Theme;
 use crate::config::Config;
 use crate::render::{Color, FitMode};
@@ -16,36 +19,70 @@ use crate::render::{Color, FitMode};
 /// The whole TUI state.
 #[derive(Debug)]
 pub struct Model {
-    /// Which keys mean what right now. #11 adds Search, Help and Palette;
-    /// #13 adds Rotation and Welcome.
+    /// Which keys mean what right now. #13 adds Rotation and Welcome.
     pub mode: Mode,
+    /// Every key binding, Config remaps applied.
+    pub keymap: Keymap,
     /// The Library folders, from the Config.
     pub folders: Vec<PathBuf>,
     /// Every wallpaper in the Library, sorted by path. Empty while
     /// `scanning`.
     pub library: Vec<PathBuf>,
+    /// The Library's names, for fuzzy search.
+    pub index: Index,
+    /// The wallpapers the list shows, in order: the Library narrowed by
+    /// `query` and `favorites_only`. Each is an index into `library` plus
+    /// the characters the query matched.
+    pub visible: Vec<Match>,
+    /// The search query. Empty: no search.
+    pub query: String,
+    /// The user's Favorites as the TUI wants them (a save may still be in
+    /// flight).
+    pub favorites: Vec<PathBuf>,
+    /// Show only Favorites.
+    pub favorites_only: bool,
     /// True until the first Library scan reports back.
     pub scanning: bool,
-    /// Index into `library` of the highlighted wallpaper.
+    /// Index into `visible` of the highlighted wallpaper.
     pub selected: usize,
-    /// Index of the first wallpaper the list shows. Update keeps the
-    /// selection in view.
+    /// Index into `visible` of the first row the list shows. Update keeps
+    /// the selection in view.
     pub list_offset: usize,
+    /// The help overlay's or the palette's query and cursor.
+    pub prompt: Prompt,
+    /// Keys typed so far of a longer binding (`g` of `g g`), and when the
+    /// first one was pressed.
+    pub pending: Vec<Key>,
+    pub pending_since: Duration,
     /// What the Daemon told us, or why it could not.
     pub daemon: Daemon,
     /// Index into the Daemon's Monitors of the one Enter applies to.
     pub target: usize,
-    /// Rotation, as shown in the header.
+    /// The Daemon's last Status, for the Rotation in the header.
+    pub status: Option<Status>,
+    /// Rotation on the targeted Monitor, as shown in the header.
     pub rotation: Rotation,
     /// The Fit mode the preview and Enter use.
     pub fit: FitMode,
     /// The letterbox color the preview and Enter use.
     pub letterbox: Color,
     pub preview: Preview,
+    /// Applies in flight, oldest first, for the spinner.
+    pub applying: Vec<Busy>,
     /// The thumbnail grid, shown instead of the list and preview when on.
     pub grid: Grid,
     /// The latest confirmation or error, shown in the footer.
     pub toast: Option<Toast>,
+    /// When `toast` goes away.
+    pub toast_until: Duration,
+    /// The last click on a list row: (index into `visible`, when), to spot
+    /// a double-click.
+    pub last_click: Option<(usize, Duration)>,
+    /// Picks `r`'s wallpaper. Seeded in tests.
+    pub rng: fastrand::Rng,
+    /// Time since the TUI started. The runtime sets it before every Msg
+    /// and tests set it by hand, so update never reads a clock.
+    pub now: Duration,
     /// The terminal's size, so update can ask for a preview that fills its
     /// pane.
     pub area: Rect,
@@ -66,19 +103,34 @@ impl Model {
     pub fn new(config: &Config, theme: Theme, area: Rect, home: Option<PathBuf>) -> Model {
         Model {
             mode: Mode::Normal,
+            keymap: Keymap::new(&config.keymap),
             folders: config.library.clone(),
             library: Vec::new(),
+            index: Index::default(),
+            visible: Vec::new(),
+            query: String::new(),
+            favorites: Vec::new(),
+            favorites_only: false,
             scanning: true,
             selected: 0,
             list_offset: 0,
+            prompt: Prompt::default(),
+            pending: Vec::new(),
+            pending_since: Duration::ZERO,
             daemon: Daemon::Connecting,
             target: 0,
+            status: None,
             rotation: Rotation::Off,
             fit: config.fit,
             letterbox: config.letterbox,
             preview: Preview::default(),
+            applying: Vec::new(),
             grid: Grid::default(),
             toast: None,
+            toast_until: Duration::ZERO,
+            last_click: None,
+            rng: fastrand::Rng::new(),
+            now: Duration::ZERO,
             area,
             home,
             theme,
@@ -87,9 +139,20 @@ impl Model {
         }
     }
 
-    /// The highlighted wallpaper, if the Library has any.
+    /// The highlighted wallpaper, if the list shows any.
     pub fn selection(&self) -> Option<&PathBuf> {
-        self.library.get(self.selected)
+        self.visible
+            .get(self.selected)
+            .and_then(|m| self.library.get(m.index))
+    }
+
+    pub fn is_favorite(&self, path: &Path) -> bool {
+        self.favorites.iter().any(|f| f == path)
+    }
+
+    /// Whether the list is narrowed by a search or the Favorites filter.
+    pub fn filtered(&self) -> bool {
+        !self.query.is_empty() || self.favorites_only
     }
 
     /// The Monitors the Daemon reported, or none.
@@ -113,6 +176,17 @@ impl Model {
             None => path.display().to_string(),
         }
     }
+
+    /// `path` relative to the Library folder holding it:
+    /// `beach/dunes.jpg`.
+    pub fn short_name(&self, path: &Path) -> String {
+        self.folders
+            .iter()
+            .find_map(|folder| path.strip_prefix(folder).ok())
+            .unwrap_or(path)
+            .display()
+            .to_string()
+    }
 }
 
 /// Which keymap is active.
@@ -120,6 +194,28 @@ impl Model {
 pub enum Mode {
     /// Browsing the list.
     Normal,
+    /// Typing a search; the list filters on every key.
+    Search,
+    /// The `?` overlay.
+    Help,
+    /// The command palette.
+    Palette,
+}
+
+/// The query and cursor of the help overlay or the palette.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Prompt {
+    pub query: String,
+    /// The highlighted palette row, or the first help row shown.
+    pub selected: usize,
+}
+
+/// Slow work in flight. It gets a spinner once it has taken
+/// [`super::update::SPINNER_DELAY`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Busy {
+    pub label: String,
+    pub since: Duration,
 }
 
 /// The Daemon as the TUI knows it.
@@ -138,18 +234,26 @@ pub enum Daemon {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Rotation {
     Off,
-    /// Running, changing every `interval_secs`.
-    #[expect(dead_code, reason = "Status reports Rotation once #8 lands")]
+    /// Running on the targeted Monitor, changing every `interval_ms`.
     On {
-        interval_secs: u64,
+        interval_ms: u64,
+        source: RotationSource,
     },
 }
 
 impl Rotation {
-    /// What `vellum status` says about Rotation. `Status` carries no
-    /// Rotation yet, so this is always Off until #8 adds it.
-    pub fn from_status(_status: &Status) -> Rotation {
-        Rotation::Off
+    /// Rotation as `status` reports it for `monitor`: its Override, else
+    /// the global schedule.
+    pub fn from_status(status: &Status, monitor: Option<&str>) -> Rotation {
+        if !status.rotation_running {
+            return Rotation::Off;
+        }
+        let rotation = &status.settings.rotation;
+        let schedule = monitor.map_or(&rotation.schedule, |m| rotation.schedule_for(m));
+        Rotation::On {
+            interval_ms: schedule.interval_ms,
+            source: schedule.source,
+        }
     }
 }
 
@@ -169,6 +273,8 @@ pub enum PreviewState {
     Empty,
     Loading {
         path: PathBuf,
+        /// When it was asked for, for the spinner.
+        since: Duration,
     },
     Ready {
         path: PathBuf,
@@ -241,7 +347,7 @@ impl PreviewState {
     pub fn path(&self) -> Option<&Path> {
         match self {
             PreviewState::Empty => None,
-            PreviewState::Loading { path }
+            PreviewState::Loading { path, .. }
             | PreviewState::Ready { path, .. }
             | PreviewState::Failed { path, .. } => Some(path),
         }
@@ -269,7 +375,7 @@ impl std::fmt::Debug for PreviewImage {
     }
 }
 
-/// A short message in the footer.
+/// A short message in the footer. It goes away on its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Toast {
     pub kind: ToastKind,

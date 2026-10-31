@@ -150,16 +150,52 @@ pub fn finish() {
     }
 }
 
+/// Takes a failure report; returns false if it could not.
+type Reporter = Box<dyn Fn(String) -> bool + Send>;
+
+/// Where failures go instead of stderr, and failures it could not take.
+static REPORTER: Mutex<(Option<Reporter>, Vec<String>)> = Mutex::new((None, Vec::new()));
+
+/// Sends hook failures to `reporter` instead of stderr: the TUI shows them
+/// as toasts, since stderr would scribble over its screen. `None` puts
+/// them back on stderr, first printing any the reporter refused (say,
+/// because the TUI was already shutting down).
+pub fn report_to(reporter: Option<Reporter>) {
+    let mut slot = REPORTER.lock().unwrap_or_else(|e| e.into_inner());
+    if reporter.is_none() {
+        for why in slot.1.drain(..) {
+            eprintln!("vellum: {why}");
+        }
+    }
+    slot.0 = reporter;
+}
+
+fn report(why: String) {
+    let mut slot = REPORTER.lock().unwrap_or_else(|e| e.into_inner());
+    match &slot.0 {
+        Some(reporter) => {
+            if !reporter(why.clone()) {
+                slot.1.push(why);
+            }
+        }
+        None => eprintln!("vellum: {why}"),
+    }
+}
+
 fn run(job: &Job) {
     let program = &job.hook.words[0];
     let monitor = &job.monitor;
     match job.hook.command(&job.path, monitor).status() {
         Ok(status) if status.success() => {}
         Ok(status) => {
-            eprintln!("vellum: the on_change hook `{program}` failed on {monitor} ({status})");
+            report(format!(
+                "the on_change hook `{program}` failed on {monitor} ({status})"
+            ));
         }
         Err(err) => {
-            eprintln!("vellum: the on_change hook `{program}` could not run on {monitor}: {err}");
+            report(format!(
+                "the on_change hook `{program}` could not run on {monitor}: {err}"
+            ));
         }
     }
 }
@@ -217,6 +253,27 @@ mod tests {
             argv,
             ["/home/me/bin/hook", "two words", "/home/me/x", "a~/b"]
         );
+    }
+
+    #[test]
+    fn failures_go_to_the_reporter_and_refused_ones_wait_for_stderr() {
+        let (tx, rx) = channel::<String>();
+        report_to(Some(Box::new(move |why| tx.send(why).is_ok())));
+        run(&Job {
+            hook: hook("false"),
+            path: "/w/a.png".into(),
+            monitor: "DP-1".into(),
+        });
+        let why = rx.recv().unwrap();
+        assert!(
+            why.starts_with("the on_change hook `false` failed on DP-1"),
+            "{why}"
+        );
+        drop(rx);
+        report("refused".into());
+        assert_eq!(REPORTER.lock().unwrap().1, ["refused"]);
+        report_to(None);
+        assert!(REPORTER.lock().unwrap().1.is_empty());
     }
 
     #[test]

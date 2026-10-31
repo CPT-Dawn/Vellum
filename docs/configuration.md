@@ -34,6 +34,8 @@ sync = false
 # [rotation.monitor.DP-2]   # Overrides: none by default
 # interval = "2h"
 
+# [keymap]                  # TUI keys: see "Keys" below
+# apply_all = "A"
 [preview]
 cache_mb = 200
 ```
@@ -372,3 +374,75 @@ still succeeds. For Rotation ticks the warning goes to the Daemon's log.
 ```text
 vellum: the on_change hook `matugen` failed on DP-1 (exit status: 1)
 ```
+
+In the TUI the warning shows as a toast instead.
+
+## Keys
+
+### `[keymap]`
+
+Every key in the TUI can be changed. The footer hints, the `?` help
+overlay and the `:` command palette are generated from the same keymap,
+so they always show your keys.
+
+- Type: a table of Action names, each set to a key or a list of keys
+- Default: the keys in the table below
+
+Setting an Action replaces all of its default keys. A key you give to one
+Action is taken away from any other Action that had it by default. An
+empty list leaves an Action with no key (it stays in the palette).
+
+```toml
+[keymap]
+down = ["n", "down"]
+up = ["e", "up"]
+apply_all = "A"
+help = "f1"
+top = "g g"       # a sequence: g, then g again
+quit = []         # Ctrl-C still quits
+```
+
+A key is a character (`"j"`, `"G"`, `"/"`), or one of `enter`, `esc`,
+`tab`, `backspace`, `space`, `up`, `down`, `left`, `right`, `home`, `end`,
+`pageup`, `pagedown` and `f1` to `f24`, optionally after `ctrl-` or `alt-`.
+Write uppercase letters as themselves (`"G"`, not `"shift-g"`). Keys
+separated by spaces form a sequence. If a key is both bound alone and the
+start of a sequence, it waits 400 ms for the rest. By default `g` toggles
+the grid and `g g` jumps to the top, so a lone `g` takes effect after that
+pause, or at once if you press another key.
+
+Browsing the list:
+
+| Action | Default | Does |
+|---|---|---|
+| `down`, `up` | `j` `down`, `k` `up` | Move (a row of tiles in the grid) |
+| `left`, `right` | `h` `left`, `l` `right` | Move between tiles in the grid |
+| `grid` | `g` | Switch between the list and the thumbnail grid |
+| `top`, `bottom` | `g g` `home`, `G` `end` | Jump to either end |
+| `page_down`, `page_up` | `ctrl-d` `pagedown`, `ctrl-u` `pageup` | Half a page |
+| `apply` | `enter` | Apply to the targeted monitor |
+| `apply_all` | `a` | Apply to every monitor |
+| `random` | `r` | Apply a random wallpaper from the list |
+| `monitor` | `m` | Target the next monitor |
+| `favorite` | `f` | Favorite or unfavorite |
+| `favorites_only` | `F` | Show only Favorites |
+| `search` | `/` | Fuzzy search the Library |
+| `help` | `?` | Show every key |
+| `palette` | `:` `ctrl-p` | Run any Action by name |
+| `back` | `esc` | Clear the search and filter, or quit |
+| `quit` | `q` | Quit |
+
+In search, help and the palette (other keys type into the prompt):
+
+| Action | Default | Does |
+|---|---|---|
+| `next`, `prev` | `down` `ctrl-n`, `up` `ctrl-p` | Next or previous row |
+| `confirm` | `enter` | Keep the search, run the command, close help |
+| `cancel` | `esc` | Clear and close |
+
+`ctrl-c` always quits. The mouse works too: click to select a wallpaper, a
+monitor in the header or a footer hint; double-click to apply; scroll with
+the wheel.
+
+An unknown Action, a key Vellum can't read, or one key given to two Actions
+is an error, reported like any other Config mistake.

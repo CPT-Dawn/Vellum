@@ -25,4 +25,4 @@ expression: harness.screen()
 │ 009.png  ~/Pictures/Wallpapers                                               │
 │ fill on DP-1                                                                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
- ←↓↑→/hjkl move  g list  ⏎ apply  q quit
+ h/j/k/l move  g list  ⏎ apply  / search  f favorite  : commands  ? help  q quit
