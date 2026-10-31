@@ -40,7 +40,15 @@ jobs:
       - name: Tests
         run: cargo test --workspace --locked
 
+      # Idle RSS and wakeups are gated by crates/vellum/tests/lightness.rs above.
       - name: Release build size
+        env:
+          VELLUMD_SIZE_BUDGET: 655360 # 640 KiB; vellumd is ~446 KiB at #15
         run: |
           cargo build --release --workspace --locked
           ls -l target/release/vellumd target/release/vellum
+          size=$(stat -c %s target/release/vellumd)
+          if [ "$size" -gt "$VELLUMD_SIZE_BUDGET" ]; then
+            echo "::error::vellumd is $size bytes, over the $VELLUMD_SIZE_BUDGET byte budget"
+            exit 1
+          fi

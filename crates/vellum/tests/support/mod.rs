@@ -240,6 +240,36 @@ impl Sway {
             .expect("VmRSS in /proc status")
     }
 
+    /// A field of the Daemon's `/proc/PID/smaps_rollup` (`"Rss"`, `"Pss"`,
+    /// `"Private_Dirty"`, ...) in KiB. Unlike VmRSS it is exact, not a cached
+    /// per-thread counter.
+    pub fn daemon_smaps_kib(&self, field: &str) -> u64 {
+        let pid = self.daemon.as_ref().expect("no daemon").id();
+        let rollup = fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).unwrap();
+        rollup
+            .lines()
+            .find_map(|l| l.strip_prefix(field)?.strip_prefix(':'))
+            .and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
+            .unwrap_or_else(|| panic!("{field} in smaps_rollup"))
+    }
+
+    /// Context switches of every Daemon thread so far. Each wakeup costs at
+    /// least one, so an idle Daemon's count stands still.
+    pub fn daemon_context_switches(&self) -> u64 {
+        let pid = self.daemon.as_ref().expect("no daemon").id();
+        fs::read_dir(format!("/proc/{pid}/task"))
+            .unwrap()
+            .filter_map(|task| fs::read_to_string(task.ok()?.path().join("status")).ok())
+            .flat_map(|status| {
+                status
+                    .lines()
+                    .filter(|l| l.contains("ctxt_switches:"))
+                    .filter_map(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+                    .collect::<Vec<_>>()
+            })
+            .sum()
+    }
+
     /// Whether the Daemon currently maps any memfd (pixel memory).
     pub fn daemon_maps_memfd(&self) -> bool {
         let pid = self.daemon.as_ref().expect("no daemon").id();
