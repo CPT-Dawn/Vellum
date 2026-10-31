@@ -1,0 +1,25 @@
+# Vellum wallpaper Daemon as a systemd user service.
+#
+# Install to /usr/lib/systemd/user/ (or ~/.config/systemd/user/), then:
+#   systemctl --user enable --now vellumd.service
+#
+# It starts with your graphical session and stops with it. Your compositor
+# must import WAYLAND_DISPLAY into the systemd user environment and start
+# graphical-session.target (Hyprland via uwsm, niri and Sway with their
+# systemd integration do).
+
+[Unit]
+Description=Vellum wallpaper daemon
+Documentation=https://github.com/CPT-Dawn/Vellum
+PartOf=graphical-session.target
+After=graphical-session.target
+Requisite=graphical-session.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/vellumd
+Restart=on-failure
+RestartSec=1
+
+[Install]
+WantedBy=graphical-session.target

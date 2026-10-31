@@ -1,7 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Vellum
-Comment=Start Vellum session bootstrap (daemon + playlist worker)
-Exec=vellum
-Terminal=false
-X-GNOME-Autostart-enabled=true
