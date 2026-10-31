@@ -3,12 +3,12 @@
 use std::os::fd::{AsFd, BorrowedFd};
 use std::path::Path;
 
-use vellum_ipc::{PixelFormat, Present, Request, Response};
+use vellum_ipc::{PixelFormat, Present, Request, Response, Transition};
 
 use crate::frame::Frame;
 use crate::render::render_fill;
 
-pub fn run(file: &Path) -> Result<(), String> {
+pub fn run(file: &Path, transition: Transition) -> Result<(), String> {
     let image = image::ImageReader::open(file)
         .map_err(|err| format!("cannot open {}: {err}", file.display()))?
         .with_guessed_format()
@@ -43,6 +43,7 @@ pub fn run(file: &Path) -> Result<(), String> {
             stride,
             format: PixelFormat::Xrgb8888,
             source: source.to_string_lossy().into_owned(),
+            transition,
         });
         match ask(&socket, &present, &[memfd.as_fd()])? {
             Response::Ok => {}
