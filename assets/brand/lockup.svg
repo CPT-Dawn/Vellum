@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="160" viewBox="0 0 480 160" role="img" aria-labelledby="t">
+  <title id="t">Vellum</title>
+  <defs>
+    <linearGradient id="i-canvas" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1A1B2E"/>
+      <stop offset="1" stop-color="#0B0D14"/>
+    </linearGradient>
+    <radialGradient id="i-bloom" cx="0.62" cy="0.58" r="0.55">
+      <stop offset="0" stop-color="#8DE3DC" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#8DE3DC" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="i-glassBack" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3B7F86" stop-opacity="0.50"/>
+      <stop offset="1" stop-color="#173A40" stop-opacity="0.32"/>
+    </linearGradient>
+    <linearGradient id="i-glassFront" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4E9EA2" stop-opacity="0.52"/>
+      <stop offset="1" stop-color="#1B4549" stop-opacity="0.40"/>
+    </linearGradient>
+    <linearGradient id="i-edge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#B8F2EC" stop-opacity="0.75"/>
+      <stop offset="1" stop-color="#8DE3DC" stop-opacity="0.12"/>
+    </linearGradient>
+    <filter id="i-glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="5"/>
+    </filter>
+    <filter id="i-glowTight" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="1.6"/>
+    </filter>
+    <clipPath id="i-tile"><rect width="128" height="128" rx="28"/></clipPath>
+  </defs>
+  <g transform="translate(16 16)">
+  <g clip-path="url(#i-tile)">
+    <rect width="128" height="128" fill="url(#i-canvas)"/>
+    <rect width="128" height="128" fill="url(#i-bloom)"/>
+    <!-- two overlapping vellum sheets in smoked teal glass -->
+    <rect x="22" y="20" width="62" height="78" rx="12" transform="rotate(-10 53 59)"
+          fill="url(#i-glassBack)" stroke="url(#i-edge)" stroke-width="1.5"/>
+    <rect x="42" y="32" width="62" height="78" rx="12" transform="rotate(6 73 71)"
+          fill="url(#i-glassFront)" stroke="url(#i-edge)" stroke-width="1.5"/>
+    <!-- handwritten v: wide bloom, tight glow, mint core, hot highlight -->
+    <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M36 50 C 42 52, 47 66, 56 86 C 58 90, 60 90, 62 86 C 70 68, 80 50, 96 38" stroke="#8DE3DC" stroke-width="14" opacity="0.45" filter="url(#i-glow)"/>
+      <path d="M36 50 C 42 52, 47 66, 56 86 C 58 90, 60 90, 62 86 C 70 68, 80 50, 96 38" stroke="#8DE3DC" stroke-width="10" opacity="0.6" filter="url(#i-glowTight)"/>
+      <path d="M36 50 C 42 52, 47 66, 56 86 C 58 90, 60 90, 62 86 C 70 68, 80 50, 96 38" stroke="#8DE3DC" stroke-width="8"/>
+      <path d="M36 50 C 42 52, 47 66, 56 86 C 58 90, 60 90, 62 86 C 70 68, 80 50, 96 38" stroke="#E6FFFC" stroke-width="2.4" opacity="0.85"/>
+    </g>
+  </g>
+  <rect x="0.75" y="0.75" width="126.5" height="126.5" rx="27.25" fill="none" stroke="#C0CAF5" stroke-opacity="0.08" stroke-width="1.5"/>
+  </g>
+  <!-- wordmark: "vellum", Inter Display Medium, outlined -->
+  <path transform="translate(168 106)" fill="#C0CAF5" d="M20.8 0 1.17 -51.56H12.21L22.46 -23.29Q23.54 -20.26 24.51 -17.24Q25.49 -14.21 26.46 -11.23Q27.44 -14.21 28.42 -17.24Q29.39 -20.26 30.42 -23.29L40.53 -51.56H51.42L31.74 0ZM78.92 1.17Q71.25 1.17 65.76 -2.29Q60.27 -5.76 57.31 -11.84Q54.36 -17.92 54.36 -25.68Q54.36 -33.54 57.44 -39.65Q60.51 -45.75 65.93 -49.24Q71.35 -52.73 78.38 -52.73Q85.71 -52.73 91.1 -49.32Q96.5 -45.9 99.48 -39.82Q102.46 -33.74 102.46 -25.78V-23H64.52Q64.81 -16.02 68.54 -11.72Q72.28 -7.42 79.07 -7.42Q84.14 -7.42 87.42 -9.72Q90.69 -12.01 91.76 -15.67H101.67Q100.75 -10.69 97.55 -6.88Q94.35 -3.08 89.54 -0.95Q84.73 1.17 78.92 1.17ZM64.61 -30.81H92.4Q91.76 -36.96 88.05 -40.55Q84.34 -44.14 78.48 -44.14Q72.62 -44.14 68.93 -40.55Q65.25 -36.96 64.61 -30.81ZM120.14 -72.75V0H109.84V-72.75ZM140.57 -72.75V0H130.27V-72.75ZM169.34 1.03Q164.07 1.03 159.84 -1.29Q155.62 -3.61 153.16 -8.15Q150.69 -12.7 150.69 -19.43V-51.56H160.99V-20.7Q160.99 -14.5 163.97 -11.35Q166.95 -8.2 172.32 -8.2Q177.54 -8.2 181.13 -11.45Q184.72 -14.7 184.72 -21.88V-51.56H195.03V0H184.92V-7.76Q179.64 1.03 169.34 1.03ZM205.15 0V-51.56H215.16V-42.92Q217.55 -47.71 221.65 -50.15Q225.75 -52.59 230.54 -52.59Q235.81 -52.59 239.79 -49.9Q243.77 -47.22 245.38 -43.07Q247.48 -47.27 251.75 -49.93Q256.03 -52.59 261.74 -52.59Q266.52 -52.59 270.43 -50.49Q274.34 -48.39 276.63 -44.26Q278.93 -40.14 278.93 -33.94V0H268.57V-33.06Q268.57 -38.57 265.5 -41.06Q262.42 -43.55 258.22 -43.55Q253.05 -43.55 250.07 -40.36Q247.09 -37.16 247.09 -32.23V0H236.93V-33.74Q236.93 -38.18 234.08 -40.87Q231.22 -43.55 226.83 -43.55Q222.33 -43.55 218.89 -40.38Q215.45 -37.21 215.45 -31.1V0Z"/>
+</svg>
