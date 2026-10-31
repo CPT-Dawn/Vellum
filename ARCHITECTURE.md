@@ -27,7 +27,7 @@ flowchart LR
     subgraph daemon["vellumd (always running, 1 thread)"]
         loop["poll loop"]
     end
-    render["vellum render<br/>--restore / --rotate / --sync<br/>(short-lived)"]
+    render["vellum render<br/>--restore / --rotate / --sync / FILE<br/>(short-lived)"]
     comp["Wayland compositor"]
     files[("Config, State,<br/>Library, Favorites")]
 
@@ -49,10 +49,14 @@ flowchart LR
   paced by `wl_surface.frame` callbacks, not by a timer.
 - **`vellum`** is the CLI, the TUI and the renderer in one binary. Any user
   command auto-starts `vellumd` if no socket answers (`client::daemon()`).
-- **`vellum render`** is a hidden subcommand only the Daemon runs:
+- **`vellum render`** is a hidden subcommand the Daemon runs:
   `--restore -m NAME` puts the State wallpaper back on a Monitor,
   `--rotate -m NAME...` picks and presents the next Rotation wallpaper, and
   `--sync` reads the Config and pushes its settings to the Daemon.
+  `render FILE -m NAME` presents an explicit file with `set FILE -m NAME`'s
+  effects (Config Fit mode and Transition, State, `on_change` hook,
+  Rotation timer reset), but no Library lookup. Like every `render` mode
+  it never starts a Daemon, and it exits right after presenting.
 - **One Daemon per Wayland display**, enforced by an flock next to the
   socket. The Daemon exits when the compositor goes away; under systemd
   (`Type=notify`, `Restart=on-failure`) it comes back with the session.

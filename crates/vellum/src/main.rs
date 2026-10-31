@@ -91,8 +91,15 @@ enum Command {
     },
     /// Render a frame or push the Config for the Daemon. Run by vellumd,
     /// not by hand.
-    #[command(hide = true, group(ArgGroup::new("mode").required(true).args(["restore", "sync", "rotate"])))]
+    #[command(hide = true, group(ArgGroup::new("mode").required(true).args(["file", "restore", "sync", "rotate"])))]
     Render {
+        /// Present this image file on the monitor, like `vellum set FILE
+        /// -m NAME` with the Config's Fit mode and Transition: State
+        /// records it, the on_change hook runs and the monitor's Rotation
+        /// timer restarts. Unlike `set`, no Library lookup and no Daemon
+        /// auto-start.
+        #[arg(requires = "monitor")]
+        file: Option<PathBuf>,
         /// Put the wallpaper State remembers back on the monitor.
         #[arg(long, requires = "monitor")]
         restore: bool,
@@ -268,6 +275,14 @@ fn main() -> ExitCode {
             None,
             rotation::Trigger::Tick,
         ),
+        Command::Render {
+            file: Some(file),
+            monitor,
+            ..
+        } => match &monitor[..] {
+            [monitor] => set::explicit(&file, monitor, &config::load()),
+            _ => Err("render FILE takes exactly one --monitor".into()),
+        },
         Command::Render { monitor, .. } => restore::run(&monitor[0]),
     };
     finish(result)

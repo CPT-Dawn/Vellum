@@ -81,6 +81,28 @@ fn set_runs_the_hook_with_the_path_and_monitor_substituted() {
 }
 
 #[test]
+fn render_with_a_file_presents_it_on_one_monitor_like_set() {
+    let mut sway = Sway::start(&[SMALL, SMALL]);
+    install_hook(&sway, "");
+    // Never starts a Daemon: the Daemon is what runs `vellum render`.
+    let path = solid(&sway, "red.png", RED);
+    let out = sway.vellum(["render", &path, "--monitor", "HEADLESS-2"]);
+    assert!(!out.status.success());
+    assert!(!sway.daemon_answers());
+
+    sway.start_daemon();
+    sway.vellum_ok(["render", &path, "--monitor", "HEADLESS-2"]);
+
+    sway.screenshot_until("HEADLESS-2", |s| s.get_pixel(160, 120).0 == RED);
+    let status = sway.vellum_stdout(["status"]);
+    let shown: Vec<&str> = status.lines().filter(|l| l.contains("red.png")).collect();
+    assert_eq!(shown.len(), 1, "{status}");
+    assert!(shown[0].contains("HEADLESS-2"), "{status}");
+    // A new wallpaper, so the on_change hook ran, as for `set`.
+    assert_eq!(marker_lines(&sway), [line(&path, "HEADLESS-2")]);
+}
+
+#[test]
 fn set_on_one_monitor_runs_the_hook_for_that_monitor_only() {
     let mut sway = Sway::start(&[SMALL, SMALL]);
     install_hook(&sway, "");
