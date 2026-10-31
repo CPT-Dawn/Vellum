@@ -3,7 +3,12 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-const PROTOCOLS: &[&str] = &["wayland.xml", "wlr-layer-shell-unstable-v1.xml"];
+const PROTOCOLS: &[&str] = &[
+    "wayland.xml",
+    "wlr-layer-shell-unstable-v1.xml",
+    "viewporter.xml",
+    "alpha-modifier-v1.xml",
+];
 
 fn main() {
     let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());

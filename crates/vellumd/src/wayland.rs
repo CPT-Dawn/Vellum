@@ -4,6 +4,9 @@
 //! Nothing here keeps pixels. A presented frame's memfd becomes a `wl_shm`
 //! pool, the buffer is attached and committed, and the fd is closed right
 //! after the flush. The buffer itself is destroyed on `wl_buffer.release`.
+//! Transitions live in [`transition`].
+
+mod transition;
 
 use std::os::fd::{AsFd, OwnedFd};
 use std::time::{Duration, Instant};
@@ -31,7 +34,18 @@ enum Obj {
     Output,
     LayerShell,
     LayerSurface,
+    Subcompositor,
+    Subsurface,
+    Viewporter,
+    Viewport,
+    AlphaModifier,
+    AlphaModifierSurface,
+    /// A `wl_surface.frame` callback pacing a Transition.
+    FrameCallback,
 }
+
+/// Set to skip alpha-modifier, forcing the CPU Fade (for tests).
+const NO_ALPHA_MODIFIER_ENV: &str = "VELLUMD_NO_ALPHA_MODIFIER";
 
 /// How long startup waits for every Monitor's first configure.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(3);
@@ -50,6 +64,12 @@ struct State {
     compositor: Option<ObjectId>,
     shm: Option<ObjectId>,
     layer_shell: Option<ObjectId>,
+    subcompositor: Option<ObjectId>,
+    viewporter: Option<ObjectId>,
+    alpha_modifier: Option<ObjectId>,
+    /// Buffers destroyed by us whose ids the compositor has not yet freed;
+    /// a late `release` for one of them is ignored.
+    dead_buffers: Vec<ObjectId>,
     monitors: Vec<Monitor>,
     fatal: Option<String>,
 }
@@ -68,6 +88,9 @@ struct Monitor {
     layer: Option<ObjectId>,
     /// Logical size from the last layer-surface configure.
     size: Option<(u32, u32)>,
+    /// A wallpaper is on screen, so a Transition has something to leave.
+    showing: bool,
+    animation: Option<transition::Animation>,
 }
 
 impl Monitor {
@@ -95,6 +118,10 @@ impl Wayland {
                 compositor: None,
                 shm: None,
                 layer_shell: None,
+                subcompositor: None,
+                viewporter: None,
+                alpha_modifier: None,
+                dead_buffers: Vec::new(),
                 monitors: Vec::new(),
                 fatal: None,
             },
@@ -180,6 +207,13 @@ impl Wayland {
                 Obj::Output => wl_output::event(state, &mut msgs),
                 Obj::LayerShell => zwlr_layer_shell_v1::event(state, &mut msgs),
                 Obj::LayerSurface => zwlr_layer_surface_v1::event(state, &mut msgs),
+                Obj::Subcompositor => wl_subcompositor::event(state, &mut msgs),
+                Obj::Subsurface => wl_subsurface::event(state, &mut msgs),
+                Obj::Viewporter => wp_viewporter::event(state, &mut msgs),
+                Obj::Viewport => wp_viewport::event(state, &mut msgs),
+                Obj::AlphaModifier => wp_alpha_modifier_v1::event(state, &mut msgs),
+                Obj::AlphaModifierSurface => wp_alpha_modifier_surface_v1::event(state, &mut msgs),
+                Obj::FrameCallback => wl_callback::event(state, &mut msgs),
             };
             decoded.map_err(|err| format!("malformed Wayland event: {err:?}"))?;
         }
@@ -219,17 +253,17 @@ impl Wayland {
             .collect()
     }
 
-    /// Shows `frame` on its Monitor. The memfd is consumed: it is closed as
-    /// soon as the compositor has it.
+    /// Shows `frame` on its Monitor through its Transition. The memfd is
+    /// consumed: it is closed as soon as the compositor has it.
     pub fn present(&mut self, frame: &Present, memfd: OwnedFd) -> Result<(), String> {
         let s = &mut self.state;
-        let monitor = s
+        let index = s
             .monitors
             .iter()
-            .find(|m| m.name == frame.monitor)
+            .position(|m| m.name == frame.monitor)
             .ok_or_else(|| format!("monitor {} is not connected", frame.monitor))?;
-        let (Some(surface), Some((width, height))) = (monitor.surface, monitor.physical_size())
-        else {
+        let monitor = &s.monitors[index];
+        let (Some(_), Some((width, height))) = (monitor.surface, monitor.physical_size()) else {
             return Err(format!("monitor {} is not ready yet", frame.monitor));
         };
         if (frame.width, frame.height) != (width, height) {
@@ -253,7 +287,12 @@ impl Wayland {
                 "frame memory holds {file_size} bytes but {pool_size} are needed"
             ));
         }
-        let scale = monitor.scale.max(1);
+
+        // A newer frame wins: the running Transition jumps to its end, so
+        // the next one starts from a settled screen.
+        if let Some(animation) = s.monitors[index].animation.take() {
+            s.finish_transition(index, animation).map_err(io)?;
+        }
 
         let shm = s.shm.expect("bound at startup");
         let pool = s.objects.create(Obj::ShmPool);
@@ -270,12 +309,19 @@ impl Wayland {
             wl_shm::Format::xrgb8888,
         )
         .map_err(io)?;
-        wl_shm_pool::req::destroy(&mut s.backend, pool).map_err(io)?;
-        wl_surface::req::set_buffer_scale(&mut s.backend, surface, scale).map_err(io)?;
-        wl_surface::req::attach(&mut s.backend, surface, Some(buffer), 0, 0).map_err(io)?;
-        wl_surface::req::damage_buffer(&mut s.backend, surface, 0, 0, i32::MAX, i32::MAX)
-            .map_err(io)?;
-        wl_surface::req::commit(&mut s.backend, surface).map_err(io)?;
+        let new = transition::NewFrame {
+            pool,
+            buffer,
+            memfd: &memfd,
+            stride: frame.stride,
+        };
+        if let Some(new) = s
+            .start_transition(index, frame.transition, new)
+            .map_err(io)?
+        {
+            wl_shm_pool::req::destroy(&mut s.backend, new.pool).map_err(io)?;
+            s.show(index, new.buffer).map_err(io)?;
+        }
         // waybackend sends fds on flush, so the memfd must outlive it.
         s.backend.flush().map_err(io)?;
         drop(memfd);
@@ -288,6 +334,25 @@ fn io(err: rustix::io::Errno) -> String {
 }
 
 impl State {
+    /// Puts `buffer` on Monitor `index`'s background surface.
+    fn show(&mut self, index: usize, buffer: ObjectId) -> Result<(), rustix::io::Errno> {
+        let m = &mut self.monitors[index];
+        let Some(surface) = m.surface else {
+            return self.destroy_buffer(buffer);
+        };
+        m.showing = true;
+        let scale = m.scale.max(1);
+        wl_surface::req::set_buffer_scale(&mut self.backend, surface, scale)?;
+        wl_surface::req::attach(&mut self.backend, surface, Some(buffer), 0, 0)?;
+        wl_surface::req::damage_buffer(&mut self.backend, surface, 0, 0, i32::MAX, i32::MAX)?;
+        wl_surface::req::commit(&mut self.backend, surface)
+    }
+
+    fn destroy_buffer(&mut self, buffer: ObjectId) -> Result<(), rustix::io::Errno> {
+        self.dead_buffers.push(buffer);
+        wl_buffer::req::destroy(&mut self.backend, buffer)
+    }
+
     fn create_missing_surfaces(&mut self) -> Result<(), rustix::io::Errno> {
         let (Some(compositor), Some(layer_shell)) = (self.compositor, self.layer_shell) else {
             return Ok(());
@@ -320,7 +385,10 @@ impl State {
     }
 
     fn remove_monitor(&mut self, index: usize) {
-        let m = self.monitors.remove(index);
+        let mut m = self.monitors.remove(index);
+        if let Some(animation) = m.animation.take() {
+            let _ = self.drop_transition(animation);
+        }
         if let Some(layer) = m.layer {
             let _ = zwlr_layer_surface_v1::req::destroy(&mut self.backend, layer);
         }
@@ -363,6 +431,7 @@ impl wl_display::EvHandler for State {
     }
 
     fn delete_id(&mut self, _: ObjectId, id: u32) -> Handled {
+        self.dead_buffers.retain(|b| b.get().get() != id);
         self.objects.remove(id);
         Ok(())
     }
@@ -381,6 +450,18 @@ impl wl_registry::EvHandler for State {
                 self.layer_shell =
                     Some(self.bind(name, interface, version.min(4), Obj::LayerShell));
             }
+            wl_subcompositor::NAME if self.subcompositor.is_none() => {
+                self.subcompositor = Some(self.bind(name, interface, 1, Obj::Subcompositor));
+            }
+            wp_viewporter::NAME if self.viewporter.is_none() => {
+                self.viewporter = Some(self.bind(name, interface, 1, Obj::Viewporter));
+            }
+            wp_alpha_modifier_v1::NAME
+                if self.alpha_modifier.is_none()
+                    && std::env::var_os(NO_ALPHA_MODIFIER_ENV).is_none() =>
+            {
+                self.alpha_modifier = Some(self.bind(name, interface, 1, Obj::AlphaModifier));
+            }
             wl_output::NAME => {
                 let version = version.min(4);
                 let output = self.bind(name, interface, version, Obj::Output);
@@ -394,6 +475,8 @@ impl wl_registry::EvHandler for State {
                     surface: None,
                     layer: None,
                     size: None,
+                    showing: false,
+                    animation: None,
                 });
             }
             _ => {}
@@ -413,12 +496,20 @@ impl wl_callback::EvHandler for State {
     fn done(&mut self, sender: ObjectId, _: u32) -> Handled {
         if self.initial_sync == Some(sender) {
             self.initial_sync = None;
+        } else {
+            self.transition_frame(sender);
         }
         Ok(())
     }
 }
 
 impl wl_compositor::EvHandler for State {}
+impl wl_subcompositor::EvHandler for State {}
+impl wl_subsurface::EvHandler for State {}
+impl wp_viewporter::EvHandler for State {}
+impl wp_viewport::EvHandler for State {}
+impl wp_alpha_modifier_v1::EvHandler for State {}
+impl wp_alpha_modifier_surface_v1::EvHandler for State {}
 impl wl_shm_pool::EvHandler for State {}
 impl zwlr_layer_shell_v1::EvHandler for State {}
 
@@ -430,8 +521,11 @@ impl wl_shm::EvHandler for State {
 
 impl wl_buffer::EvHandler for State {
     fn release(&mut self, buffer: ObjectId) -> Handled {
+        if self.dead_buffers.contains(&buffer) || self.transition_keeps(buffer) {
+            return Ok(());
+        }
         // The compositor is done with the pixels; let them go.
-        if let Err(err) = wl_buffer::req::destroy(&mut self.backend, buffer) {
+        if let Err(err) = self.destroy_buffer(buffer) {
             self.fatal = Some(io(err));
         }
         Ok(())

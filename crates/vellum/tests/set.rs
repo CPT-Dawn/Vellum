@@ -93,11 +93,11 @@ fn jpeg_png_and_webp_wallpapers_all_work() {
             &paint(8, 8, |_, _| WHITE),
             ImageFormat::Png,
         );
-        sway.vellum_ok(["set", &white]);
+        sway.vellum_ok(["set", &white, "--transition", "none"]);
         sway.screenshot_until("HEADLESS-1", |s| s.get_pixel(80, 120).0 == WHITE);
 
         let path = save(&sway, name, &halves, format);
-        sway.vellum_ok(["set", &path]);
+        sway.vellum_ok(["set", &path, "--transition", "none"]);
         let shot = sway.screenshot_until("HEADLESS-1", |s| s.get_pixel(80, 120).0 != WHITE);
         assert_pixel(&shot, 80, 120, RED, tolerance);
         assert_pixel(&shot, 240, 120, BLUE, tolerance);
