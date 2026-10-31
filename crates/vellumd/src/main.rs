@@ -1,6 +1,7 @@
 //! `vellumd`: the Vellum Daemon. Keeps wallpapers on every Monitor, holds no
 //! image decoders and no pixels (ADR 0003).
 
+mod config_watch;
 mod daemon;
 mod ipc;
 mod state;
@@ -54,6 +55,7 @@ fn run() -> Result<(), String> {
     // Bind only once every Monitor is configured: a socket that answers
     // means the Daemon is ready to present.
     let listener = ipc::Listener::bind(&socket)?;
+    let config = config_watch::ConfigWatch::new(vellum_ipc::config_dir_from_env())?;
     system::notify_ready();
-    daemon::Daemon::new(wayland, listener, state::State::load()).run()
+    daemon::Daemon::new(wayland, listener, config, state::State::load()).run()
 }

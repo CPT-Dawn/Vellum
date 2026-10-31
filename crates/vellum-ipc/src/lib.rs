@@ -38,7 +38,7 @@ pub use codec::{HEADER_LEN, MAGIC, MAX_PAYLOAD, Message, PROTOCOL_VERSION};
 pub use error::Error;
 pub use message::{
     Direction, Easing, FitMode, MonitorInfo, MonitorStatus, PixelFormat, Present, Request,
-    Response, Status, Transition, TransitionKind, Wallpaper,
+    Response, Settings, Status, Transition, TransitionKind, Wallpaper,
 };
 pub use transport::{recv, request, send};
 
@@ -62,9 +62,42 @@ pub fn socket_path_from_env() -> Result<PathBuf, Error> {
     Ok(socket_path(Path::new(&runtime_dir), &display))
 }
 
+/// The directory holding `config.toml`: `$XDG_CONFIG_HOME/vellum`, falling
+/// back to `~/.config/vellum`. Shared so that the Daemon watches exactly
+/// the directory `vellum` reads; only `vellum` ever parses the file.
+pub fn config_dir(xdg_config_home: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
+    xdg_config_home
+        .filter(|dir| dir.is_absolute())
+        .map(Path::to_path_buf)
+        .or_else(|| home.map(|home| home.join(".config")))
+        .map(|base| base.join("vellum"))
+}
+
+/// [`config_dir`] for the current environment.
+pub fn config_dir_from_env() -> Option<PathBuf> {
+    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    config_dir(xdg.as_deref(), home.as_deref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_config_dir_follows_xdg_and_falls_back_to_dot_config() {
+        let home = Path::new("/home/me");
+        assert_eq!(
+            config_dir(Some(Path::new("/x/conf")), Some(home)),
+            Some(PathBuf::from("/x/conf/vellum"))
+        );
+        // A relative XDG_CONFIG_HOME is invalid per the spec and ignored.
+        assert_eq!(
+            config_dir(Some(Path::new("conf")), Some(home)),
+            Some(PathBuf::from("/home/me/.config/vellum"))
+        );
+        assert_eq!(config_dir(None, None), None);
+    }
 
     #[test]
     fn socket_lives_in_the_runtime_dir_named_after_the_display() {

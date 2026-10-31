@@ -67,14 +67,36 @@ pub fn rss_bytes() -> u64 {
 pub struct Renderer {
     pub child: Child,
     pub pidfd: OwnedFd,
-    pub monitor: String,
+    pub job: Job,
 }
 
-/// Spawns `vellum render --restore --monitor <monitor>`. Its stderr is the
-/// Daemon's, so render errors land in the Daemon's log.
-pub fn spawn_restore(monitor: &str) -> Result<Renderer, String> {
-    let child = Command::new(vellum_bin())
-        .args(["render", "--restore", "--monitor", monitor])
+/// What a `vellum render` was spawned to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Job {
+    /// `--restore --monitor <name>`: put State's wallpaper back.
+    Restore(String),
+    /// `--sync`: read the Config and push its settings.
+    Sync,
+}
+
+impl std::fmt::Display for Job {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Job::Restore(monitor) => write!(f, "restoring {monitor}"),
+            Job::Sync => f.write_str("reading the Config"),
+        }
+    }
+}
+
+/// Spawns `vellum render` for `job`. Its stderr is the Daemon's, so render
+/// and Config errors land in the Daemon's log.
+pub fn spawn_render(job: Job) -> Result<Renderer, String> {
+    let mut command = Command::new(vellum_bin());
+    match &job {
+        Job::Restore(monitor) => command.args(["render", "--restore", "--monitor", monitor]),
+        Job::Sync => command.args(["render", "--sync"]),
+    };
+    let child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .spawn()
@@ -82,11 +104,7 @@ pub fn spawn_restore(monitor: &str) -> Result<Renderer, String> {
     let pid = rustix::process::Pid::from_child(&child);
     let pidfd = rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty())
         .map_err(|err| format!("cannot watch `vellum render`: {err}"))?;
-    Ok(Renderer {
-        child,
-        pidfd,
-        monitor: monitor.to_owned(),
-    })
+    Ok(Renderer { child, pidfd, job })
 }
 
 /// `vellum` next to this `vellumd`, or else the one on PATH.

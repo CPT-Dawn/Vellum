@@ -2,7 +2,7 @@
 //!
 //! Every event source is one entry in [`Source`]. The loop polls them all
 //! with an infinite timeout, so an idle Daemon makes zero wakeups. To add a
-//! source (the Config inotify watch, the Rotation timerfd), add a variant,
+//! source (the Rotation timerfd), add a variant,
 //! push its fd in [`Daemon::run`] and handle it in the match. Running
 //! `vellum render` children are polled after the fixed sources, one pidfd
 //! each, so they are reaped the moment they exit.
@@ -10,15 +10,21 @@
 //! Whenever a Monitor lacks a frame for its current size (startup, hotplug,
 //! a scale change) and State has a wallpaper for it, the Daemon spawns
 //! `vellum render --restore --monitor <name>`.
+//!
+//! At startup, and whenever the inotify watch on the Config directory fires,
+//! it spawns `vellum render --sync`, which reads the Config and pushes
+//! [`Settings`] back. Only one sync runs at a time; a change while one runs
+//! queues exactly one more, so the last sync always reads the newest file.
 
 use std::os::fd::{AsFd, OwnedFd};
 
 use rustix::event::{PollFd, PollFlags, poll};
-use vellum_ipc::{MonitorStatus, Request, Response, Status, Wallpaper};
+use vellum_ipc::{MonitorStatus, Request, Response, Settings, Status, Wallpaper};
 
+use crate::config_watch::ConfigWatch;
 use crate::ipc::{Client, Listener};
 use crate::state::State;
-use crate::system::{self, Renderer};
+use crate::system::{self, Job, Renderer};
 use crate::wayland::Wayland;
 
 /// The fds the loop waits on, in poll order.
@@ -26,26 +32,35 @@ use crate::wayland::Wayland;
 enum Source {
     Wayland,
     Ipc,
+    Config,
 }
 
-const SOURCES: [Source; 2] = [Source::Wayland, Source::Ipc];
+const SOURCES: [Source; 3] = [Source::Wayland, Source::Ipc, Source::Config];
 
 pub struct Daemon {
     wayland: Wayland,
     listener: Listener,
+    config: ConfigWatch,
     state: State,
+    /// The last good Config values `vellum render --sync` pushed.
+    settings: Settings,
     renderers: Vec<Renderer>,
+    /// The Config may have changed since the running sync (if any) read it.
+    sync_wanted: bool,
     /// Set by a kill request: exit once the reply is out.
     stopping: bool,
 }
 
 impl Daemon {
-    pub fn new(wayland: Wayland, listener: Listener, state: State) -> Daemon {
+    pub fn new(wayland: Wayland, listener: Listener, config: ConfigWatch, state: State) -> Daemon {
         Daemon {
             wayland,
             listener,
+            config,
             state,
+            settings: Settings::default(),
             renderers: Vec::new(),
+            sync_wanted: true,
             stopping: false,
         }
     }
@@ -55,6 +70,7 @@ impl Daemon {
     pub fn run(mut self) -> Result<(), String> {
         loop {
             self.restore_missing_frames();
+            self.start_sync();
             self.wayland.flush()?;
             let (ready, exited) = {
                 let wayland_fd = self.wayland.fd();
@@ -63,6 +79,7 @@ impl Daemon {
                     .map(|source| match source {
                         Source::Wayland => wayland_fd.as_fd(),
                         Source::Ipc => self.listener.listener().as_fd(),
+                        Source::Config => self.config.fd(),
                     })
                     .chain(self.renderers.iter().map(|r| r.pidfd.as_fd()))
                     .map(|fd| PollFd::from_borrowed_fd(fd, PollFlags::IN))
@@ -107,6 +124,11 @@ impl Daemon {
                             }
                         }
                     }
+                    Source::Config => {
+                        if self.config.changed() {
+                            self.sync_wanted = true;
+                        }
+                    }
                 }
             }
         }
@@ -142,10 +164,23 @@ impl Daemon {
             }
             // A restore still running for an older size presents a frame
             // that `wants_frame` drops, so overlapping restores are safe.
-            match system::spawn_restore(&monitor) {
+            match system::spawn_render(Job::Restore(monitor.clone())) {
                 Ok(renderer) => self.renderers.push(renderer),
                 Err(err) => eprintln!("vellumd: {monitor}: {err}"),
             }
+        }
+    }
+
+    /// Spawns `vellum render --sync` if the Config may have changed and no
+    /// sync is running.
+    fn start_sync(&mut self) {
+        if !self.sync_wanted || self.renderers.iter().any(|r| r.job == Job::Sync) {
+            return;
+        }
+        self.sync_wanted = false;
+        match system::spawn_render(Job::Sync) {
+            Ok(renderer) => self.renderers.push(renderer),
+            Err(err) => eprintln!("vellumd: {err}"),
         }
     }
 
@@ -160,7 +195,7 @@ impl Daemon {
             }
             match renderer.child.wait() {
                 Ok(status) if !status.success() => {
-                    eprintln!("vellumd: restoring {} failed ({status})", renderer.monitor)
+                    eprintln!("vellumd: {} failed ({status})", renderer.job)
                 }
                 Ok(_) => {}
                 Err(err) => eprintln!("vellumd: cannot reap `vellum render`: {err}"),
@@ -183,6 +218,7 @@ impl Daemon {
                     name: m.name,
                 })
                 .collect(),
+            settings: self.settings.clone(),
         }
     }
 
@@ -191,6 +227,10 @@ impl Daemon {
         match request {
             Request::Monitors => Response::Monitors(self.wayland.monitors()),
             Request::Status => Response::Status(self.status()),
+            Request::Settings(settings) => {
+                self.settings = settings;
+                Response::Ok
+            }
             Request::Kill => {
                 self.stopping = true;
                 Response::Ok

@@ -6,9 +6,20 @@ use std::os::unix::net::UnixStream;
 
 use vellum_ipc::{
     Direction, Easing, Error, FitMode, HEADER_LEN, MonitorInfo, MonitorStatus, PROTOCOL_VERSION,
-    PixelFormat, Present, Request, Response, Status, Transition, TransitionKind, Wallpaper, recv,
-    send,
+    PixelFormat, Present, Request, Response, Settings, Status, Transition, TransitionKind,
+    Wallpaper, recv, send,
 };
+
+fn settings() -> Settings {
+    Settings {
+        transition: Transition {
+            kind: TransitionKind::Wipe,
+            direction: Direction::Up,
+            duration_ms: 250,
+            easing: Easing::Linear,
+        },
+    }
+}
 
 fn present() -> Present {
     Present {
@@ -58,6 +69,8 @@ fn requests_survive_a_round_trip() {
         Request::Present(present()),
         Request::Status,
         Request::Kill,
+        Request::Settings(settings()),
+        Request::Settings(Settings::default()),
     ];
     for kind in [
         TransitionKind::None,
@@ -115,6 +128,7 @@ fn responses_survive_a_round_trip() {
             version: "2.0.0".into(),
             pid: 4242,
             rss_bytes: 3 << 20,
+            settings: settings(),
             monitors: vec![
                 MonitorStatus {
                     name: "DP-1".into(),

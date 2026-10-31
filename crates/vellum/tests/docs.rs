@@ -22,7 +22,7 @@ fn stdout_of(args: &[&str]) -> String {
 }
 
 /// Visible subcommands every completion script and the man page must know.
-const SUBCOMMANDS: &[&str] = &["set", "monitors", "status", "kill", "completions"];
+const SUBCOMMANDS: &[&str] = &["set", "monitors", "status", "reload", "kill", "completions"];
 
 #[test]
 fn completions_cover_bash_zsh_and_fish() {

@@ -80,11 +80,16 @@ fn start_daemon(socket: &Path) -> Result<(), String> {
 }
 
 fn log_path() -> Option<PathBuf> {
+    state_dir().map(|dir| dir.join("vellumd.log"))
+}
+
+/// `$XDG_STATE_HOME/vellum`, falling back to `~/.local/state/vellum`.
+pub fn state_dir() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_STATE_HOME")
         .filter(|dir| Path::new(dir).is_absolute())
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".local/state")))?;
-    Some(base.join("vellum").join("vellumd.log"))
+    Some(base.join("vellum"))
 }
 
 /// `vellumd` next to this `vellum`, or else the one on PATH.
