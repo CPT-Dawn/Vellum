@@ -177,7 +177,12 @@ fn the_daemon_keeps_no_frame_memory_after_presenting() {
         sway.screenshot_until("HEADLESS-1", |s| s.get_pixel(160, 120).0 == color);
     }
 
-    // The memfd is closed right after the commit and never mapped.
+    // The last set's default Fade can still be finishing. On a compositor
+    // without alpha-modifier it maps the frame for a CPU blend until it ends.
+    sway.wait_until("the Transition to let go of the frame", || {
+        !sway.daemon_maps_memfd()
+    });
+    // Then no frame is left: every memfd is closed and none is mapped.
     let fds: Vec<String> = std::fs::read_dir(format!("/proc/{pid}/fd"))
         .unwrap()
         .filter_map(|e| std::fs::read_link(e.ok()?.path()).ok())
