@@ -7,6 +7,7 @@ const PROTOCOLS: &[&str] = &[
     "wayland.xml",
     "wlr-layer-shell-unstable-v1.xml",
     "viewporter.xml",
+    "fractional-scale-v1.xml",
     "alpha-modifier-v1.xml",
 ];
 

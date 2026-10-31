@@ -273,6 +273,28 @@ fn a_new_wallpaper_mid_transition_wins() {
 }
 
 #[test]
+fn a_scale_change_mid_transition_lands_the_new_frame() {
+    let mut sway = Sway::start(&[SMALL]);
+    sway.start_daemon();
+    let red = solid(&sway, "red.png", RED);
+    let blue = solid(&sway, "blue.png", BLUE);
+    sway.vellum_ok(["set", &red, "--transition", "none"]);
+    sway.screenshot_until("HEADLESS-1", |s| s.get_pixel(160, 120).0 == RED);
+    sway.vellum_ok(["set", &blue, "--transition", "wipe", "--duration", "20000"]);
+    sway.swaymsg("output HEADLESS-1 scale 2");
+    // Long before the 20 s Wipe would end, the frame covers the Monitor.
+    let covered = |s: &RgbImage| {
+        let (w, h) = s.dimensions();
+        [(2, 2), (w - 3, 2), (2, h - 3), (w - 3, h - 3)]
+            .iter()
+            .all(|&(x, y)| s.get_pixel(x, y).0 == BLUE)
+    };
+    let shot = sway.screenshot_until("HEADLESS-1", covered);
+    assert!(covered(&shot), "the Wipe did not land on the scale change");
+    assert!(sway.daemon_alive(), "{}", sway.daemon_log());
+}
+
+#[test]
 fn transitions_leave_no_memory_behind() {
     let mut sway = Sway::start(&[Monitor {
         width: 1920,

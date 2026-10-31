@@ -251,7 +251,7 @@ impl State {
         else {
             return Ok(Some(frame));
         };
-        if !m.showing || transition.duration_ms == 0 || logical.0 == 0 || logical.1 == 0 {
+        if !m.has_frame || transition.duration_ms == 0 || logical.0 == 0 || logical.1 == 0 {
             return Ok(Some(frame));
         }
         let mut duration = Duration::from_millis(transition.duration_ms.into());

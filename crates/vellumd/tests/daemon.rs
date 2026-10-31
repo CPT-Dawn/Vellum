@@ -39,6 +39,7 @@ fn vellumd_links_no_image_decoders() {
         "tiff",
         "ravif",
         "jxl_oxide",
+        "dav1d",
         "resvg",
     ];
     for line in tree.lines() {
