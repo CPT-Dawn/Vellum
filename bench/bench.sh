@@ -154,7 +154,7 @@ wait_for() { # wait_for SECS cmd...: poll until cmd succeeds
     done
 }
 
-rows=() missing=()
+rows=() missing=() unsupported=()
 
 # bench NAME VERSION BINARY START SET CHANGE
 #   START launches the daemon in the foreground (we background it), SET puts
@@ -167,7 +167,7 @@ bench() {
     local pid=$!
     if ! eval "$set" >>"$work/$name.log" 2>&1 || ! kill -0 "$pid" 2>/dev/null; then
         log "   $name failed to start; log:"; sed 's/^/   /' "$work/$name.log" >&2
-        kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null || true
+        kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
         rows+=("| $name | $version | failed to start | | | | | | |")
         return
     fi
@@ -184,7 +184,7 @@ bench() {
         after=$(kib "${after_mem[0]}")
     fi
     rows+=("| $name | $version | $(size "$bin") | $(libs "$bin") | $(kib "${idle_mem[0]}") | $(kib "${idle_mem[1]}") | $(kib "${idle_mem[2]}") | $per_min | $after | $(threads "$pid") |")
-    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null || true
+    kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
     log "   done"
 }
 
@@ -209,7 +209,10 @@ if bin=${SWAYBG:-$(command -v swaybg)}; then
 else missing+=(swaybg); fi
 
 # hyprpaper: reads its config at start. 0.8+ uses wallpaper {} blocks.
-if bin=${HYPRPAPER:-$(command -v hyprpaper)}; then
+# It needs Hyprland's own protocols, so it only runs in --live on Hyprland.
+if [[ $mode == headless || -z ${HYPRLAND_INSTANCE_SIGNATURE:-} ]]; then
+    unsupported+=(hyprpaper)
+elif bin=${HYPRPAPER:-$(command -v hyprpaper)}; then
     version=$("$bin" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
     if [[ $(printf '%s\n' "0.8.0" "$version" | sort -V | head -1) == 0.8.0 ]]; then
         printf 'wallpaper {\n    monitor =\n    path = %s\n    fit_mode = cover\n}\nipc = false\nsplash = false\n' "$A" >"$work/hyprpaper.conf"
@@ -235,5 +238,6 @@ else missing+=(awww); fi
     echo "|---|---|---|---|---|---|---|---|---|---|"
     printf '%s\n' "${rows[@]}"
     if ((${#missing[@]})); then echo; echo "Not installed, skipped: ${missing[*]}."; fi
+    if ((${#unsupported[@]})); then echo; echo "Needs Hyprland, skipped: ${unsupported[*]} (run --live on Hyprland)."; fi
     if [[ -n $vellum_monitors ]]; then echo; echo '```'; echo "$vellum_monitors"; echo '```'; fi
 } | tee ${out:+"$out"}
