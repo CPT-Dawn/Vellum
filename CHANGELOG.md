@@ -39,6 +39,8 @@ awww, and the license changes to MIT OR Apache-2.0
   a Rotation panel that saves to the Config, a first-run welcome screen,
   mouse support, remappable keys, and the Midnight Bloom theme with ANSI
   and `NO_COLOR` fallbacks.
+- `VELLUM_GRAPHICS` forces the TUI's preview protocol (`halfblocks`,
+  `kitty`, `sixel` or `iterm2`) for terminals that misreport what they draw.
 - Any `vellum` command starts the Daemon when it isn't running.
 - A `Type=notify` systemd user unit, `vellumd.service`.
 - Shell completions (`vellum completions`) and man pages.
