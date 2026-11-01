@@ -57,7 +57,11 @@ jobs:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
         run: |
           set -euo pipefail
-          mkdir -p "$HOME/.ssh"
+          # OpenSSH finds ~/.ssh through the passwd entry, not $HOME, and
+          # in this container $HOME is /github/home while root's home is
+          # /root. Write where ssh actually looks.
+          ssh_dir="$(getent passwd "$(id -u)" | cut -d: -f6)/.ssh"
+          install -d -m 700 "$ssh_dir"
 
           if [[ -z "$AUR_SSH_PRIVATE_KEY" ]]; then
             echo "AUR_SSH_PRIVATE_KEY is empty." >&2
@@ -65,19 +69,19 @@ jobs:
           fi
 
           if grep -q "BEGIN .*PRIVATE KEY" <<< "$AUR_SSH_PRIVATE_KEY"; then
-            printf '%s\n' "$AUR_SSH_PRIVATE_KEY" | tr -d '\r' > "$HOME/.ssh/aur"
+            printf '%s\n' "$AUR_SSH_PRIVATE_KEY" | tr -d '\r' > "$ssh_dir/aur"
           else
-            printf '%s' "$AUR_SSH_PRIVATE_KEY" | tr -d '\r\n' | base64 -d > "$HOME/.ssh/aur"
+            printf '%s' "$AUR_SSH_PRIVATE_KEY" | tr -d '\r\n' | base64 -d > "$ssh_dir/aur"
           fi
-          chmod 600 "$HOME/.ssh/aur"
+          chmod 600 "$ssh_dir/aur"
 
-          if ! ssh-keygen -y -f "$HOME/.ssh/aur" > /dev/null 2>&1; then
+          if ! ssh-keygen -y -f "$ssh_dir/aur" > /dev/null 2>&1; then
             echo "Invalid private key in AUR_SSH_PRIVATE_KEY." >&2
             exit 1
           fi
 
-          ssh-keyscan -t rsa,ed25519 aur.archlinux.org >> "$HOME/.ssh/known_hosts"
-          cat > "$HOME/.ssh/config" << 'EOF'
+          ssh-keyscan -t rsa,ed25519 aur.archlinux.org >> "$ssh_dir/known_hosts"
+          cat > "$ssh_dir/config" << 'EOF'
           Host aur.archlinux.org
             User aur
             IdentityFile ~/.ssh/aur
