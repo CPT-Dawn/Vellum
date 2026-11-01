@@ -1,0 +1,16 @@
+[package]
+name = "vellum-ipc"
+description = "Wire protocol shared by the Vellum wallpaper daemon and its client"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rustix = { workspace = true, features = ["net", "fs"] }

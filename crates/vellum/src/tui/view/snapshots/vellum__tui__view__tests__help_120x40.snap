@@ -1,0 +1,44 @@
+---
+source: crates/vellum/src/tui/view/tests.rs
+expression: harness.screen()
+---
+ vellum  ● DP-1 2560×1440  ○ HDMI-A-1 1920×1080                                                            rotation off
+╭ Library · 4 ───────────────────────────╮╭ Preview ───────────────────────────────────────────────────────────────────╮
+│› aurora.png                            ││                                                                            │
+│  beach/dunes.jpg                       ││                                                                            │
+│  beach/tide.webp                       ││                                                                            │
+│  city/neon-rain.jpg   ╭ Keys ────────────────────────────────────────────────────────────────╮                       │
+│                       │ / ▏type to filter                                                    │                       │
+│                       │                                                                      │                       │
+│                       │ Browse                                                               │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   j, ↓          Move down                                            │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   k, ↑          Move up                                              │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   h, ←          Move left in the grid                                │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   l, →          Move right in the grid                               │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   g             Switch between list and grid                         │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   gg, home      Jump to the top                                      │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   G, end        Jump to the bottom                                   │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   ctrl-d, pgdn  Half a page down                                     │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   ctrl-u, pgup  Half a page up                                       │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   ⏎             Apply to the targeted monitor                        │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   a             Apply to every monitor                               │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   r             Apply a random wallpaper                             │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   m             Target the next monitor                              │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   f             Favorite or unfavorite                               │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   F             Show only Favorites                                  │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   /             Search the Library                                   │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   s             Open the Rotation panel                              │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   o             Choose a Library folder                              │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   p             Show the preview or the list (narrow terminals)      │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   R             Reconnect to vellumd, starting it if needed          │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   ?             Show every key                                       │░░░░░░░░░░░░░░░░░░░░░░░│
+│                       │   :, ctrl-p     Open the command palette                             │                       │
+│                       │   esc           Clear the filter, or quit                            │                       │
+│                       │   q             Quit                                                 │                       │
+│                       │ Search, help, palette and welcome                                    │                       │
+│                       ╰──────────────────────────────────────────────────────────────────────╯                       │
+│                                        ││                                                                            │
+│                                        ││ aurora.png  ~/Pictures/Wallpapers                                          │
+│                                        ││ 3840×2160 · 2.4 MB · fill on DP-1                                          │
+╰────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────────────╯
+ esc close  ↓/↑ scroll

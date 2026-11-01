@@ -1,0 +1,34 @@
+name: cargo-deny
+
+# Licenses, RustSec advisories, bans and sources (config: deny.toml).
+# Advisories are checked daily too: a new advisory can break a quiet tree.
+
+on:
+  push:
+    branches: [main, v2]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deny:
+    name: cargo-deny ${{ matrix.checks }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        checks:
+          - advisories
+          - bans licenses sources
+    # A fresh advisory should not block an unrelated pull request.
+    continue-on-error: ${{ matrix.checks == 'advisories' && github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check ${{ matrix.checks }}

@@ -1,0 +1,209 @@
+//! Msgs flow into [`super::update`]; Cmds flow out to the runtime.
+//!
+//! A Msg is something that happened: a key, a click, a resize, a timer, or
+//! a worker's result. A Cmd is plain data describing work for the runtime:
+//! it never runs anything itself, so update tests can assert on it. Each
+//! Cmd comes back as exactly one Msg (see [`super::services::perform`]).
+
+use std::path::PathBuf;
+use std::time::Duration;
+
+use ratatui::crossterm::event::{KeyEvent, MouseEvent};
+use ratatui::layout::Size;
+use vellum_ipc::{MonitorInfo, Settings, Status};
+
+use super::model::{Meta, PreviewImage};
+use crate::config::Config;
+use crate::config::edit::Edit;
+use crate::render::{Color, FitMode};
+
+#[derive(Debug)]
+pub enum Msg {
+    Key(KeyEvent),
+    Mouse(MouseEvent),
+    /// A time the Model asked to be woken at has come (see
+    /// `update::wake_at`): a toast to expire, a spinner frame, a key
+    /// sequence timing out.
+    Tick,
+    Resize {
+        width: u16,
+        height: u16,
+    },
+    /// The Library scan finished.
+    LibraryScanned(Vec<PathBuf>),
+    /// The Daemon answered (or could not be reached).
+    Daemon(Result<DaemonInfo, String>),
+    /// A preview requested with `generation` is ready or failed.
+    PreviewDone {
+        generation: u64,
+        path: PathBuf,
+        result: Result<PreviewOutput, String>,
+    },
+    /// A thumbnail requested with grid `generation` is ready or failed.
+    ThumbDone {
+        generation: u64,
+        path: PathBuf,
+        result: Result<PreviewOutput, String>,
+    },
+    /// A [`Cmd::After`] delay passed.
+    Woke(Wake),
+    /// An Apply finished. `monitor` is `None` for every Monitor.
+    Applied {
+        monitor: Option<String>,
+        result: Result<(), String>,
+    },
+    /// The Favorites file was read.
+    FavoritesLoaded(Vec<PathBuf>),
+    /// Saving `path` as a Favorite (or not) finished.
+    FavoriteSaved {
+        path: PathBuf,
+        favorite: bool,
+        result: Result<(), String>,
+    },
+    /// The `on_change` hook failed; why.
+    HookFailed(String),
+    /// Config edits of `generation` were written (the new Config), or not.
+    ConfigSaved {
+        generation: u64,
+        result: Result<Config, String>,
+    },
+    /// Rotation was started or stopped (`toggled`), or settings were
+    /// pushed: the Daemon's Status afterwards.
+    RotationUpdated {
+        toggled: bool,
+        result: Result<Status, String>,
+    },
+    /// Tab on the welcome screen: the folders `input` could complete to.
+    Completed {
+        input: String,
+        candidates: Vec<String>,
+    },
+    /// The chosen Library folder was saved to the Config, or not.
+    LibrarySaved(Result<Config, String>),
+}
+
+/// What the Daemon reports.
+#[derive(Debug, Clone)]
+pub struct DaemonInfo {
+    pub monitors: Vec<MonitorInfo>,
+    pub status: Status,
+}
+
+/// A finished preview.
+#[derive(Debug, Clone)]
+pub struct PreviewOutput {
+    pub image: PreviewImage,
+    pub meta: Meta,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Cmd {
+    /// List every wallpaper under these folders.
+    ScanLibrary(Vec<PathBuf>),
+    /// Ask the Daemon (starting it if needed) for Monitors and Status.
+    QueryDaemon,
+    /// Render a preview, a prefetch or a thumbnail (see [`Purpose`]).
+    RenderPreview(PreviewJob),
+    Apply(ApplyJob),
+    /// Read the Favorites file.
+    LoadFavorites,
+    /// Make `path` a Favorite, or stop it being one.
+    SaveFavorite {
+        path: PathBuf,
+        favorite: bool,
+    },
+    /// Write these edits to the Config.
+    SaveConfig {
+        generation: u64,
+        edits: Vec<Edit>,
+    },
+    /// Hand the Daemon new settings now, rather than when its Config
+    /// watch notices.
+    PushSettings(Settings),
+    /// Start (true) or stop Rotation.
+    RotationControl(bool),
+    /// List the folders a typed path could complete to.
+    Complete(String),
+    /// Add this folder to the Library in the Config.
+    SaveLibrary(PathBuf),
+    /// Send back [`Msg::Woke`] once `delay` has passed. A newer `After`
+    /// with the same kind of [`Wake`] replaces a pending one, so this is a
+    /// debounce.
+    After {
+        delay: Duration,
+        wake: Wake,
+    },
+}
+
+/// What a [`Cmd::After`] wakes update up for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wake {
+    /// Render the preview of preview `generation`, if still current.
+    Preview { generation: u64 },
+    /// Render the tiles of grid `generation`, if still current.
+    Grid { generation: u64 },
+    /// Save the Config edits of `generation`, if no newer edit came.
+    Config { generation: u64 },
+}
+
+/// Why a preview is rendered. Workers drop a job once its generation is no
+/// longer the latest of its kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Purpose {
+    /// The preview pane. Answered with [`Msg::PreviewDone`].
+    Preview,
+    /// A neighbour of the selection, rendered at low priority into the
+    /// caches. Answered with nothing.
+    Prefetch,
+    /// A grid tile. Answered with [`Msg::ThumbDone`]; its generation is the
+    /// grid's.
+    Thumb,
+}
+
+/// Draw `path` as `monitor` would show it, to fit in `cells`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreviewJob {
+    pub generation: u64,
+    pub purpose: Purpose,
+    pub path: PathBuf,
+    /// The most cells the preview may cover.
+    pub cells: Size,
+    pub monitor: MonitorShape,
+    pub fit: FitMode,
+    pub letterbox: Color,
+}
+
+/// The parts of a Monitor a preview depends on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MonitorShape {
+    pub width: u32,
+    pub height: u32,
+    pub scale_120: u32,
+}
+
+impl MonitorShape {
+    /// Used for previews until the Daemon reports a real Monitor.
+    pub const FALLBACK: MonitorShape = MonitorShape {
+        width: 1920,
+        height: 1080,
+        scale_120: 120,
+    };
+}
+
+impl From<&MonitorInfo> for MonitorShape {
+    fn from(m: &MonitorInfo) -> MonitorShape {
+        MonitorShape {
+            width: m.physical_width,
+            height: m.physical_height,
+            scale_120: m.scale_120,
+        }
+    }
+}
+
+/// Put `path` on the Monitor named `monitor`, or on every Monitor.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApplyJob {
+    pub path: PathBuf,
+    pub monitor: Option<String>,
+    pub fit: FitMode,
+}

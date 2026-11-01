@@ -1,0 +1,47 @@
+//! `vellum render --restore --monitor <name>`: put the wallpaper State
+//! remembers back on a Monitor. Spawned by the Daemon whenever a Monitor
+//! lacks a frame (startup, hotplug, a scale change); exits right after
+//! presenting, taking all decoder memory with it.
+
+use vellum_ipc::{Direction, Easing, Origin, Transition, TransitionKind};
+
+use crate::client;
+use crate::set::{Look, present};
+
+/// For the same wallpaper coming back, often at a new size: no effect.
+pub const INSTANT: Transition = Transition {
+    kind: TransitionKind::None,
+    direction: Direction::Right,
+    duration_ms: 0,
+    easing: Easing::Linear,
+};
+
+pub fn run(monitor: &str) -> Result<(), String> {
+    // Never auto-starts a Daemon: the Daemon is what runs this.
+    let socket = client::socket()?;
+    let status = client::status(&socket)?;
+    let Some(wallpaper) = status
+        .monitors
+        .into_iter()
+        .find(|m| m.name == monitor)
+        .and_then(|m| m.wallpaper)
+    else {
+        return Ok(());
+    };
+    let Some(info) = client::monitors(&socket)?
+        .into_iter()
+        .find(|m| m.name == monitor)
+    else {
+        return Ok(()); // unplugged meanwhile
+    };
+    let image = crate::decode::load(wallpaper.path.as_ref())
+        .map_err(|err| format!("cannot restore {monitor}: {err}"))?;
+    let look = Look {
+        fit: wallpaper.fit.into(),
+        letterbox: crate::config::load().letterbox,
+        transition: INSTANT,
+        origin: Origin::Restore,
+    };
+    // A dropped restore is fine: something newer is up already.
+    present(&socket, &image, &info, &wallpaper.path, look).map(|_| ())
+}

@@ -1,0 +1,28 @@
+---
+source: crates/vellum/src/tui/view/tests.rs
+expression: harness.screen()
+---
+ vellum  ● DP-1 2560×1440  ○ HDMI-A-1 1920×1080                    rotation off
+
+
+
+
+
+
+        Welcome to vellum
+        Wallpapers, weightless.
+
+        Vellum looks for wallpapers in ~/Pictures/Wallpapers.
+        Nothing is there yet. Where do yours live?
+
+        › Use ~/Pictures
+          Another folder  ▏type a path, like ~/Wallpapers
+
+        Your choice is saved to the Config.
+
+
+
+
+
+
+ ⏎ choose  ↓/↑ move  tab complete  esc not now
