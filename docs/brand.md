@@ -8,7 +8,7 @@ mint is the only thing that glows.
 
 | File | Use |
 | --- | --- |
-| [`assets/brand/icon.svg`](../assets/brand/icon.svg) | App icon, avatar, AUR, crates.io, favicon. Square, self-contained tile, legible at 32 px. |
+| [`assets/brand/icon.svg`](../assets/brand/icon.svg) | App icon, avatar, AUR, favicon. Square, self-contained tile, legible at 32 px. |
 | [`assets/brand/lockup.svg`](../assets/brand/lockup.svg) | Icon plus `vellum` wordmark, horizontal. Transparent background. Dark surfaces only. |
 | [`assets/brand/banner.svg`](../assets/brand/banner.svg) | README header, 1280×400, on the midnight-canvas gradient with the tagline. |
 

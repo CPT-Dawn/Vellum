@@ -57,8 +57,6 @@ awww, and the license changes to MIT OR Apache-2.0
   has a bootstrap mode, and there is no XDG autostart file.
 - State, Favorites and the cache moved to new files under the XDG folders.
   Nothing is migrated from 1.x.
-- On crates.io the CLI and TUI ship as `vellum-wallpaper`, because the
-  `vellum` name is taken. The command is still `vellum`.
 
 ### Removed
 

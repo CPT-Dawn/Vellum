@@ -7,9 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-readme = "../../README.md"
-keywords = ["wayland", "wallpaper", "layer-shell", "daemon"]
-categories = ["command-line-utilities", "gui"]
+publish.workspace = true
 
 [lints]
 workspace = true

@@ -136,7 +136,7 @@ sequenceDiagram
 |---|---|---|
 | [`vellum-ipc`](crates/vellum-ipc) | (library) | The protocol: header codec, `Request`/`Response`, socket transport with fd passing, socket and Config paths |
 | [`vellumd`](crates/vellumd) | `vellumd` | The Daemon: Wayland, Transitions, State, Rotation timers, Config watch |
-| [`vellum-wallpaper`](crates/vellum) | `vellum` | CLI, TUI, renderer, Config, Library, Rotation rules, Favorites, hook |
+| [`vellum`](crates/vellum) | `vellum` | CLI, TUI, renderer, Config, Library, Rotation rules, Favorites, hook |
 
 ### `vellumd`
 
