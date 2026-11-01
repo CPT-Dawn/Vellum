@@ -89,10 +89,18 @@ needs the system `dav1d` library).
    systemctl --user enable --now vellumd    # systemd, any compositor
    ```
 
+   On Hyprland's Lua config (`hyprland.lua`), start it from the startup
+   event instead:
+
+   ```lua
+   hl.on("hyprland.start", function() hl.exec_cmd("vellumd") end)
+   ```
+
    The systemd unit comes with the AUR package and the release tarballs.
    It needs a compositor that starts `graphical-session.target` (Hyprland
-   through uwsm, niri, Sway with its systemd integration). You can skip this step for now: any `vellum`
-   command starts the Daemon when it isn't running.
+   through uwsm, niri, Sway with its systemd integration). You can skip
+   this step for now: any `vellum` command starts the Daemon when it isn't
+   running.
 
 2. **Set a wallpaper.**
 
