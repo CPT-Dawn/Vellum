@@ -6,9 +6,7 @@
 A featherweight wallpaper Daemon for Wayland, with smooth Transitions, Rotation and a TUI you'll actually enjoy.
 </p>
 
-<!-- Demo GIF: run `vhs docs/demo/demo.tape` (see docs/demo/), then uncomment.
 <p align="center"><img src="assets/demo.gif" alt="vellum set with a Wipe, vellum status, then the TUI: browse, search, apply and start Rotation" width="100%"></p>
--->
 
 <p align="center">
 <img src="assets/screenshots/tui-grid.webp" alt="The Vellum TUI showing the Library as a thumbnail grid" width="49%">
@@ -39,19 +37,21 @@ from a headless Sway.
 
 ## Footprint
 
-Measured on headless Sway with two Monitors (2560x1440 and 1920x1080) and a
-3840x2160 wallpaper. [docs/benchmarks.md](docs/benchmarks.md) has the method
-and the script, so you can rerun it on your machine.
+Measured on Hyprland with two real Monitors (2560x1600 at scale 1.667, and
+1920x1080) and a 3840x2160 wallpaper. [docs/benchmarks.md](docs/benchmarks.md)
+has a headless-Sway run too, plus the method and the script, so you can
+rerun it on your machine.
 
 | Daemon | Binary | Idle RSS | Idle private | Wakeups/min idle | RSS after a Transition | Threads |
 |---|---|---|---|---|---|---|
-| vellumd 2.0 | 480 KiB | 2.5 MiB | 0.6 MiB | 0 | 2.5 MiB | 1 |
-| swaybg | pending | pending | pending | pending | n/a | pending |
-| hyprpaper | pending | pending | pending | pending | n/a | pending |
-| awww | pending | pending | pending | pending | pending | pending |
+| **vellumd 2.0** | 483 KiB | **2.5 MiB** | 0.6 MiB | **0** | **2.5 MiB** | 1 |
+| awww 0.12.1 | 436 KiB | 2.7 MiB | 0.5 MiB | 0 | 26 MiB | 1 |
+| swaybg 1.2.2 | 31 KiB | 17 MiB | 4.7 MiB | 0 | n/a | 7 |
+| hyprpaper 0.8.4 | 477 KiB | 239 MiB | 92 MiB | 12 | n/a | 2 |
 
-The comparison rows are pending a benchmark run with those daemons
-installed.
+vellumd keeps no pixels, so it stays at its idle footprint after every
+Transition. awww idles about level, but holds ten times as much once it has
+played one.
 
 ## Install
 

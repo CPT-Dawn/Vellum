@@ -49,22 +49,44 @@ the same two generated 3840x2160 PNG wallpapers:
 
 ## Results
 
-Measured 2026-10-31 on headless Sway 1.12 (pixman), Monitors 2560x1440 +
-1920x1080, Linux 7.2.11, 3840x2160 PNG wallpaper, 20 s idle window.
+### Hyprland, real Monitors
+
+Measured 2026-11-01 with `bench/bench.sh --live` on Hyprland 0.57.0, Linux
+7.2.11, Monitors eDP-1 (2560x1600 physical at scale 1.667) and HDMI-A-1
+(1920x1080), 3840x2160 PNG wallpaper, 20 s idle window.
 
 | Daemon | Version | Binary | Linked libs | Idle RSS | Idle PSS | Idle private | Wakeups/min idle | RSS after a Transition | Threads |
 |---|---|---|---|---|---|---|---|---|---|
-| vellumd | 2.0.0-dev | 480 KiB | 2 | 2.5 MiB | 0.6 MiB | 0.6 MiB | 0 | 2.5 MiB | 1 |
-| swaybg | pending | pending | pending | pending | pending | pending | pending | n/a | pending |
-| hyprpaper | pending | pending | pending | pending | pending | pending | pending | n/a | pending |
-| awww | pending | pending | pending | pending | pending | pending | pending | pending | pending |
+| vellumd | 2.0.0-dev | 483 KiB | 2 | 2.5 MiB | 0.6 MiB | 0.6 MiB | 0 | 2.5 MiB | 1 |
+| swaybg | 1.2.2 | 31 KiB | 5 | 17 MiB | 5.5 MiB | 4.7 MiB | 0 | n/a | 7 |
+| hyprpaper | 0.8.4 | 477 KiB | 11 | 239 MiB | 128 MiB | 92 MiB | 12 | n/a | 2 |
+| awww | 0.12.1 | 436 KiB | 4 | 2.7 MiB | 0.5 MiB | 0.5 MiB | 0 | 26 MiB | 1 |
 
-swaybg, hyprpaper and awww weren't installed on the measuring machine, so
-their rows are pending: the maintainer runs `bench/bench.sh` (headless) and
-`bench/bench.sh --live` (Hyprland, real Monitors) with all three installed
-and pastes the tables here. Until then, Vellum does not claim to be the
-lightest, only what it measures. For reference, Vellum 1.x idled at about
-30 MB RSS, about 25 MB of it a heap copy of every Monitor's frame.
+### Headless Sway
+
+Measured 2026-11-01 with `bench/bench.sh` on headless Sway 1.12 (pixman),
+Monitors 2560x1440 + 1920x1080, Linux 7.2.11, 3840x2160 PNG wallpaper, 20 s
+idle window. hyprpaper needs Hyprland's own protocols, so it only appears
+in the live run.
+
+| Daemon | Version | Binary | Linked libs | Idle RSS | Idle PSS | Idle private | Wakeups/min idle | RSS after a Transition | Threads |
+|---|---|---|---|---|---|---|---|---|---|
+| vellumd | 2.0.0-dev | 483 KiB | 2 | 2.5 MiB | 0.6 MiB | 0.6 MiB | 0 | 2.5 MiB | 1 |
+| swaybg | 1.2.2 | 31 KiB | 5 | 17 MiB | 5.6 MiB | 4.8 MiB | 0 | n/a | 8 |
+| awww | 0.12.1 | 436 KiB | 4 | 25 MiB | 22 MiB | 22 MiB | 0 | 69 MiB | 1 |
+
+### Reading the numbers
+
+- vellumd has the lowest idle RSS in both runs and is the only daemon whose
+  memory doesn't grow after a Transition.
+- On Hyprland, awww idles about level with vellumd (0.1 MiB less private
+  memory, 0.2 MiB more RSS), but holds 26 MiB once it has played a
+  Transition. On headless Sway it keeps a copy of the frames even at idle.
+- swaybg has the smallest binary but links more libraries and idles about
+  seven times heavier. hyprpaper's GPU stack costs it hundreds of MiB, and
+  it is the only daemon here that wakes up while idle.
+- For reference, Vellum 1.x idled at about 30 MB RSS, about 25 MB of it a
+  heap copy of every Monitor's frame.
 
 vellumd holds no pixels (ADR 0003). Frames live in memfds that the CLI fills
 and the compositor reads, and the Daemon only maps them during a CPU Fade.
