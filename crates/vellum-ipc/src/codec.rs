@@ -5,7 +5,7 @@ use crate::Error;
 /// The first four bytes of every frame.
 pub const MAGIC: [u8; 4] = *b"VLUM";
 /// Bump on any incompatible change to a payload layout or message kind.
-pub const PROTOCOL_VERSION: u16 = 6;
+pub const PROTOCOL_VERSION: u16 = 7;
 /// Length of the fixed frame header.
 pub const HEADER_LEN: usize = 12;
 /// Upper bound on a payload. Pixels never travel inline (they go as a memfd),

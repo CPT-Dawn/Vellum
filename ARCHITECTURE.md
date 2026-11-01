@@ -51,7 +51,8 @@ flowchart LR
   command auto-starts `vellumd` if no socket answers (`client::daemon()`).
 - **`vellum render`** is a hidden subcommand the Daemon runs:
   `--restore -m NAME` puts the State wallpaper back on a Monitor,
-  `--rotate -m NAME...` picks and presents the next Rotation wallpaper, and
+  `--rotate --ticket N -m NAME...` picks and presents the next Rotation
+  wallpaper, and
   `--sync` reads the Config and pushes its settings to the Daemon.
   `render FILE -m NAME` presents an explicit file with `set FILE -m NAME`'s
   effects (Config Fit mode and Transition, State, `on_change` hook,
@@ -82,14 +83,27 @@ mismatch is reported with both versions and a hint to restart the Daemon.
 | Family | Kinds | Purpose |
 |---|---|---|
 | Query `0x01xx` | `Monitors`, `Status` | Monitor sizes and scales; what each Monitor shows, Rotation, Daemon RSS |
-| Present `0x02xx` | `Present` | A frame for one Monitor, plus Transition, Fit mode and source path |
+| Present `0x02xx` | `Present` | A frame for one Monitor, plus Transition, Fit mode, source path and origin |
 | Settings `0x03xx` | `Settings` | Transition defaults and Rotation schedule, pushed from the Config |
-| Rotation `0x04xx` | `RotationStart`, `RotationStop`, `RotationReset` | Control the timers |
+| Rotation `0x04xx` | `RotationStart`, `RotationStop` | Control the timers |
 | Lifecycle `0x05xx` | `Kill` | Stop the Daemon |
-| Responses `0x80xx` | `Ok`, `Error`, `Monitors`, `Status` | Replies |
+| Responses `0x80xx` | `Ok`, `Dropped`, `Error`, `Monitors`, `Status` | Replies |
 
 Pixels never travel in a payload. They go as a memfd passed with
 `SCM_RIGHTS` next to the `Present` message.
+
+Every `Present` names its origin, which decides when a late frame is
+dropped (answered `Dropped`, and the sender acts as if it never presented):
+
+| Origin | Sent by | Dropped when |
+|---|---|---|
+| `Manual` | `set`, `next`/`prev`/`random`, the TUI, `render FILE` | never; showing it restarts that Monitor's Rotation timer in the same step |
+| `Restore` | `render --restore` | the Monitor already has a frame of its current size |
+| `Rotate(ticket)` | `render --rotate` | that Monitor had a `Manual` frame after the Daemon issued the tick's ticket |
+| `Repaint` | `render --sync` (new letterbox color) | never, and it is not a manual apply |
+
+So a tick that fires while `vellum set` is in flight can never replace the
+pick, whichever frame reaches the Daemon first.
 
 ## Frame lifecycle
 

@@ -19,16 +19,18 @@
 //! While Rotation runs, a timerfd is armed at the earliest Monitor deadline
 //! (see [`crate::rotation`]). When it fires, the Daemon spawns one `vellum
 //! render --rotate` for every Monitor that is due; `vellum` picks the
-//! wallpapers.
+//! wallpapers. Its frames carry the tick's ticket, and one that a manual
+//! apply on its Monitor overtook is dropped (see
+//! [`crate::rotation::ManualApplies`]).
 
 use std::os::fd::{AsFd, OwnedFd};
 
 use rustix::event::{PollFd, PollFlags, poll};
-use vellum_ipc::{MonitorStatus, Request, Response, Settings, Status, Wallpaper};
+use vellum_ipc::{MonitorStatus, Origin, Request, Response, Settings, Status, Wallpaper};
 
 use crate::config_watch::ConfigWatch;
 use crate::ipc::{Client, Listener};
-use crate::rotation::now_ms;
+use crate::rotation::{ManualApplies, now_ms};
 use crate::state::State;
 use crate::system::{self, Job, Renderer, Timer};
 use crate::wayland::Wayland;
@@ -53,6 +55,8 @@ pub struct Daemon {
     /// The last good Config values `vellum render --sync` pushed.
     settings: Settings,
     renderers: Vec<Renderer>,
+    /// Manual applies per Monitor, so a late Rotation frame loses to them.
+    applies: ManualApplies,
     /// The Config may have changed since the running sync (if any) read it.
     sync_wanted: bool,
     /// Set by a kill request: exit once the reply is out.
@@ -75,6 +79,7 @@ impl Daemon {
             state,
             settings: Settings::default(),
             renderers: Vec::new(),
+            applies: ManualApplies::default(),
             sync_wanted: true,
             stopping: false,
         }
@@ -225,7 +230,7 @@ impl Daemon {
             return;
         }
         self.state.save();
-        match system::spawn_render(Job::Rotate(due)) {
+        match system::spawn_render(Job::Rotate(self.applies.ticket(), due)) {
             Ok(renderer) => self.renderers.push(renderer),
             Err(err) => eprintln!("vellumd: {err}"),
         }
@@ -262,6 +267,23 @@ impl Daemon {
             }
             false
         });
+    }
+
+    /// A wallpaper went up on `monitor` by hand. Its Rotation timer (its
+    /// sync group's) restarts in the same step as the frame, so no tick can
+    /// slip in between: ticks issued before it lose to it, and the next
+    /// one is a full interval out.
+    fn manual_apply(&mut self, monitor: &str) {
+        self.applies.record(monitor);
+        let connected = self.connected();
+        let settings = &self.settings.rotation;
+        if self
+            .state
+            .rotation
+            .reset(monitor, now_ms(), &connected, settings)
+        {
+            self.state.save();
+        }
     }
 
     fn status(&self) -> Status {
@@ -322,18 +344,6 @@ impl Daemon {
                 }
                 Response::Ok
             }
-            Request::RotationReset(monitor) => {
-                let connected = self.connected();
-                if self.state.rotation.reset(
-                    &monitor,
-                    now_ms(),
-                    &connected,
-                    &self.settings.rotation,
-                ) {
-                    self.state.save();
-                }
-                Response::Ok
-            }
             Request::Kill => {
                 self.stopping = true;
                 Response::Ok
@@ -346,13 +356,23 @@ impl Daemon {
                     ));
                 }
                 let memfd = fds.pop().expect("checked above");
-                if frame.restore && !self.wayland.wants_frame(&frame) {
+                let stale = match frame.origin {
+                    // Nothing overrides a pick by hand or a repaint.
+                    Origin::Manual | Origin::Repaint => false,
                     // A newer frame got there first, or the Monitor changed
                     // size and another restore is on its way.
-                    return Response::Ok;
+                    Origin::Restore => !self.wayland.wants_frame(&frame),
+                    // The user picked a wallpaper after this tick fired.
+                    Origin::Rotate(ticket) => self.applies.superseded(&frame.monitor, ticket),
+                };
+                if stale {
+                    return Response::Dropped;
                 }
                 match self.wayland.present(&frame, memfd) {
                     Ok(()) => {
+                        if frame.origin == Origin::Manual {
+                            self.manual_apply(&frame.monitor);
+                        }
                         let wallpaper = Wallpaper {
                             path: frame.source,
                             fit: frame.fit,

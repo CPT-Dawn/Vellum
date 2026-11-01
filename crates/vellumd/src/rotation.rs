@@ -10,6 +10,10 @@
 //!
 //! With `sync = true`, the Monitors following the global Rotation form one
 //! sync group: they share a deadline, tick together and reset together.
+//!
+//! A tick's frames arrive a moment after the tick, from a separate `vellum
+//! render --rotate`. [`ManualApplies`] lets the Daemon drop one that a
+//! manual apply on the same Monitor overtook in the meantime.
 
 use std::collections::BTreeMap;
 
@@ -205,6 +209,39 @@ impl Rotation {
     }
 }
 
+/// When each Monitor last had a wallpaper applied by hand, on a counter
+/// that issues every Rotation tick a ticket. A tick's frame for a Monitor
+/// is stale if that Monitor had a manual apply after its ticket was
+/// issued: the user's pick wins over a frame rendered before it.
+///
+/// Kept in memory only: a renderer never outlives its Daemon's interest
+/// in it, and a fresh Daemon has no manual applies to protect.
+#[derive(Debug, Default)]
+pub struct ManualApplies {
+    count: u64,
+    /// Monitor name to the count right after its latest manual apply.
+    latest: BTreeMap<String, u64>,
+}
+
+impl ManualApplies {
+    /// The ticket for a tick firing now.
+    pub fn ticket(&self) -> u64 {
+        self.count
+    }
+
+    /// A wallpaper was applied by hand on `monitor`.
+    pub fn record(&mut self, monitor: &str) {
+        self.count += 1;
+        self.latest.insert(monitor.to_owned(), self.count);
+    }
+
+    /// Whether a frame for `monitor` from the tick holding `ticket` came
+    /// too late: a manual apply on `monitor` happened after the tick.
+    pub fn superseded(&self, monitor: &str, ticket: u64) -> bool {
+        self.latest.get(monitor).is_some_and(|&at| at > ticket)
+    }
+}
+
 /// `monitor`'s interval in milliseconds, at least 1.
 fn interval(settings: &RotationSettings, monitor: &str) -> u64 {
     settings.schedule_for(monitor).interval_ms.max(1)
@@ -309,6 +346,23 @@ mod tests {
         r.start(0, &names(&["A", "B"]), &s);
         r.reset("A", 500, &names(&["A", "B"]), &s);
         assert_eq!(r.next_deadline(&names(&["A"])), Some(600));
+    }
+
+    #[test]
+    fn a_tick_frame_loses_to_a_manual_apply_made_after_the_tick() {
+        let mut applies = ManualApplies::default();
+        let early = applies.ticket();
+        applies.record("A");
+        // The tick fired before the pick on A: its frame for A is stale,
+        // its frame for B is not.
+        assert!(applies.superseded("A", early));
+        assert!(!applies.superseded("B", early));
+        // A tick issued after the pick wins again.
+        let late = applies.ticket();
+        assert!(!applies.superseded("A", late));
+        applies.record("B");
+        assert!(applies.superseded("B", late));
+        assert!(!applies.superseded("A", late));
     }
 
     #[test]

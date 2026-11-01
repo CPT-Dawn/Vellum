@@ -22,11 +22,11 @@ mod kind {
     pub const SETTINGS: u16 = 0x0301;
     pub const ROTATION_START: u16 = 0x0401;
     pub const ROTATION_STOP: u16 = 0x0402;
-    pub const ROTATION_RESET: u16 = 0x0403;
     pub const KILL: u16 = 0x0502;
 
     pub const OK: u16 = 0x8000;
     pub const ERROR: u16 = 0x8001;
+    pub const DROPPED: u16 = 0x8002;
     pub const MONITORS_REPLY: u16 = 0x8101;
     pub const STATUS_REPLY: u16 = 0x8102;
 }
@@ -39,7 +39,8 @@ pub enum Request {
     Monitors,
     /// Show a frame on a Monitor. The frame's pixels travel as exactly one
     /// memfd alongside the request. Answered by [`Response::Ok`] once the
-    /// frame is committed.
+    /// frame is committed, or by [`Response::Dropped`] when its [`Origin`]
+    /// says it is stale.
     Present(Present),
     /// What the Daemon shows and remembers. Answered by [`Response::Status`].
     Status,
@@ -53,10 +54,6 @@ pub enum Request {
     RotationStart,
     /// Stop Rotation. Answered by [`Response::Ok`].
     RotationStop,
-    /// A wallpaper was applied by hand on this Monitor: restart its
-    /// Rotation timer so the pick stays a full interval. With `sync`, the
-    /// whole sync group restarts. Answered by [`Response::Ok`].
-    RotationReset(String),
 }
 
 /// The Config values the Daemon holds, pushed by `vellum render --sync`
@@ -170,10 +167,30 @@ pub struct Present {
     pub transition: Transition,
     /// The Fit mode the frame was rendered with, recorded in State.
     pub fit: FitMode,
-    /// Sent by `vellum render --restore`. The Daemon drops a restore frame
-    /// when the Monitor already shows an up-to-date one, so a restore never
-    /// overwrites a newer `vellum set`.
-    pub restore: bool,
+    /// Who sent the frame, which decides when the Daemon drops it as stale.
+    pub origin: Origin,
+}
+
+/// Where a [`Present`] comes from. Restore and Rotation frames are made in
+/// the background and may arrive after the user picked something newer;
+/// the Daemon drops them then, so neither ever overwrites a manual apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// A wallpaper applied by hand: `vellum set`, `next`, `prev`,
+    /// `random`, the TUI, `vellum render FILE`. Never dropped. Showing it
+    /// restarts the Monitor's Rotation timer (its sync group's, with
+    /// `sync`), so the pick stays a full interval.
+    Manual,
+    /// `vellum render --restore`. Dropped when the Monitor already shows a
+    /// frame of its current size.
+    Restore,
+    /// `vellum render --rotate --ticket N`, with the ticket the Daemon
+    /// handed it when the tick fired. Dropped when the Monitor had a manual
+    /// apply after that ticket was issued.
+    Rotate(u64),
+    /// The wallpaper a Monitor already shows, re-rendered (a new letterbox
+    /// color). Never dropped, and not a manual apply: the timer runs on.
+    Repaint,
 }
 
 /// The Transition that plays while a presented frame replaces the current
@@ -374,6 +391,9 @@ pub struct MonitorInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Response {
     Ok,
+    /// The frame was stale (see [`Origin`]) and was not shown. Nothing
+    /// changed: the sender should act as if it never presented.
+    Dropped,
     /// The request failed. The text is meant for the user.
     Error(String),
     Monitors(Vec<MonitorInfo>),
@@ -414,7 +434,6 @@ impl Body for Request {
             Request::Settings(_) => kind::SETTINGS,
             Request::RotationStart => kind::ROTATION_START,
             Request::RotationStop => kind::ROTATION_STOP,
-            Request::RotationReset(_) => kind::ROTATION_RESET,
         }
     }
 
@@ -425,7 +444,6 @@ impl Body for Request {
             | Request::Kill
             | Request::RotationStart
             | Request::RotationStop => {}
-            Request::RotationReset(monitor) => w.str(monitor),
             Request::Present(p) => {
                 w.str(&p.monitor);
                 w.u32(p.width);
@@ -435,7 +453,15 @@ impl Body for Request {
                 w.str(&p.source);
                 write_transition(w, &p.transition);
                 w.u8(p.fit.code());
-                w.u8(u8::from(p.restore));
+                match p.origin {
+                    Origin::Manual => w.u8(0),
+                    Origin::Restore => w.u8(1),
+                    Origin::Rotate(ticket) => {
+                        w.u8(2);
+                        w.u64(ticket);
+                    }
+                    Origin::Repaint => w.u8(3),
+                }
             }
             Request::Settings(settings) => write_settings(w, settings),
         }
@@ -456,14 +482,19 @@ impl Body for Request {
                 source: r.string()?,
                 transition: read_transition(r)?,
                 fit: FitMode::from_code(r.u8()?)?,
-                restore: r.u8()? != 0,
+                origin: match r.u8()? {
+                    0 => Origin::Manual,
+                    1 => Origin::Restore,
+                    2 => Origin::Rotate(r.u64()?),
+                    3 => Origin::Repaint,
+                    _ => return Err(Error::BadValue("present origin")),
+                },
             }),
             kind::STATUS => Request::Status,
             kind::KILL => Request::Kill,
             kind::SETTINGS => Request::Settings(read_settings(r)?),
             kind::ROTATION_START => Request::RotationStart,
             kind::ROTATION_STOP => Request::RotationStop,
-            kind::ROTATION_RESET => Request::RotationReset(r.string()?),
             other => return Err(Error::UnknownKind(other)),
         })
     }
@@ -591,6 +622,7 @@ impl Body for Response {
     fn kind(&self) -> u16 {
         match self {
             Response::Ok => kind::OK,
+            Response::Dropped => kind::DROPPED,
             Response::Error(_) => kind::ERROR,
             Response::Monitors(_) => kind::MONITORS_REPLY,
             Response::Status(_) => kind::STATUS_REPLY,
@@ -599,7 +631,7 @@ impl Body for Response {
 
     fn write(&self, w: &mut Writer) {
         match self {
-            Response::Ok => {}
+            Response::Ok | Response::Dropped => {}
             Response::Error(message) => w.str(message),
             Response::Monitors(monitors) => {
                 w.u16(monitors.len() as u16);
@@ -638,6 +670,7 @@ impl Body for Response {
     fn read(kind: u16, r: &mut Reader<'_>) -> Result<Self, Error> {
         Ok(match kind {
             kind::OK => Response::Ok,
+            kind::DROPPED => Response::Dropped,
             kind::ERROR => Response::Error(r.string()?),
             kind::MONITORS_REPLY => {
                 let count = r.u16()?;

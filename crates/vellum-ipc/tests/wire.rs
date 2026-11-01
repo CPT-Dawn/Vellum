@@ -5,7 +5,7 @@ use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 
 use vellum_ipc::{
-    Direction, Easing, Error, FitMode, HEADER_LEN, MonitorInfo, MonitorStatus, Override,
+    Direction, Easing, Error, FitMode, HEADER_LEN, MonitorInfo, MonitorStatus, Origin, Override,
     PROTOCOL_VERSION, PixelFormat, Present, Request, Response, RotationOrder, RotationSettings,
     RotationSource, Schedule, Settings, Status, Transition, TransitionKind, Wallpaper, recv, send,
 };
@@ -48,7 +48,7 @@ fn present() -> Present {
         source: "/home/me/Pictures/Wallpapers/dunes.jpg".into(),
         transition: Transition::default(),
         fit: FitMode::Center,
-        restore: true,
+        origin: Origin::Restore,
     }
 }
 
@@ -90,8 +90,19 @@ fn requests_survive_a_round_trip() {
         Request::Settings(Settings::default()),
         Request::RotationStart,
         Request::RotationStop,
-        Request::RotationReset("DP-1".into()),
     ];
+    for origin in [
+        Origin::Manual,
+        Origin::Restore,
+        Origin::Rotate(0),
+        Origin::Rotate(u64::MAX),
+        Origin::Repaint,
+    ] {
+        requests.push(Request::Present(Present {
+            origin,
+            ..present()
+        }));
+    }
     for kind in [
         TransitionKind::None,
         TransitionKind::Fade,
@@ -142,6 +153,7 @@ fn responses_survive_a_round_trip() {
     ];
     for response in [
         Response::Ok,
+        Response::Dropped,
         Response::Error("monitor DP-9 is not connected".into()),
         Response::Monitors(monitors),
         Response::Status(Status {

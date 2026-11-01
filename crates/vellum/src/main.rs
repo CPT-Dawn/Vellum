@@ -107,8 +107,12 @@ enum Command {
         #[arg(long)]
         sync: bool,
         /// A Rotation tick: put the next wallpaper on each monitor.
-        #[arg(long)]
+        #[arg(long, requires = "ticket")]
         rotate: bool,
+        /// The tick's ticket from the Daemon, sent back with each frame so
+        /// the Daemon can drop one a manual apply overtook.
+        #[arg(long, value_name = "N", requires = "rotate")]
+        ticket: Option<u64>,
         /// The monitor to render for; --rotate takes several.
         #[arg(short, long, value_name = "NAME")]
         monitor: Vec<String>,
@@ -267,13 +271,14 @@ fn main() -> ExitCode {
         }
         Command::Render {
             rotate: true,
+            ticket: Some(ticket),
             monitor,
             ..
         } => rotation::run(
             rotation::Pick::Next,
             &monitor,
             None,
-            rotation::Trigger::Tick,
+            rotation::Trigger::Tick(ticket),
         ),
         Command::Render {
             file: Some(file),

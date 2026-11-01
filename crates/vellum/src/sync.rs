@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use vellum_ipc::{FitMode as WireFit, Request, Response};
+use vellum_ipc::{FitMode as WireFit, Origin, Request, Response};
 
 use crate::client::{self, ask, unexpected};
 use crate::config::{self, Config};
@@ -50,7 +50,7 @@ fn repaint_letterboxes(socket: &Path, config: &Config) -> Result<(), String> {
         fit: FitMode::Fit,
         letterbox: config.letterbox,
         transition: INSTANT,
-        restore: false,
+        origin: Origin::Repaint,
     };
     let mut monitors = None;
     for shown in status.monitors {
