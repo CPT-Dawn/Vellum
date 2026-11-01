@@ -2562,7 +2562,7 @@ dependencies = [
 
 [[package]]
 name = "vellum"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "clap",
  "clap_complete",
@@ -2586,14 +2586,14 @@ dependencies = [
 
 [[package]]
 name = "vellum-ipc"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "rustix 1.1.6",
 ]
 
 [[package]]
 name = "vellumd"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "rustix 1.1.6",
  "vellum-ipc",

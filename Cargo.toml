@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/vellum-ipc", "crates/vellumd", "crates/vellum"]
 
 [workspace.package]
-version = "2.0.0"
+version = "2.0.1"
 authors = ["CPT-Dawn <ping@cptdawn.dev>"]
 edition = "2024"
 rust-version = "1.99"
