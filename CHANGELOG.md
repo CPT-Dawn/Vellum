@@ -4,6 +4,13 @@ All notable changes to Vellum are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Vellum uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The Midnight Bloom TUI theme no longer paints an opaque background, so a
+  translucent terminal stays translucent.
+
 ## [2.0.0] - 2026-11-01
 
 Vellum 2.0 is a clean-room rewrite. No code is shared with 1.x or with

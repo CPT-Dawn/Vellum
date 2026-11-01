@@ -20,7 +20,7 @@ installed. The tagline is Inter Regular, also outlined.
 
 | Token | Hex | Role |
 | --- | --- | --- |
-| `ink` | `#0B0D14` | Deepest background; TUI base |
+| `ink` | `#0B0D14` | Deepest background; text on selection |
 | `canvas` | `#0E1019` | Midnight-canvas gradient midpoint; panels |
 | `canvas-hi` | `#1A1B2E` | Gradient top; raised surfaces, overlays |
 | `glass` | `#4E9EA2` | Smoked teal glass, used translucent (40–55% alpha) |
@@ -45,7 +45,7 @@ Midnight Bloom is the default theme on truecolor terminals.
 
 | Role | Token | Notes |
 | --- | --- | --- |
-| Background | `ink` | Leave unset under `theme = "terminal"` |
+| Background | (terminal) | Left unset in every theme, so terminal opacity and blur show through |
 | Panel / overlay background | `canvas-hi` | Help overlay, palette, Rotation panel, toasts |
 | Border, inactive | `muted` | |
 | Border, focused pane | `mint` | |

@@ -315,7 +315,6 @@ const MINT: Color = Color::Rgb(0x8D, 0xE3, 0xDC);
 const BLUE: Color = Color::Rgb(0x7A, 0xA2, 0xF7);
 const TEXT: Color = Color::Rgb(0xC0, 0xCA, 0xF5);
 const SUBTEXT: Color = Color::Rgb(0xA9, 0xB1, 0xD6);
-const INK: Color = Color::Rgb(0x0B, 0x0D, 0x14);
 
 #[test]
 fn midnight_bloom_roles_on_screen() {
@@ -327,9 +326,9 @@ fn midnight_bloom_roles_on_screen() {
     let selected = &buffer[find(&buffer, "beach/dunes.jpg")];
     assert_eq!(selected.bg, BLUE);
     assert!(selected.modifier.contains(Modifier::BOLD));
-    // Other rows: plain text on ink.
+    // Other rows: plain text on the terminal's own background.
     let row = &buffer[find(&buffer, "aurora.png")];
-    assert_eq!((row.fg, row.bg), (TEXT, INK));
+    assert_eq!((row.fg, row.bg), (TEXT, Color::Reset));
     // Focus: the focused pane's border, the targeted Monitor, key glyphs.
     assert_eq!(buffer[(0, 1)].fg, MINT);
     assert_eq!(buffer[find(&buffer, "● DP-1")].fg, MINT);

@@ -92,7 +92,9 @@ impl Theme {
         let fg = |c| Style::new().fg(c);
         Theme {
             palette: Palette::MidnightBloom,
-            base: Style::new().fg(TEXT).bg(INK),
+            // The terminal's own background, so its opacity and blur show
+            // through. An RGB fill here would paint over them.
+            base: Style::new().fg(TEXT).bg(Color::Reset),
             panel: Style::new().fg(TEXT).bg(CANVAS_HI),
             text: fg(TEXT),
             secondary: fg(SUBTEXT),
@@ -162,6 +164,12 @@ mod tests {
         assert_eq!(theme.selection.bg, Some(Color::Rgb(0x7A, 0xA2, 0xF7)));
         assert_eq!(theme.text.fg, Some(Color::Rgb(0xC0, 0xCA, 0xF5)));
         assert_eq!(theme.secondary.fg, Some(Color::Rgb(0xA9, 0xB1, 0xD6)));
+    }
+
+    #[test]
+    fn midnight_bloom_keeps_the_terminal_background() {
+        let theme = Theme::resolve(ThemeName::Midnight, TRUECOLOR);
+        assert_eq!(theme.base.bg, Some(Color::Reset));
     }
 
     #[test]

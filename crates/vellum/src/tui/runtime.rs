@@ -32,7 +32,7 @@ use ratatui_image::picker::{Picker, ProtocolType};
 use super::model::Model;
 use super::msg::{Cmd, Msg, Purpose, Wake};
 use super::services::{Latest, Live, Services, perform};
-use super::theme::{ColorEnv, Palette, Theme};
+use super::theme::{ColorEnv, Theme};
 use super::{update, view};
 use crate::config::Config;
 
@@ -68,7 +68,7 @@ fn run_in(terminal: &mut DefaultTerminal, config: Config, theme: Theme) -> Resul
     }
 
     let (tx, rx) = mpsc::channel();
-    let (picker, typed) = picker(&model.theme);
+    let (picker, typed) = picker();
     // Keys typed while the terminal was probed come first.
     for key in typed {
         let _ = tx.send(Msg::Key(key));
@@ -190,12 +190,8 @@ impl Loop {
 /// The best graphics protocol the terminal answers for, else halfblocks,
 /// and the keys typed during the probe. Must run before the input thread
 /// starts reading stdin.
-fn picker(theme: &Theme) -> (Picker, Vec<event::KeyEvent>) {
-    let (mut picker, typed) = super::probe::picker();
-    if theme.palette == Palette::MidnightBloom {
-        picker.set_background_color(Some(image::Rgba([0x0B, 0x0D, 0x14, 0xFF])));
-    }
-    (picker, typed)
+fn picker() -> (Picker, Vec<event::KeyEvent>) {
+    super::probe::picker()
 }
 
 /// Draws one frame inside synchronized output, so the terminal shows it

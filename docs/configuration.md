@@ -166,6 +166,9 @@ The TUI's colors (run `vellum` with no command to open it).
 theme = "terminal"
 ```
 
+Both themes leave the background to your terminal, so its opacity, blur
+and background image show through the TUI.
+
 If `NO_COLOR` is set, the TUI draws no color at all, whatever the theme,
 and marks the selection with reverse video and bold.
 
