@@ -9,9 +9,11 @@ edition = "2024"
 rust-version = "1.99"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/CPT-Dawn/Vellum"
+# Distribution is the AUR and GitHub Releases; nothing goes to a registry.
+publish = false
 
 [workspace.dependencies]
-vellum-ipc = { path = "crates/vellum-ipc", version = "2.0.0-dev" }
+vellum-ipc = { path = "crates/vellum-ipc" }
 rustix = { version = "1.1.6", default-features = false, features = ["std"] }
 
 [workspace.lints.rust]

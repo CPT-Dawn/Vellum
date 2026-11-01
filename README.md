@@ -74,13 +74,6 @@ cargo install --locked --path crates/vellumd
 cargo install --locked --path crates/vellum
 ```
 
-From crates.io, once 2.0.0 is published (the `vellum` crate name was taken,
-so the package is `vellum-wallpaper`; the command is still `vellum`):
-
-```sh
-cargo install --locked vellumd vellum-wallpaper
-```
-
 AVIF and JXL support are opt-in build features:
 `cargo install --locked --path crates/vellum --features avif,jxl` (AVIF
 needs the system `dav1d` library).

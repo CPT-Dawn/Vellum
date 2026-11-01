@@ -1,5 +1,5 @@
 [package]
-name = "vellum-wallpaper"
+name = "vellum"
 description = "Wayland wallpaper manager: CLI, TUI and renderer for vellumd"
 version.workspace = true
 authors.workspace = true
@@ -7,15 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-readme = "../../README.md"
-keywords = ["wayland", "wallpaper", "layer-shell", "tui", "cli"]
-categories = ["command-line-utilities", "multimedia::images"]
-
-[[bin]]
-# The package is `vellum-wallpaper` on crates.io (the `vellum` name is
-# taken); the command stays `vellum`.
-name = "vellum"
-path = "src/main.rs"
+publish.workspace = true
 
 [lints]
 workspace = true

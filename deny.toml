@@ -27,7 +27,7 @@ confidence-threshold = 0.9
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
-# Path dependencies inside the workspace carry a version for publishing.
+# Workspace path dependencies carry no version: the crates are publish = false.
 allow-wildcard-paths = true
 
 [sources]

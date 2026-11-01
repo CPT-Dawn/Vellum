@@ -1,11 +1,11 @@
 name: Release
 
 # Pushing a version tag (v2.0.0, v2.0.0-rc.1) is the maintainer's approval:
-# it publishes GitHub Releases, crates.io and the AUR. Nothing else does.
-# For a second gate, add required reviewers to the `release` environment in
-# the repository settings: the GitHub Release job waits in it, and crates.io
-# and the AUR wait on that job. Publishing needs the CARGO_REGISTRY_TOKEN and
-# AUR_SSH_PRIVATE_KEY secrets.
+# it publishes the GitHub Release and the AUR. Nothing else does. Vellum is
+# not published to crates.io. For a second gate, add required reviewers to
+# the `release` environment in the repository settings: the GitHub Release
+# job waits in it, and the AUR waits on that job. Publishing needs the
+# AUR_SSH_PRIVATE_KEY secret.
 
 on:
   push:
@@ -23,7 +23,7 @@ env:
 
 jobs:
   verify:
-    name: tag matches the crates, packages build
+    name: tag matches the workspace version
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -40,7 +40,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${TAG#v}"
-          for crate in vellum-ipc vellumd vellum-wallpaper; do
+          for crate in vellum-ipc vellumd vellum; do
             have=$(cargo metadata --no-deps --format-version 1 --locked \
               | jq -r --arg c "$crate" '.packages[] | select(.name == $c) | .version')
             if [[ "$have" != "$version" ]]; then
@@ -54,9 +54,6 @@ jobs:
           else
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Crates package and build (dry run)
-        run: cargo publish --workspace --dry-run --locked
 
   build:
     name: build ${{ matrix.target }}
@@ -118,32 +115,6 @@ jobs:
             --title "Vellum $TAG" \
             --generate-notes \
             "${flags[@]}"
-
-  crates:
-    name: crates.io
-    needs: github-release
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      # vellumd and vellum depend on vellum-ipc, so it goes first. cargo waits
-      # for each crate to reach the index before the next publish resolves it.
-      - name: Publish vellum-ipc
-        run: cargo publish --locked -p vellum-ipc
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Publish vellumd
-        run: cargo publish --locked -p vellumd
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Publish vellum-wallpaper
-        run: cargo publish --locked -p vellum-wallpaper
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   aur:
     name: AUR
