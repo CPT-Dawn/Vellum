@@ -23,7 +23,7 @@ Set CursorBlink false
 Set Theme { "name": "Midnight Bloom", "background": "#0B0D14", "foreground": "#C0CAF5", "cursor": "#8DE3DC", "selection": "#1A1B2E", "black": "#15162A", "red": "#F7768E", "green": "#9ECE6A", "yellow": "#FF9E64", "blue": "#7AA2F7", "magenta": "#BB9AF7", "cyan": "#8DE3DC", "white": "#A9B1D6", "brightBlack": "#565F89", "brightRed": "#F7768E", "brightGreen": "#9ECE6A", "brightYellow": "#FF9E64", "brightBlue": "#7AA2F7", "brightMagenta": "#BB9AF7", "brightCyan": "#8DE3DC", "brightWhite": "#C0CAF5" }
 
 Hide
-Type "source docs/demo/sandbox.sh && export COLORTERM=truecolor PS1='\[\e[38;2;141;227;220m\]❯\[\e[0m\] ' && clear"
+Type "source docs/demo/sandbox.sh && export COLORTERM=truecolor VELLUM_GRAPHICS=halfblocks PS1='\[\e[38;2;141;227;220m\]❯\[\e[0m\] ' && clear"
 Enter
 Sleep 4s
 Show
@@ -42,7 +42,8 @@ Sleep 400ms
 Enter
 Sleep 3s
 
-# The TUI. Wait out the terminal graphics probe before typing.
+# The TUI. VHS's terminal advertises sixel but records only text, so the
+# previews use halfblocks (set above). Wait out the probe before typing.
 Type "clear && vellum"
 Enter
 Sleep 3s

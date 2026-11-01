@@ -191,6 +191,21 @@ An entry belongs to one file at one size, Monitor and Fit mode. Editing or
 replacing a wallpaper makes its old entries unused, and they age out. You
 can delete the folder at any time.
 
+### Graphics protocol (`VELLUM_GRAPHICS`)
+
+At startup the TUI asks your terminal which graphics protocol it speaks
+and picks the best one: kitty, then sixel, then halfblocks. A few
+terminals claim a protocol they can't actually draw (some web terminals
+advertise sixel, for example). If previews stay blank, set the
+`VELLUM_GRAPHICS` environment variable to `halfblocks`, `kitty`, `sixel`
+or `iterm2`. It is an environment variable, not a Config key, because it
+describes the terminal rather than your setup. Any other value, or
+leaving it unset, means detect.
+
+```sh
+VELLUM_GRAPHICS=halfblocks vellum
+```
+
 ## Transition
 
 The `[transition]` section sets the Transition that `vellum set` plays.

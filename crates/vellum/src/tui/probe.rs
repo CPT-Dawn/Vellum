@@ -19,9 +19,14 @@ const BUDGET: Duration = Duration::from_secs(1);
 
 /// Probes the terminal on stdin/stdout, which must be in raw mode with
 /// nothing else reading stdin yet. Returns the best Picker it answers for
-/// (halfblocks otherwise) and the keys typed meanwhile.
+/// (halfblocks otherwise) and the keys typed meanwhile. `VELLUM_GRAPHICS`
+/// overrides the protocol for terminals that claim more than they draw.
 pub fn picker() -> (Picker, Vec<KeyEvent>) {
     use std::io::Write as _;
+    let forced = forced_by_env();
+    if forced == Some(ProtocolType::Halfblocks) {
+        return (Picker::halfblocks(), Vec::new());
+    }
     let is_tmux = std::env::var("TERM").is_ok_and(|term| term.starts_with("tmux"))
         || std::env::var("TERM_PROGRAM").is_ok_and(|program| program == "tmux");
     let mut options = QueryStdioOptions::default();
@@ -39,7 +44,28 @@ pub fn picker() -> (Picker, Vec<KeyEvent>) {
         return (Picker::halfblocks(), Vec::new());
     }
     let answers = collect(read_stdin, BUDGET);
-    (choose(&answers.responses), answers.keys)
+    let mut picker = choose(&answers.responses);
+    if let Some(protocol) = forced {
+        picker.set_protocol_type(protocol);
+    }
+    (picker, answers.keys)
+}
+
+/// The protocol the user forced through `VELLUM_GRAPHICS`, if any.
+pub fn forced_by_env() -> Option<ProtocolType> {
+    forced(std::env::var("VELLUM_GRAPHICS").ok().as_deref())
+}
+
+/// The protocol `VELLUM_GRAPHICS` asks for: `halfblocks`, `kitty`, `sixel`
+/// or `iterm2`. Anything else, including `auto` or unset, means probe.
+fn forced(value: Option<&str>) -> Option<ProtocolType> {
+    match value?.trim().to_ascii_lowercase().as_str() {
+        "halfblocks" => Some(ProtocolType::Halfblocks),
+        "kitty" => Some(ProtocolType::Kitty),
+        "sixel" => Some(ProtocolType::Sixel),
+        "iterm2" => Some(ProtocolType::Iterm2),
+        _ => None,
+    }
 }
 
 /// The bytes waiting on stdin within `wait`.
@@ -329,6 +355,18 @@ mod tests {
     use super::*;
 
     const ANSWER: &[u8] = b"\x1b[6;20;10t\x1b[?62;4;22c\x1b[0n";
+
+    #[test]
+    fn vellum_graphics_names_a_protocol_and_anything_else_means_auto() {
+        assert_eq!(forced(Some("halfblocks")), Some(ProtocolType::Halfblocks));
+        assert_eq!(forced(Some("Kitty")), Some(ProtocolType::Kitty));
+        assert_eq!(forced(Some(" sixel ")), Some(ProtocolType::Sixel));
+        assert_eq!(forced(Some("iterm2")), Some(ProtocolType::Iterm2));
+        assert_eq!(forced(Some("auto")), None);
+        assert_eq!(forced(Some("")), None);
+        assert_eq!(forced(Some("vt340")), None);
+        assert_eq!(forced(None), None);
+    }
 
     fn feed(chunks: &[&[u8]]) -> Answers {
         let mut chunks = chunks
