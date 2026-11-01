@@ -1,8 +1,8 @@
 name: Release
 
 # Pushing a version tag (v2.0.0, v2.0.0-rc.1) is the maintainer's approval:
-# it publishes the GitHub Release and the AUR. Nothing else does. Vellum is
-# not published to crates.io. For a second gate, add required reviewers to
+# it publishes the GitHub Release and both AUR packages (vellum and
+# vellum-bin). Nothing else does. Vellum is not published to crates.io. For a second gate, add required reviewers to
 # the `release` environment in the repository settings: the GitHub Release
 # job waits in it, and the AUR waits on that job. Publishing needs the
 # AUR_SSH_PRIVATE_KEY secret.

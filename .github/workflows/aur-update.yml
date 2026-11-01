@@ -1,8 +1,12 @@
-name: Update AUR Package
+name: Update AUR Packages
 
 # Called by release.yml after the GitHub Release exists (a release created
 # with GITHUB_TOKEN never fires `release: published`). Run it by hand with
-# dry_run to build the PKGBUILD for a tag without pushing to the AUR.
+# dry_run to build the PKGBUILDs for a tag without pushing to the AUR.
+#
+# Two packages, one job each:
+#   vellum      builds from the tag's source archive
+#   vellum-bin  repackages the release tarballs, so it needs the Release
 
 on:
   workflow_call:
@@ -33,10 +37,20 @@ permissions:
 
 jobs:
   aur-update:
+    name: ${{ matrix.package }}
     runs-on: ubuntu-24.04
     container: archlinux:base-devel
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: vellum
+            generator: generate_aur_files.sh
+          - package: vellum-bin
+            generator: generate_aur_bin_files.sh
     env:
       TAG: ${{ inputs.tag }}
+      PACKAGE: ${{ matrix.package }}
     steps:
       - name: Install build tools
         run: pacman -Syu --noconfirm --needed git openssh rust
@@ -93,7 +107,9 @@ jobs:
         if: ${{ !inputs.dry_run }}
         run: |
           set -euo pipefail
-          git clone ssh://aur@aur.archlinux.org/vellum.git /build/aur-repo
+          # A package that is not on the AUR yet clones empty; the first
+          # push creates it.
+          git clone "ssh://aur@aur.archlinux.org/${PACKAGE}.git" /build/aur-repo
           chown -R builder:builder /build/aur-repo
 
       - name: Generate PKGBUILD and .SRCINFO
@@ -104,7 +120,7 @@ jobs:
           GITHUB_SERVER_URL="$GITHUB_SERVER_URL"
           AUR_MAINTAINER="CPT-Dawn <ping@cptdawn.dev>"
           PKGREL=1
-          bash .github/scripts/generate_aur_files.sh /build/aur-repo
+          bash .github/scripts/${{ matrix.generator }} /build/aur-repo
 
       - name: Build the package from the generated PKGBUILD
         run: |
@@ -121,8 +137,8 @@ jobs:
             /usr/share/zsh/site-functions/_vellum \
             /usr/share/fish/vendor_completions.d/vellum.fish \
             /usr/share/man/man1/vellum.1.gz \
-            /usr/share/licenses/vellum/LICENSE-MIT \
-            /usr/share/licenses/vellum/LICENSE-APACHE; do
+            "/usr/share/licenses/$PACKAGE/LICENSE-MIT" \
+            "/usr/share/licenses/$PACKAGE/LICENSE-APACHE"; do
             grep -qx "$want" <<< "$files" || { echo "::error::package lacks $want"; exit 1; }
           done
 
@@ -142,5 +158,5 @@ jobs:
           fi
 
           pkgver=$(awk -F= '/^pkgver=/{print $2}' PKGBUILD)
-          git commit -m "vellum: update to ${pkgver}"
-          git push origin master
+          git commit -m "${PACKAGE}: update to ${pkgver}"
+          git push origin HEAD:master

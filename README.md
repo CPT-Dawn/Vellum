@@ -55,10 +55,11 @@ played one.
 
 ## Install
 
-**Arch Linux** (AUR, builds from source):
+**Arch Linux** (AUR), prebuilt or built from source:
 
 ```sh
-paru -S vellum
+paru -S vellum-bin   # the release binaries, installs in seconds
+paru -S vellum       # builds from source
 ```
 
 **Prebuilt binaries** for x86_64 and aarch64 Linux are on
