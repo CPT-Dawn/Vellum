@@ -4,22 +4,26 @@
 //!
 //! The Daemon only keeps time. Every pick happens here, from the Config's
 //! Rotation rules and the decks in [`crate::deck`]. Every frame goes
-//! through [`set::present`] with `restore: false`, the same path `vellum
-//! set` takes, so whatever runs after a present (the `on_change` hook)
-//! runs for Rotation too.
+//! through [`set::present`], the same path `vellum set` takes, so whatever
+//! runs after a present (the `on_change` hook) runs for Rotation too.
+//!
+//! A tick's frames carry the Daemon's ticket ([`Origin::Rotate`]). If the
+//! user applied a wallpaper by hand after the tick fired, the Daemon drops
+//! the frame; the tick then undoes its draw, so the deck, the history and
+//! the hook all behave as if that tick never reached the Monitor.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use vellum_ipc::{
-    MonitorInfo, Request, Response, RotationOrder, RotationSettings, RotationSource, Schedule,
-    Status, Transition,
+    MonitorInfo, Origin, Request, Response, RotationOrder, RotationSettings, RotationSource,
+    Schedule, Status, Transition,
 };
 
 use crate::client::{self, ask, unexpected};
 use crate::config::{Config, Named, format_interval};
 use crate::deck::{self, Decks};
-use crate::set::{self, Look};
+use crate::set::{self, Look, Presented};
 
 /// What to put up next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,11 +39,13 @@ pub enum Pick {
 /// Who asked for the pick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trigger {
-    /// A command typed or bound to a key: it may start the Daemon, and it
-    /// restarts each Monitor's Rotation timer.
+    /// A command typed or bound to a key: it may start the Daemon, and its
+    /// frames are manual applies, so the Daemon restarts each Monitor's
+    /// Rotation timer.
     Manual,
-    /// `vellum render --rotate`, spawned by the Daemon's timer.
-    Tick,
+    /// `vellum render --rotate`, spawned by the Daemon's timer, with the
+    /// ticket the Daemon handed it.
+    Tick(u64),
 }
 
 /// Puts the `pick` up on `monitors` (every Monitor if empty). Monitors in
@@ -54,7 +60,7 @@ pub fn run(
     let config = crate::config::load();
     let socket = match trigger {
         Trigger::Manual => client::daemon()?,
-        Trigger::Tick => client::socket()?,
+        Trigger::Tick(_) => client::socket()?,
     };
     let all = client::monitors(&socket)?;
     let targets = match (trigger, monitors) {
@@ -86,47 +92,57 @@ pub fn run(
         fit: config.fit,
         letterbox: config.letterbox,
         transition: transition.unwrap_or(config.transition),
-        restore: false,
+        origin: match trigger {
+            Trigger::Manual => Origin::Manual,
+            Trigger::Tick(ticket) => Origin::Rotate(ticket),
+        },
     };
     let mut errors: Vec<String> = Vec::new();
     for (key, members) in groups(&targets, &config.rotation) {
-        let picked = match pick {
-            Pick::Prev => members
-                .iter()
-                .map(|m| picker.previous(m).map(|p| (vec![*m], p)))
-                .collect::<Result<Vec<_>, _>>(),
-            // The sync group shares one card per tick.
-            Pick::Next | Pick::Random if key == deck::GLOBAL && config.rotation.sync => picker
-                .draw(&key, &members, pick)
-                .map(|p| vec![(members, p)]),
-            // Otherwise each Monitor takes its own card, from the shared
-            // global deck or its Override's.
-            Pick::Next | Pick::Random => members
-                .iter()
-                .map(|m| picker.draw(&key, &[*m], pick).map(|p| (vec![*m], p)))
-                .collect::<Result<Vec<_>, _>>(),
-        };
-        let picked = match picked {
-            Ok(picked) => picked,
-            Err(err) => {
-                errors.push(err);
-                continue;
+        // The sync group shares one card per tick. Otherwise each Monitor
+        // takes its own card, from the shared global deck or its
+        // Override's (and `prev` always goes Monitor by Monitor).
+        let units: Vec<Vec<&MonitorInfo>> = match pick {
+            Pick::Next | Pick::Random if key == deck::GLOBAL && config.rotation.sync => {
+                vec![members]
             }
+            _ => members.into_iter().map(|m| vec![m]).collect(),
         };
-        for (members, (path, image)) in picked {
+        for unit in units {
+            // Draw and present one card at a time, so a dropped frame can
+            // hand its card back before the next Monitor draws.
+            let before = (picker.locked.decks.clone(), picker.chosen.len());
+            let drawn = match pick {
+                Pick::Prev => picker.previous(unit[0]),
+                Pick::Next | Pick::Random => picker.draw(&key, &unit, pick),
+            };
+            let (path, image) = match drawn {
+                Ok(drawn) => drawn,
+                Err(err) => {
+                    // The rest of the group draws from the same source.
+                    errors.push(err);
+                    break;
+                }
+            };
             let source = path.to_string_lossy();
-            for monitor in members {
+            let mut any_shown = false;
+            for monitor in unit {
                 match set::present(&socket, &image, monitor, &source, look) {
-                    Ok(()) => {
+                    Ok(Presented::Shown) => {
+                        any_shown = true;
                         if pick != Pick::Prev {
                             picker.locked.decks.shown(&monitor.name, &path);
                         }
-                        if trigger == Trigger::Manual {
-                            reset_timer(&socket, &monitor.name)?;
-                        }
                     }
+                    // A pick by hand overtook this tick on that Monitor.
+                    Ok(Presented::Dropped) => {}
                     Err(err) => errors.push(err),
                 }
+            }
+            if !any_shown {
+                // Nothing went up: the deck stays where it was.
+                picker.locked.decks = before.0;
+                picker.chosen.truncate(before.1);
             }
         }
     }
@@ -134,16 +150,6 @@ pub fn run(
     match errors.is_empty() {
         true => Ok(()),
         false => Err(errors.join("\nvellum: ")),
-    }
-}
-
-/// Tells the Daemon a wallpaper was applied by hand on `monitor`, so its
-/// Rotation timer starts over.
-pub fn reset_timer(socket: &Path, monitor: &str) -> Result<(), String> {
-    match ask(socket, &Request::RotationReset(monitor.to_owned()), &[])? {
-        Response::Ok => Ok(()),
-        Response::Error(err) => Err(err),
-        other => Err(unexpected(&other)),
     }
 }
 

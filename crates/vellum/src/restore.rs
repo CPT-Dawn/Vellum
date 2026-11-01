@@ -3,7 +3,7 @@
 //! lacks a frame (startup, hotplug, a scale change); exits right after
 //! presenting, taking all decoder memory with it.
 
-use vellum_ipc::{Direction, Easing, Transition, TransitionKind};
+use vellum_ipc::{Direction, Easing, Origin, Transition, TransitionKind};
 
 use crate::client;
 use crate::set::{Look, present};
@@ -40,7 +40,8 @@ pub fn run(monitor: &str) -> Result<(), String> {
         fit: wallpaper.fit.into(),
         letterbox: crate::config::load().letterbox,
         transition: INSTANT,
-        restore: true,
+        origin: Origin::Restore,
     };
-    present(&socket, &image, &info, &wallpaper.path, look)
+    // A dropped restore is fine: something newer is up already.
+    present(&socket, &image, &info, &wallpaper.path, look).map(|_| ())
 }

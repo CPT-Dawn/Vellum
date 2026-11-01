@@ -5,7 +5,7 @@ use std::os::fd::AsFd;
 use std::path::Path;
 
 use image::RgbaImage;
-use vellum_ipc::{MonitorInfo, PixelFormat, Present, Request, Response, Transition};
+use vellum_ipc::{MonitorInfo, Origin, PixelFormat, Present, Request, Response, Transition};
 
 use crate::client::{self, ask, unexpected};
 use crate::config::Config;
@@ -18,9 +18,18 @@ pub struct Look {
     pub fit: FitMode,
     pub letterbox: Color,
     pub transition: Transition,
-    /// A restore frame is dropped by the Daemon if the Monitor already
-    /// shows an up-to-date one.
-    pub restore: bool,
+    /// Who presents: the Daemon drops a restore or Rotation frame that
+    /// something newer overtook.
+    pub origin: Origin,
+}
+
+/// What the Daemon did with a presented frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Presented {
+    /// It is on screen and recorded in State.
+    Shown,
+    /// It was stale and nothing changed: act as if it was never sent.
+    Dropped,
 }
 
 /// Sets `file` (a path, or a name in the Library) on the Monitor named
@@ -40,7 +49,7 @@ pub fn run(
         fit,
         letterbox: config.letterbox,
         transition,
-        restore: false,
+        origin: Origin::Manual,
     };
     apply(&socket, &image, &file, monitor, look)
 }
@@ -55,13 +64,14 @@ pub fn explicit(file: &Path, monitor: &str, config: &Config) -> Result<(), Strin
         fit: config.fit,
         letterbox: config.letterbox,
         transition: config.transition,
-        restore: false,
+        origin: Origin::Manual,
     };
     apply(&socket, &image, file, Some(monitor), look)
 }
 
-/// Presents `image` (from `file`) on `monitor`, or on every Monitor, and
-/// restarts their Rotation timers: a manual pick stays up a full interval.
+/// Presents `image` (from `file`) on `monitor`, or on every Monitor. As a
+/// manual apply, each Present restarts that Monitor's Rotation timer in
+/// the Daemon, so the pick stays up a full interval.
 fn apply(
     socket: &Path,
     image: &RgbaImage,
@@ -74,7 +84,6 @@ fn apply(
     let source = source.to_string_lossy();
     for monitor in &monitors {
         present(socket, image, monitor, &source, look)?;
-        crate::rotation::reset_timer(socket, &monitor.name)?;
     }
     Ok(())
 }
@@ -83,21 +92,23 @@ fn apply(
 /// the Fit mode in State.
 ///
 /// This is the one place a new wallpaper reaches a Monitor, so it is where
-/// the Config's `on_change` hook fires: after the Daemon accepts the frame,
-/// unless `look.restore` is set (a restore brings back a wallpaper that
-/// was already applied, so the hook ran back then).
+/// the Config's `on_change` hook fires: after the Daemon shows a manual or
+/// Rotation frame. A restore or repaint brings back a wallpaper that was
+/// already applied, so the hook ran back then; a dropped frame fires
+/// nothing.
 pub fn present(
     socket: &Path,
     image: &RgbaImage,
     monitor: &MonitorInfo,
     source: &str,
     look: Look,
-) -> Result<(), String> {
-    present_frame(socket, image, monitor, source, look)?;
-    if !look.restore {
+) -> Result<Presented, String> {
+    let presented = present_frame(socket, image, monitor, source, look)?;
+    let new = matches!(look.origin, Origin::Manual | Origin::Rotate(_));
+    if presented == Presented::Shown && new {
         crate::hook::fire(source, &monitor.name);
     }
-    Ok(())
+    Ok(presented)
 }
 
 /// [`present`] without the `on_change` hook, for re-presenting the
@@ -108,7 +119,7 @@ pub fn present_frame(
     monitor: &MonitorInfo,
     source: &str,
     look: Look,
-) -> Result<(), String> {
+) -> Result<Presented, String> {
     let (width, height) = (monitor.physical_width, monitor.physical_height);
     let mut frame = Frame::new(width, height)
         .map_err(|err| format!("cannot allocate a frame for {}: {err}", monitor.name))?;
@@ -127,10 +138,11 @@ pub fn present_frame(
         source: source.to_owned(),
         transition: look.transition,
         fit: look.fit.into(),
-        restore: look.restore,
+        origin: look.origin,
     });
     match ask(socket, &present, &[memfd.as_fd()])? {
-        Response::Ok => Ok(()),
+        Response::Ok => Ok(Presented::Shown),
+        Response::Dropped => Ok(Presented::Dropped),
         Response::Error(err) => Err(format!("{}: {err}", monitor.name)),
         other => Err(unexpected(&other)),
     }

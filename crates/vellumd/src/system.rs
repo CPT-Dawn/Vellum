@@ -77,8 +77,10 @@ pub enum Job {
     Restore(String),
     /// `--sync`: read the Config and push its settings.
     Sync,
-    /// `--rotate --monitor <name>...`: a Rotation tick for these Monitors.
-    Rotate(Vec<String>),
+    /// `--rotate --ticket <n> --monitor <name>...`: a Rotation tick for
+    /// these Monitors, holding the ticket its frames carry back (see
+    /// [`crate::rotation::ManualApplies`]).
+    Rotate(u64, Vec<String>),
 }
 
 impl std::fmt::Display for Job {
@@ -86,7 +88,7 @@ impl std::fmt::Display for Job {
         match self {
             Job::Restore(monitor) => write!(f, "restoring {monitor}"),
             Job::Sync => f.write_str("reading the Config"),
-            Job::Rotate(monitors) => write!(f, "rotating {}", monitors.join(", ")),
+            Job::Rotate(_, monitors) => write!(f, "rotating {}", monitors.join(", ")),
         }
     }
 }
@@ -98,8 +100,8 @@ pub fn spawn_render(job: Job) -> Result<Renderer, String> {
     match &job {
         Job::Restore(monitor) => command.args(["render", "--restore", "--monitor", monitor]),
         Job::Sync => command.args(["render", "--sync"]),
-        Job::Rotate(monitors) => {
-            command.args(["render", "--rotate"]);
+        Job::Rotate(ticket, monitors) => {
+            command.args(["render", "--rotate", "--ticket", &ticket.to_string()]);
             for monitor in monitors {
                 command.args(["--monitor", monitor]);
             }

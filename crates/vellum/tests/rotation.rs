@@ -4,6 +4,7 @@
 mod support;
 
 use std::collections::HashSet;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -269,6 +270,9 @@ fn a_manual_apply_restarts_that_monitors_timer() {
     sway.vellum_ok(["rotation", "start"]);
     let started = Instant::now();
     std::thread::sleep(Duration::from_millis(1200));
+    // On a slow runner this `set` may straddle the original 2s deadline.
+    // That must not matter: a tick that fires mid-`set` loses to the pick
+    // (see `a_tick_overtaken_by_a_manual_apply_is_dropped_whole`).
     sway.vellum_ok(["set", pick.to_str().unwrap()]);
     let status = rotation_status(&sway);
     assert!(
@@ -288,6 +292,59 @@ fn a_manual_apply_restarts_that_monitors_timer() {
     // `vellum next` counts as a manual apply too.
     sway.vellum_ok(["next"]);
     assert!(rotation_status(&sway).contains("in 2s"));
+}
+
+/// The file names the `on_change` hook script logged, oldest first.
+fn hooked(sway: &Sway) -> Vec<String> {
+    std::fs::read_to_string(sway.dir().join("marker"))
+        .unwrap_or_default()
+        .lines()
+        .map(file_name)
+        .collect()
+}
+
+/// The race behind story 40, made deterministic: a tick fired, then the
+/// user picked a wallpaper, then the tick's frame arrived. The Daemon
+/// issued ticket 0 before any manual apply, so `render --rotate --ticket 0`
+/// after a `set` is exactly that late tick. Its frame is dropped whole: the
+/// pick stays, the hook stays quiet and the deck does not move.
+#[test]
+fn a_tick_overtaken_by_a_manual_apply_is_dropped_whole() {
+    let mut sway = Sway::start(&[SMALL]);
+    let walls = library(&sway, &ABC);
+    let pick = sway.dir().join("pick.png");
+    RgbImage::from_pixel(32, 24, Rgb(WHITE))
+        .save(&pick)
+        .unwrap();
+    let hook = sway.dir().join("hook.sh");
+    std::fs::write(&hook, "#!/bin/sh\necho \"$1\" >> \"$HOME/marker\"\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    sway.write_config(&format!(
+        "library = [\"{}\"]\non_change = \"{} {{path}}\"\n\
+         [transition]\ntype = \"none\"\n[rotation]\norder = \"sequential\"\n",
+        walls.display(),
+        hook.display()
+    ));
+    sway.start_daemon();
+
+    sway.vellum_ok(["set", pick.to_str().unwrap()]);
+    sway.vellum_ok(["render", "--rotate", "--ticket", "0", "-m", "HEADLESS-1"]);
+    assert_eq!(shown(&sway, "HEADLESS-1").as_deref(), Some("pick.png"));
+    assert_eq!(hooked(&sway), ["pick.png"]);
+
+    // A tick issued after the pick goes through, and draws the card the
+    // dropped tick would have shown: sequential order starts at a.png.
+    let after_everything = u64::MAX.to_string();
+    sway.vellum_ok([
+        "render",
+        "--rotate",
+        "--ticket",
+        &after_everything,
+        "-m",
+        "HEADLESS-1",
+    ]);
+    assert_eq!(shown(&sway, "HEADLESS-1").as_deref(), Some("a.png"));
+    assert_eq!(hooked(&sway), ["pick.png", "a.png"]);
 }
 
 #[test]

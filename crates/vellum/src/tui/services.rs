@@ -330,13 +330,12 @@ impl Services for Live {
             fit: job.fit,
             letterbox: self.config.letterbox,
             transition: self.config.transition,
-            restore: false,
+            origin: vellum_ipc::Origin::Manual,
         };
         for monitor in &monitors {
+            // A pick by hand: the Daemon restarts the Monitor's Rotation
+            // timer, as with `vellum set`.
             set::present(&socket, &image, monitor, &source, look)?;
-            // A pick by hand stays up a full Rotation interval, as with
-            // `vellum set`.
-            crate::rotation::reset_timer(&socket, &monitor.name)?;
         }
         Ok(())
     }
