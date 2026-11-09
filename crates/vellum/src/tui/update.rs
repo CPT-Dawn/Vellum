@@ -125,7 +125,11 @@ pub fn update(m: &mut Model, msg: Msg) -> Vec<Cmd> {
             refilter(m, Keep::Selection, When::Now)
         }
         Msg::Daemon(Ok(info)) => {
-            m.target = m.target.min(info.monitors.len().saturating_sub(1));
+            // Keep targeting the same Monitor by name: hotplug reorders.
+            let targeted = m.targeted().map(|t| t.name.clone());
+            m.target = targeted
+                .and_then(|name| info.monitors.iter().position(|mon| mon.name == name))
+                .unwrap_or_else(|| m.target.min(info.monitors.len().saturating_sub(1)));
             m.daemon = Daemon::Up {
                 monitors: info.monitors,
             };

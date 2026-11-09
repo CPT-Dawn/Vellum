@@ -556,3 +556,18 @@ fn a_failed_hook_becomes_an_error_toast() {
     assert_eq!(toast.kind, ToastKind::Error);
     assert!(toast.text.contains("`wal` failed"));
 }
+
+#[test]
+fn a_monitor_plugged_in_before_the_target_keeps_the_target() {
+    let mut h = Harness::started(80, 24);
+    h.press("m");
+    assert_eq!(h.model.targeted().unwrap().name, "HDMI-A-1");
+    // Reconnecting lists a new Monitor ahead of the targeted one.
+    let mut monitors = match &h.model.daemon {
+        super::super::super::model::Daemon::Up { monitors } => monitors.clone(),
+        other => panic!("{other:?}"),
+    };
+    monitors.insert(1, monitor("DP-2", 1920, 1080, 120));
+    h.update(Msg::Daemon(Ok(daemon_info(monitors))));
+    assert_eq!(h.model.targeted().unwrap().name, "HDMI-A-1");
+}
