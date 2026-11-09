@@ -92,7 +92,9 @@ impl Latest {
 /// runtime holds it for its delay instead of calling this.
 pub fn perform(services: &dyn Services, cmd: Cmd, latest: &Latest) -> Option<Msg> {
     Some(match cmd {
-        Cmd::ScanLibrary(folders) => Msg::LibraryScanned(services.scan(&folders)),
+        Cmd::ScanLibrary(generation, folders) => {
+            Msg::LibraryScanned(generation, services.scan(&folders))
+        }
         Cmd::QueryDaemon => Msg::Daemon(services.daemon()),
         Cmd::RenderPreview(job) => {
             let stale = || !latest.is_current(&job);

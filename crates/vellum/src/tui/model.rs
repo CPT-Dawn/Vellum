@@ -43,8 +43,10 @@ pub struct Model {
     pub favorites: Vec<PathBuf>,
     /// Show only Favorites.
     pub favorites_only: bool,
-    /// True until the first Library scan reports back.
+    /// True until the latest Library scan reports back.
     pub scanning: bool,
+    /// Numbers the Library scans; only the latest answer is applied.
+    pub scan_generation: u64,
     /// Index into `visible` of the highlighted wallpaper.
     pub selected: usize,
     /// Index into `visible` of the first row the list shows. Update keeps
@@ -134,6 +136,7 @@ impl Model {
             favorites: Vec::new(),
             favorites_only: false,
             scanning: true,
+            scan_generation: 0,
             selected: 0,
             list_offset: 0,
             prompt: Prompt::default(),

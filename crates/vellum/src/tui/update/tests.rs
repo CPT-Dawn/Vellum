@@ -64,7 +64,7 @@ fn starting_scans_the_library_and_asks_the_daemon_at_once() {
     assert_eq!(
         h.start(),
         [
-            Cmd::ScanLibrary(vec![wallpaper("")]),
+            Cmd::ScanLibrary(0, vec![wallpaper("")]),
             Cmd::QueryDaemon,
             Cmd::LoadFavorites
         ]
@@ -76,7 +76,7 @@ fn starting_scans_the_library_and_asks_the_daemon_at_once() {
 fn the_list_appears_before_any_preview_finishes() {
     let mut h = Harness::new(120, 40);
     let library = h.fake.library.clone();
-    let cmds = h.update(Msg::LibraryScanned(library.clone()));
+    let cmds = h.update(Msg::LibraryScanned(0, library.clone()));
     assert!(!h.model.scanning);
     assert_eq!(h.model.library, library);
     assert_eq!(h.model.selection(), Some(&library[0]));
@@ -97,7 +97,7 @@ fn the_list_appears_before_any_preview_finishes() {
 #[test]
 fn the_preview_is_drawn_for_the_targeted_monitor() {
     let mut h = Harness::new(80, 24);
-    h.update(Msg::LibraryScanned(h.fake.library.clone()));
+    h.update(Msg::LibraryScanned(0, h.fake.library.clone()));
     let info = h.fake.daemon.clone().unwrap();
     let cmds = h.update(Msg::Daemon(Ok(info)));
     let job = preview_job(&cmds);
@@ -248,7 +248,7 @@ fn the_two_neighbours_on_each_side_are_prefetched_after_the_preview() {
 
     // At the top of the Library there is nothing above to prefetch.
     let mut h = Harness::with(80, 24, big_library(50));
-    let cmds = h.update(Msg::LibraryScanned(h.fake.library.clone()));
+    let cmds = h.update(Msg::LibraryScanned(0, h.fake.library.clone()));
     assert_eq!(
         jobs(&cmds),
         [

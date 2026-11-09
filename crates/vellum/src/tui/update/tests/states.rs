@@ -368,3 +368,22 @@ fn a_failed_config_save_is_not_forgotten_by_the_next_edit() {
         other => panic!("expected one save, got {other:?}"),
     }
 }
+
+#[test]
+fn a_slow_scan_of_the_old_folders_cannot_undo_the_saved_library() {
+    let mut h = Harness::new(120, 40);
+    // The first scan is still running.
+    h.start();
+    let old = vec![PathBuf::from("/home/me/Old/a.png")];
+    let new = vec![PathBuf::from("/home/me/Pictures/sea.png")];
+    h.press("o");
+    assert_eq!(h.model.mode, Mode::Welcome);
+    let cmds = h.update(Msg::Key(key("enter")));
+    assert_eq!(cmds, [Cmd::SaveLibrary(PathBuf::from("/home/me/Pictures"))]);
+    let cmds = h.update(Msg::LibrarySaved(Ok(h.fake.config())));
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::ScanLibrary(1, _))));
+    // The new scan lands first, then the old, slow one.
+    h.update(Msg::LibraryScanned(1, new.clone()));
+    h.update(Msg::LibraryScanned(0, old));
+    assert_eq!(h.model.library, new, "the stale scan was dropped");
+}

@@ -186,7 +186,7 @@ fn list_before_the_preview_finishes() {
         let library = harness.fake.library.clone();
         let daemon = harness.fake.daemon.clone();
         harness.update(Msg::Daemon(daemon));
-        harness.update(Msg::LibraryScanned(library));
+        harness.update(Msg::LibraryScanned(0, library));
         harness.model.now += std::time::Duration::from_millis(200);
         harness
     });

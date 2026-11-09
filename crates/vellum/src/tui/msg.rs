@@ -29,8 +29,8 @@ pub enum Msg {
         width: u16,
         height: u16,
     },
-    /// The Library scan finished.
-    LibraryScanned(Vec<PathBuf>),
+    /// The Library scan numbered `generation` finished.
+    LibraryScanned(u64, Vec<PathBuf>),
     /// The Daemon answered (or could not be reached).
     Daemon(Result<DaemonInfo, String>),
     /// A preview requested with `generation` is ready or failed.
@@ -98,8 +98,9 @@ pub struct PreviewOutput {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cmd {
-    /// List every wallpaper under these folders.
-    ScanLibrary(Vec<PathBuf>),
+    /// List every wallpaper under these folders; the answer carries the
+    /// scan's generation, so an older scan cannot overwrite a newer one.
+    ScanLibrary(u64, Vec<PathBuf>),
     /// Ask the Daemon (starting it if needed) for Monitors and Status.
     QueryDaemon,
     /// Render a preview, a prefetch or a thumbnail (see [`Purpose`]).

@@ -85,7 +85,7 @@ enum When {
 /// the Favorites, in parallel, so the list shows up without waiting.
 pub fn init(model: &Model) -> Vec<Cmd> {
     vec![
-        Cmd::ScanLibrary(model.folders.clone()),
+        Cmd::ScanLibrary(model.scan_generation, model.folders.clone()),
         Cmd::QueryDaemon,
         Cmd::LoadFavorites,
     ]
@@ -113,7 +113,11 @@ pub fn update(m: &mut Model, msg: Msg) -> Vec<Cmd> {
             scroll_to_selection(m);
             refresh(m, When::Soon)
         }
-        Msg::LibraryScanned(library) => {
+        Msg::LibraryScanned(generation, _) if generation != m.scan_generation => {
+            m.dirty = false;
+            Vec::new()
+        }
+        Msg::LibraryScanned(_, library) => {
             let names: Vec<String> = library.iter().map(|p| m.short_name(p)).collect();
             m.index = super::search::Index::new(names.iter().map(String::as_str));
             m.library = library;
@@ -1362,6 +1366,7 @@ fn library_saved(m: &mut Model, result: Result<crate::config::Config, String>) -
             m.schedules = config.rotation.clone();
             m.mode = Mode::Normal;
             m.scanning = true;
+            m.scan_generation += 1;
             m.library.clear();
             m.visible.clear();
             m.selected = 0;
@@ -1372,7 +1377,7 @@ fn library_saved(m: &mut Model, result: Result<crate::config::Config, String>) -
                 ToastKind::Success,
                 format!("Library: {}, saved to the Config", folders.join(", ")),
             );
-            vec![Cmd::ScanLibrary(m.folders.clone())]
+            vec![Cmd::ScanLibrary(m.scan_generation, m.folders.clone())]
         }
         Err(err) => {
             m.welcome.error = Some(err);
