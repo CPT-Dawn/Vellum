@@ -189,7 +189,8 @@ pub enum Origin {
     /// apply after that ticket was issued.
     Rotate(u64),
     /// The wallpaper a Monitor already shows, re-rendered (a new letterbox
-    /// color). Never dropped, and not a manual apply: the timer runs on.
+    /// color). Dropped when the Monitor no longer shows that wallpaper in that
+    /// Fit mode. Not a manual apply: the timer runs on.
     Repaint,
 }
 

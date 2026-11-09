@@ -53,6 +53,8 @@ fn repaint_letterboxes(socket: &Path, config: &Config) -> Result<(), String> {
         origin: Origin::Repaint,
     };
     let mut monitors = None;
+    // One Monitor failing must not leave the others with the old bars.
+    let mut first_error = None;
     for shown in status.monitors {
         let Some(wallpaper) = shown.wallpaper.filter(|w| w.fit == WireFit::Fit) else {
             continue;
@@ -64,9 +66,12 @@ fn repaint_letterboxes(socket: &Path, config: &Config) -> Result<(), String> {
         let Some(info) = monitors.iter().find(|m| m.name == shown.name) else {
             continue;
         };
-        let image = crate::decode::load(wallpaper.path.as_ref())?;
         // Same wallpaper, new bars: not a change for the on_change hook.
-        present_frame(socket, &image, info, &wallpaper.path, look)?;
+        let repainted = crate::decode::load(wallpaper.path.as_ref())
+            .and_then(|image| present_frame(socket, &image, info, &wallpaper.path, look));
+        if let Err(err) = repainted {
+            first_error.get_or_insert(err);
+        }
     }
-    Ok(())
+    first_error.map_or(Ok(()), Err)
 }

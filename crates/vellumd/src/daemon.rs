@@ -357,8 +357,14 @@ impl Daemon {
                 }
                 let memfd = fds.pop().expect("checked above");
                 let stale = match frame.origin {
-                    // Nothing overrides a pick by hand or a repaint.
-                    Origin::Manual | Origin::Repaint => false,
+                    // Nothing overrides a pick by hand.
+                    Origin::Manual => false,
+                    // A repaint only redraws what the Monitor shows; it is
+                    // slow to render, so something else may have come first.
+                    Origin::Repaint => self
+                        .state
+                        .wallpaper(&frame.monitor)
+                        .is_none_or(|w| w.path != frame.source || w.fit != frame.fit),
                     // A newer frame got there first, or the Monitor changed
                     // size and another restore is on its way.
                     Origin::Restore => !self.wayland.wants_frame(&frame),
