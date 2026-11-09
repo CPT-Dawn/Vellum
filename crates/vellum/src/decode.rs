@@ -19,13 +19,20 @@ pub fn load(file: &Path) -> Result<RgbaImage, String> {
             .map(|image| image.into_rgba8())
             .map_err(|e| fail("decode", &e));
     }
-    Ok(image::ImageReader::open(file)
+    use image::ImageDecoder;
+    let mut decoder = image::ImageReader::open(file)
         .map_err(|e| fail("open", &e))?
         .with_guessed_format()
         .map_err(|e| fail("read", &e))?
-        .decode()
-        .map_err(|e| fail("decode", &e))?
-        .into_rgba8())
+        .into_decoder()
+        .map_err(|e| fail("decode", &e))?;
+    // Phone photos are often stored sideways with an EXIF Orientation tag.
+    let orientation = decoder.orientation().ok();
+    let mut image = image::DynamicImage::from_decoder(decoder).map_err(|e| fail("decode", &e))?;
+    if let Some(orientation) = orientation {
+        image.apply_orientation(orientation);
+    }
+    Ok(image.into_rgba8())
 }
 
 /// Whether `file` starts with a JPEG XL signature (bare codestream or
@@ -64,6 +71,17 @@ mod tests {
             "{:?}",
             [r, g, b, a]
         );
+    }
+
+    #[test]
+    fn a_jpeg_is_turned_upright_by_its_exif_orientation() {
+        // Stored 16x8, red then blue, tagged "rotate 90° clockwise".
+        let image = load(&fixture("red-blue-orient6.jpg")).unwrap();
+        assert_eq!(image.dimensions(), (8, 16));
+        let [r, _, b, _] = image.get_pixel(4, 2).0;
+        assert!(r > 200 && b < 60, "top should be red: {r} {b}");
+        let [r, _, b, _] = image.get_pixel(4, 13).0;
+        assert!(b > 200 && r < 60, "bottom should be blue: {r} {b}");
     }
 
     #[cfg(feature = "jxl")]
