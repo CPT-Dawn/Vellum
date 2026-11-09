@@ -463,3 +463,32 @@ fn the_daemon_makes_no_wakeups_between_ticks() {
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(switches(), before, "the Daemon woke up while idle");
 }
+
+#[test]
+fn an_overdue_deadline_at_startup_waits_for_the_configs_interval() {
+    let mut sway = Sway::start(&[SMALL]);
+    let walls = library(&sway, &ABC);
+    configure(&sway, &walls, "[rotation]\ninterval = \"4h\"\n");
+    // Rotation was running when the Daemon last stopped, and its deadline
+    // passed while nothing was up (a login, say).
+    let state = sway.dir().join("state/vellum/state");
+    std::fs::create_dir_all(state.parent().unwrap()).unwrap();
+    std::fs::write(
+        &state,
+        "vellum-state 1\nrotation running\ndeadline HEADLESS-1 1\n",
+    )
+    .unwrap();
+    sway.start_daemon();
+    wait_synced(&sway, "4h");
+
+    // The overdue tick may fire, but the next change is a full Config
+    // interval away, not the default 30 minutes of a Daemon not yet synced.
+    sway.wait_until("the overdue tick", || {
+        !rotation_status(&sway).contains("in 0s")
+    });
+    let status = rotation_status(&sway);
+    assert!(
+        status.contains("in 3h 5") || status.contains("in 4h"),
+        "{status}"
+    );
+}

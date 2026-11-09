@@ -54,6 +54,9 @@ pub struct Daemon {
     state: State,
     /// The last good Config values `vellum render --sync` pushed.
     settings: Settings,
+    /// The startup sync has delivered Settings or ended without any. Until
+    /// then Rotation stays untouched, so the defaults never set a deadline.
+    synced: bool,
     renderers: Vec<Renderer>,
     /// Manual applies per Monitor, so a late Rotation frame loses to them.
     applies: ManualApplies,
@@ -78,6 +81,7 @@ impl Daemon {
             timer,
             state,
             settings: Settings::default(),
+            synced: false,
             renderers: Vec::new(),
             applies: ManualApplies::default(),
             sync_wanted: true,
@@ -209,6 +213,10 @@ impl Daemon {
     /// Gives newly connected Monitors a Rotation deadline and arms the
     /// timer at the earliest one (or disarms it).
     fn arm_rotation(&mut self) {
+        if !self.synced {
+            self.timer.set(None);
+            return;
+        }
         let connected = self.connected();
         let settings = &self.settings.rotation;
         if self.state.rotation.ensure(now_ms(), &connected, settings) {
@@ -221,6 +229,9 @@ impl Daemon {
     /// The timer fired: spawn one `vellum render --rotate` for every
     /// Monitor that is due.
     fn rotate_due(&mut self) {
+        if !self.synced {
+            return;
+        }
         let connected = self.connected();
         let due = self
             .state
@@ -252,11 +263,15 @@ impl Daemon {
     /// Reaps the renderers whose pidfd turned readable.
     fn reap(&mut self, exited: &[bool]) {
         let mut index = 0;
+        let mut synced = false;
         self.renderers.retain_mut(|renderer| {
             let done = exited.get(index).copied().unwrap_or(false);
             index += 1;
             if !done {
                 return true;
+            }
+            if renderer.job == Job::Sync {
+                synced = true;
             }
             match renderer.child.wait() {
                 Ok(status) if !status.success() => {
@@ -267,6 +282,7 @@ impl Daemon {
             }
             false
         });
+        self.synced |= synced;
     }
 
     /// A wallpaper went up on `monitor` by hand. Its Rotation timer (its
@@ -325,6 +341,7 @@ impl Daemon {
                     eprintln!("vellumd: {err}");
                 }
                 self.settings = settings;
+                self.synced = true;
                 Response::Ok
             }
             Request::RotationStart => {
