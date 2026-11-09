@@ -18,9 +18,19 @@ fn is_wallpaper(path: &Path) -> bool {
 /// Every wallpaper under `folders`, recursively, sorted by path. Folders
 /// that do not exist or cannot be read are skipped; hidden entries too.
 pub fn scan(folders: &[PathBuf]) -> Vec<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
     let mut found = Vec::new();
+    // Folders already listed, by (device, inode): a symlink back to an
+    // ancestor would otherwise list the Library over and over.
+    let mut seen = std::collections::HashSet::new();
     let mut pending: Vec<PathBuf> = folders.to_vec();
     while let Some(dir) = pending.pop() {
+        let Ok(meta) = std::fs::metadata(&dir) else {
+            continue;
+        };
+        if !seen.insert((meta.dev(), meta.ino())) {
+            continue;
+        }
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -105,6 +115,25 @@ pub fn missing_hint(folders: &[PathBuf]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_symlink_loop_is_scanned_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Wallpapers");
+        std::fs::create_dir_all(root.join("beach")).unwrap();
+        std::fs::write(root.join("beach/dunes.png"), b"").unwrap();
+        // A link back to the Library itself and one to its parent.
+        std::os::unix::fs::symlink(".", root.join("self")).unwrap();
+        std::os::unix::fs::symlink("../..", root.join("beach/up")).unwrap();
+        assert_eq!(
+            scan(std::slice::from_ref(&root)),
+            [root.join("beach/dunes.png")]
+        );
+        assert_eq!(
+            resolve(Path::new("dunes.png"), std::slice::from_ref(&root)).unwrap(),
+            root.join("beach/dunes.png")
+        );
+    }
 
     #[test]
     fn a_missing_library_gets_a_one_line_hint() {
