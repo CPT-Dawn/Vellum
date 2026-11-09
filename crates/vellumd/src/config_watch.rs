@@ -77,7 +77,14 @@ impl ConfigWatch {
                     .is_some_and(|name| name.to_bytes() == FILE_NAME.as_bytes())
                 {
                     changed = true;
-                    rearm = true; // (re)watch the file itself
+                    rearm = true;
+                    // The name may now point somewhere else: follow it.
+                    if let Some(old) = self.file_wd.take() {
+                        let _ = inotify::remove_watch(&self.fd, old);
+                    }
+                } else if self.file_wd.is_none() {
+                    // The target of a dangling symlink may have appeared.
+                    rearm = true;
                 }
             } else if wd == self.file_wd {
                 if flags
@@ -116,6 +123,7 @@ impl ConfigWatch {
         if self.file_wd.is_none() && self.dir_wd.is_some() {
             let flags = WatchFlags::CLOSE_WRITE | WatchFlags::DELETE_SELF | WatchFlags::MOVE_SELF;
             self.file_wd = inotify::add_watch(&self.fd, dir.join(FILE_NAME), flags).ok();
+            appeared |= self.file_wd.is_some();
         }
         appeared
     }
@@ -123,6 +131,7 @@ impl ConfigWatch {
     /// Watches the Config directory itself, if it exists.
     fn watch_dir(&mut self, dir: &Path) -> bool {
         let flags = WatchFlags::CLOSE_WRITE
+            | WatchFlags::CREATE
             | WatchFlags::MOVED_TO
             | WatchFlags::MOVED_FROM
             | WatchFlags::DELETE
@@ -155,5 +164,73 @@ impl ConfigWatch {
                 return;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::symlink;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("vellum-cw-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn follows_a_symlink_retargeted_by_rename() {
+        let dir = scratch("retarget");
+        fs::write(dir.join("a.toml"), "a").unwrap();
+        fs::write(dir.join("b.toml"), "b").unwrap();
+        symlink("a.toml", dir.join(FILE_NAME)).unwrap();
+        let mut watch = ConfigWatch::new(Some(dir.clone())).unwrap();
+        watch.changed();
+
+        symlink("b.toml", dir.join("t")).unwrap();
+        fs::rename(dir.join("t"), dir.join(FILE_NAME)).unwrap();
+        assert!(watch.changed());
+
+        fs::write(dir.join("b.toml"), "b2").unwrap();
+        assert!(watch.changed(), "edit to the new target went unnoticed");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn follows_a_symlink_removed_and_recreated() {
+        let dir = scratch("recreate");
+        fs::write(dir.join("a.toml"), "a").unwrap();
+        fs::write(dir.join("b.toml"), "b").unwrap();
+        symlink("a.toml", dir.join(FILE_NAME)).unwrap();
+        let mut watch = ConfigWatch::new(Some(dir.clone())).unwrap();
+        watch.changed();
+
+        fs::remove_file(dir.join(FILE_NAME)).unwrap();
+        symlink("b.toml", dir.join(FILE_NAME)).unwrap();
+        assert!(watch.changed());
+
+        fs::write(dir.join("b.toml"), "b2").unwrap();
+        assert!(watch.changed(), "edit to the new target went unnoticed");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn watches_a_target_that_appears_late() {
+        let dir = scratch("late");
+        fs::write(dir.join("a.toml"), "a").unwrap();
+        symlink("a.toml", dir.join(FILE_NAME)).unwrap();
+        let mut watch = ConfigWatch::new(Some(dir.clone())).unwrap();
+        watch.changed();
+
+        symlink("b.toml", dir.join("t")).unwrap(); // dangling for now
+        fs::rename(dir.join("t"), dir.join(FILE_NAME)).unwrap();
+        assert!(watch.changed());
+        fs::write(dir.join("b.toml"), "b").unwrap();
+        watch.changed();
+        fs::write(dir.join("b.toml"), "b2").unwrap();
+        assert!(watch.changed(), "late target never watched");
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
