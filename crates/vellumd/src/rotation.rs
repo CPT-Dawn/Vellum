@@ -60,7 +60,7 @@ impl Rotation {
             }
             let deadline = self
                 .group_deadline(monitor, connected, settings)
-                .unwrap_or_else(|| now + interval(settings, monitor));
+                .unwrap_or_else(|| now.saturating_add(interval(settings, monitor)));
             self.deadlines.insert(monitor.clone(), deadline);
             added = true;
         }
@@ -73,7 +73,7 @@ impl Rotation {
     pub fn settings_changed(&mut self, now: u64, settings: &RotationSettings) -> bool {
         let mut changed = false;
         for (monitor, deadline) in &mut self.deadlines {
-            let latest = now + interval(settings, monitor);
+            let latest = now.saturating_add(interval(settings, monitor));
             if *deadline > latest {
                 *deadline = latest;
                 changed = true;
@@ -112,7 +112,7 @@ impl Rotation {
         if !self.running {
             return false;
         }
-        let deadline = now + interval(settings, monitor);
+        let deadline = now.saturating_add(interval(settings, monitor));
         for m in self.members(monitor, connected, settings) {
             self.deadlines.insert(m, deadline);
         }
@@ -144,8 +144,10 @@ impl Rotation {
             }
         }
         for monitor in &due {
-            self.deadlines
-                .insert(monitor.clone(), now + interval(settings, monitor));
+            self.deadlines.insert(
+                monitor.clone(),
+                now.saturating_add(interval(settings, monitor)),
+            );
         }
         due
     }
@@ -363,6 +365,23 @@ mod tests {
         applies.record("B");
         assert!(applies.superseded("B", late));
         assert!(!applies.superseded("A", late));
+    }
+
+    #[test]
+    fn a_huge_interval_never_wraps_the_deadline_into_the_past() {
+        // The Config accepts any interval, so u64::MAX ms can reach us.
+        let s = settings(u64::MAX, false);
+        let all = names(&["A"]);
+        let mut r = Rotation::default();
+        r.start(1000, &all, &s);
+        assert_eq!(r.next_deadline(&all), Some(u64::MAX));
+        assert!(!r.settings_changed(2000, &s));
+        assert!(r.take_due(3000, &all, &s).is_empty());
+        assert!(r.reset("A", 4000, &all, &s));
+        assert_eq!(r.next_deadline(&all), Some(u64::MAX));
+        r.deadlines.insert("A".into(), 10);
+        assert_eq!(r.take_due(5000, &all, &s), ["A"]);
+        assert_eq!(r.next_deadline(&all), Some(u64::MAX));
     }
 
     #[test]
