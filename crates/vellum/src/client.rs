@@ -39,21 +39,40 @@ pub fn is_running(socket: &Path) -> bool {
 /// goes to `$XDG_STATE_HOME/vellum/vellumd.log`.
 fn start_daemon(socket: &Path) -> Result<(), String> {
     let log = log_path();
-    let stderr = log
-        .as_deref()
-        .and_then(|path| {
-            fs::create_dir_all(path.parent()?).ok()?;
-            fs::File::create(path).ok()
-        })
-        .map_or_else(Stdio::null, Stdio::from);
-    let mut child = Command::new(vellumd_bin())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(stderr)
-        // Its own process group, so Ctrl-C on this command spares it.
-        .process_group(0)
-        .spawn()
-        .map_err(|err| format!("cannot start vellumd: {err}"))?;
+    // A held display lock means another command already started a Daemon
+    // that is still waiting for Monitors: wait for it instead of spawning a
+    // second one, and leave its log alone.
+    let mut child = if display_locked(socket) {
+        None
+    } else {
+        let stderr = log
+            .as_deref()
+            .and_then(|path| {
+                fs::create_dir_all(path.parent()?).ok()?;
+                // Appending, so that a Daemon that won a race keeps writing
+                // at the end instead of leaving a hole.
+                let file = fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .ok()?;
+                if !display_locked(socket) {
+                    file.set_len(0).ok()?;
+                }
+                Some(file)
+            })
+            .map_or_else(Stdio::null, Stdio::from);
+        Some(
+            Command::new(vellumd_bin())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(stderr)
+                // Its own process group, so Ctrl-C on this command spares it.
+                .process_group(0)
+                .spawn()
+                .map_err(|err| format!("cannot start vellumd: {err}"))?,
+        )
+    };
 
     let deadline = Instant::now() + START_TIMEOUT;
     let mut exited_at = None;
@@ -61,12 +80,18 @@ fn start_daemon(socket: &Path) -> Result<(), String> {
         if is_running(socket) {
             return Ok(());
         }
-        if exited_at.is_none() && matches!(child.try_wait(), Ok(Some(_))) {
-            // Another command may have started a Daemon at the same time;
-            // give that one a moment before giving up.
+        if exited_at.is_none()
+            && child
+                .as_mut()
+                .is_some_and(|child| matches!(child.try_wait(), Ok(Some(_))))
+        {
             exited_at = Some(Instant::now());
         }
-        if exited_at.is_some_and(|t| t.elapsed() > Duration::from_secs(1)) {
+        // Our Daemon gave up, perhaps because another command's won the
+        // lock: keep waiting for that one while it holds the lock.
+        if exited_at.is_some_and(|t| t.elapsed() > Duration::from_secs(1))
+            && !display_locked(socket)
+        {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
