@@ -28,6 +28,8 @@ ratatui-image = { version = "11.1.0", default-features = false, features = ["cro
 fastrand = "2.5.0"
 shlex = "2.0.1"
 nucleo-matcher = "0.3.1"
+# Same grapheme rules nucleo-matcher counts matches in.
+unicode-segmentation = "1.13.3"
 signal-hook = { version = "0.3.18", default-features = false, features = ["iterator"] }
 toml_edit = { version = "0.25.17", default-features = false, features = ["parse", "display"] }
 

@@ -468,3 +468,19 @@ fn halfblock_previews_say_why_they_are_coarse() {
     harness.press("p");
     insta::assert_snapshot!("coarse_preview_narrow_60x24", harness.screen());
 }
+
+#[test]
+fn search_highlights_land_on_the_matched_letters_after_a_combining_accent() {
+    use super::super::search::Index;
+    use ratatui::style::Style;
+    // "é" spelled e + U+0301, as macOS writes file names.
+    let name = "cafe\u{301}-dunes.jpg";
+    let found = Index::new([name]).filter("dun", 0..1);
+    let spans = super::highlighted(name, &found[0].matched, Style::new(), Style::new());
+    let hit: String = spans
+        .iter()
+        .filter(|s| s.style.add_modifier.contains(Modifier::UNDERLINED))
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert_eq!(hit, "dun");
+}

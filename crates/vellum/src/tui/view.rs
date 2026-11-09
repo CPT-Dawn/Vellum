@@ -2,6 +2,7 @@
 //! never does I/O; every color comes from a [`Theme`] role.
 
 use std::path::Path;
+use unicode_segmentation::UnicodeSegmentation as _;
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
@@ -375,7 +376,8 @@ fn highlighted(text: &str, matched: &[u32], plain: Style, hit: Style) -> Vec<Spa
     let mut run = String::new();
     let mut run_hit = false;
     let mut next = matched.iter().peekable();
-    for (i, c) in text.chars().enumerate() {
+    // nucleo-matcher counts graphemes, not chars: "e" + U+0301 is one.
+    for (i, c) in text.graphemes(true).enumerate() {
         let is_hit = next.peek().is_some_and(|&&m| m as usize == i);
         if is_hit {
             next.next();
@@ -387,7 +389,7 @@ fn highlighted(text: &str, matched: &[u32], plain: Style, hit: Style) -> Vec<Spa
             ));
         }
         run_hit = is_hit;
-        run.push(c);
+        run.push_str(c);
     }
     if !run.is_empty() {
         spans.push(Span::styled(run, if run_hit { hit } else { plain }));

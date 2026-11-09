@@ -2582,6 +2582,7 @@ dependencies = [
  "tempfile",
  "toml",
  "toml_edit",
+ "unicode-segmentation",
  "vellum-ipc",
 ]
 
