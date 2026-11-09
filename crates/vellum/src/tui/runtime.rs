@@ -21,6 +21,7 @@ use std::thread;
 use std::time::Instant;
 
 use ratatui::DefaultTerminal;
+use ratatui::crossterm::cursor::Show;
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseEventKind,
 };
@@ -45,12 +46,53 @@ pub fn run(config: Config) -> Result<(), String> {
         ratatui::try_init().map_err(|err| format!("cannot set up the terminal: {err}"))?;
     // Mouse capture is a nicety: a terminal without it still works.
     let _ = execute!(terminal.backend_mut(), EnableMouseCapture);
+    install_panic_hook();
+    spawn_signal_watch();
     let result = run_in(&mut terminal, config, theme);
-    let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
-    ratatui::restore();
+    give_back_terminal();
     // Hook failures from now on (and any the TUI missed) go to stderr.
     crate::hook::report_to(None);
     result
+}
+
+/// Undoes what [`run`] changed beyond ratatui's own setup: mouse capture
+/// off and the cursor visible.
+fn write_reset(out: &mut impl Write) {
+    let _ = execute!(out, DisableMouseCapture, Show);
+}
+
+/// Hands the terminal back: mouse capture off, cursor shown, alternate
+/// screen left, raw mode off. Safe to call more than once.
+fn give_back_terminal() {
+    write_reset(&mut io::stdout());
+    ratatui::restore();
+}
+
+/// A panic (release builds abort) must not leave mouse capture on or the
+/// cursor hidden; ratatui's own hook only covers raw mode and the screen.
+fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        write_reset(&mut io::stdout());
+        previous(info);
+    }));
+}
+
+/// SIGTERM, SIGHUP and SIGQUIT end the process with the default action,
+/// which would strand the terminal in raw mode. Restore it, then exit the
+/// way the signal would have (128 + number). This cannot go through the
+/// event loop: the loop is not running while the terminal is probed.
+fn spawn_signal_watch() {
+    use signal_hook::consts::{SIGHUP, SIGQUIT, SIGTERM};
+    let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGTERM, SIGHUP, SIGQUIT]) else {
+        return;
+    };
+    thread::spawn(move || {
+        if let Some(signal) = signals.forever().next() {
+            give_back_terminal();
+            std::process::exit(128 + signal);
+        }
+    });
 }
 
 fn run_in(terminal: &mut DefaultTerminal, config: Config, theme: Theme) -> Result<(), String> {
@@ -293,5 +335,19 @@ fn next_job(queues: &(Mutex<Queues>, Condvar)) -> Option<Cmd> {
             return Some(cmd);
         }
         q = ready.wait(q).ok()?;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reset_turns_mouse_capture_off_and_shows_the_cursor() {
+        let mut out = Vec::new();
+        write_reset(&mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("\x1b[?1000l"), "{text:?}");
+        assert!(text.contains("\x1b[?25h"), "{text:?}");
     }
 }

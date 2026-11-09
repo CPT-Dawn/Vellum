@@ -2578,6 +2578,7 @@ dependencies = [
  "rustix 1.1.6",
  "serde",
  "shlex",
+ "signal-hook",
  "tempfile",
  "toml",
  "toml_edit",
