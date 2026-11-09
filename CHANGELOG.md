@@ -4,6 +4,42 @@ All notable changes to Vellum are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Vellum uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.2] - 2026-11-09
+
+### Fixed
+
+- Photos with an EXIF Orientation tag, like portrait phone shots, show
+  upright instead of sideways (#35).
+- The Library scan no longer loops on a symlink that points back at a parent
+  folder, which listed wallpapers many times or hung (#34).
+- A CPU Fade (compositors without alpha-modifier) no longer leaks a
+  frame-sized buffer in the compositor on every Transition (#29).
+- A huge Rotation `interval` no longer makes the Daemon spawn renderers in a
+  loop (#28).
+- After login, the first Rotation change waits for the Config's interval
+  instead of the 30-minute default (#40).
+- A letterbox repaint that lands late no longer brings back the previous
+  wallpaper, and one unreadable wallpaper no longer keeps the other
+  Monitors from getting the new letterbox (#30).
+- Two commands that auto-start the Daemon at the same moment both succeed,
+  and the second no longer truncates the Daemon's log (#31).
+- Edits to a symlinked `config.toml` are noticed again after the link is
+  pointed at another file, or removed and recreated (#32).
+- Saving the Config, Favorites or Rotation decks keeps the file's
+  permissions, so a `chmod 600` Config stays private (#37).
+- TUI: SIGTERM, SIGHUP, SIGQUIT and panics hand the terminal back: raw mode
+  off, mouse capture off, cursor shown (#33).
+- TUI: output from the `on_change` hook no longer draws over the screen
+  (#36).
+- TUI: search highlights land on the matched letters in names with
+  combining accents or emoji (#39).
+- TUI: a Rotation panel edit whose Config save failed is saved with the
+  next edit instead of being forgotten (#38).
+- TUI: a slow Library scan from startup can no longer undo a Library you
+  just saved (#41).
+- TUI: the targeted Monitor stays the same when a Monitor is plugged in or
+  removed (#42).
+
 ## [2.0.1] - 2026-11-01
 
 ### Added
@@ -83,5 +119,6 @@ awww, and the license changes to MIT OR Apache-2.0
 Vellum 1.0.0 to 1.1.0 (April 2026) were a fork of awww under GPL-3.0. Their
 notes are on [GitHub Releases](https://github.com/CPT-Dawn/Vellum/releases).
 
+[2.0.2]: https://github.com/CPT-Dawn/Vellum/compare/v2.0.1...v2.0.2
 [2.0.1]: https://github.com/CPT-Dawn/Vellum/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/CPT-Dawn/Vellum/compare/v1.1.0...v2.0.0
