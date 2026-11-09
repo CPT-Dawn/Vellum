@@ -353,3 +353,30 @@ fn an_unknown_transition_is_refused_with_the_choices() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("fade") && err.contains("wipe"), "{err}");
 }
+
+#[test]
+fn cpu_fades_release_every_buffer_they_cut() {
+    let mut sway = Sway::start_logged(&[SMALL]);
+    sway.start_daemon_with(&[("VELLUMD_NO_ALPHA_MODIFIER", "1")]);
+    let red = solid(&sway, "red.png", RED);
+    let blue = solid(&sway, "blue.png", BLUE);
+    sway.vellum_ok(["set", &red, "--transition", "none"]);
+    sway.screenshot_until("HEADLESS-1", |s| s.get_pixel(160, 120).0 == RED);
+    std::thread::sleep(Duration::from_millis(200));
+    let before = sway.live_buffers();
+    for i in 0..6 {
+        let (file, color) = if i % 2 == 0 {
+            (&blue, BLUE)
+        } else {
+            (&red, RED)
+        };
+        sway.vellum_ok(["set", file, "--transition", "fade", "--duration", "100"]);
+        sway.screenshot_until("HEADLESS-1", |s| s.get_pixel(160, 120).0 == color);
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let after = sway.live_buffers();
+    assert!(
+        after <= before,
+        "the compositor holds {after} wl_buffers, up from {before}: a CPU fade leaked buffers"
+    );
+}

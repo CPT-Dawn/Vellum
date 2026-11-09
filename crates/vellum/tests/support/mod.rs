@@ -38,6 +38,16 @@ impl Sway {
     /// Starts Sway with one headless monitor per entry, named `HEADLESS-1`,
     /// `HEADLESS-2`, ... in order.
     pub fn start(monitors: &[Monitor]) -> Sway {
+        Sway::start_with(monitors, false)
+    }
+
+    /// Like [`Sway::start`], with Sway's `WAYLAND_DEBUG` protocol log in
+    /// its log file.
+    pub fn start_logged(monitors: &[Monitor]) -> Sway {
+        Sway::start_with(monitors, true)
+    }
+
+    fn start_with(monitors: &[Monitor], protocol_log: bool) -> Sway {
         let dir = tempfile::Builder::new()
             .prefix("vellum-e2e-")
             .tempdir()
@@ -62,6 +72,7 @@ impl Sway {
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("XDG_RUNTIME_DIR", dir.path())
             .env("HOME", dir.path())
+            .env("WAYLAND_DEBUG", if protocol_log { "1" } else { "" })
             .env("WLR_BACKENDS", "headless")
             .env("WLR_RENDERER", "pixman")
             .env("WLR_LIBINPUT_NO_DEVICES", "1")
@@ -291,6 +302,30 @@ impl Sway {
         fs::read_to_string(format!("/proc/{pid}/maps"))
             .unwrap()
             .contains("memfd:")
+    }
+
+    /// `wl_buffer`s cut from a `wl_shm` pool and not yet destroyed, from
+    /// Sway's own protocol log (the compositor drops `/proc` access for
+    /// itself, so its log is the witness). Needs [`Sway::start_logged`].
+    /// Buffers handed to a screen capture belong to `grim` and are skipped.
+    pub fn live_buffers(&self) -> usize {
+        let mut live = std::collections::HashSet::new();
+        for line in self.sway_log().lines() {
+            let id = |marker: &str| {
+                let rest = line.split(marker).nth(1)?;
+                let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+                digits.parse::<u32>().ok()
+            };
+            let is_destroy = line.contains(".destroy()") && !line.contains(" -> ");
+            if line.contains("capture_frame_v1") && line.contains(".attach_buffer(") {
+                live.remove(&id("attach_buffer(wl_buffer#").unwrap_or(0));
+            } else if line.contains("create_buffer(new id wl_buffer#") {
+                live.insert(id("new id wl_buffer#").unwrap_or(0));
+            } else if is_destroy && line.contains("wl_buffer#") {
+                live.remove(&id("wl_buffer#").unwrap_or(0));
+            }
+        }
+        live.len()
     }
 
     pub fn daemon_log(&self) -> String {

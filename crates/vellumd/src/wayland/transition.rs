@@ -364,6 +364,9 @@ impl State {
                 // The first blend is all zeros: fully transparent.
                 blends[0].busy = true;
                 wp_viewport::req::set_destination(&mut self.backend, viewport, full.0, full.1)?;
+                // The blends are what shows; the final buffer is cut from the
+                // pool when the Transition ends, so this one has no owner.
+                self.destroy_buffer(frame.buffer)?;
                 let attach = blends[0].buffer;
                 (Effect::CpuFade { source, blends }, attach, None)
             }
