@@ -20,8 +20,15 @@ pub fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
     name.push(path.file_name().expect("a file name"));
     name.push(format!(".{}.{unique}.tmp", std::process::id()));
     let tmp = path.with_file_name(name);
+    // The new file keeps the old one's mode (a Config chmod 600 stays so).
+    let mode = std::fs::metadata(path).ok().map(|meta| meta.permissions());
     let result = std::fs::File::create(&tmp)
-        .and_then(|mut file| file.write_all(bytes))
+        .and_then(|mut file| {
+            if let Some(mode) = mode {
+                file.set_permissions(mode)?;
+            }
+            file.write_all(bytes)
+        })
         .and_then(|()| std::fs::rename(&tmp, path));
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -55,6 +62,20 @@ mod tests {
         assert!(text.starts_with("# writer "), "{text}");
         let files = std::fs::read_dir(path.parent().unwrap()).unwrap().count();
         assert_eq!(files, 1, "temp files were left behind");
+    }
+
+    #[test]
+    fn a_rewrite_keeps_the_files_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        // A Config kept private (chmod 600) stays private when the TUI
+        // saves it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        write_atomically(&path, b"new").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "mode is {mode:o}");
     }
 
     #[test]
