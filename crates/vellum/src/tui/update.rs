@@ -144,10 +144,9 @@ pub fn update(m: &mut Model, msg: Msg) -> Vec<Cmd> {
                 Wake::Config { generation }
                     if generation == m.config_generation && !m.config_edits.is_empty() =>
                 {
-                    vec![Cmd::SaveConfig {
-                        generation,
-                        edits: std::mem::take(&mut m.config_edits),
-                    }]
+                    let edits = std::mem::take(&mut m.config_edits);
+                    m.config_saving.push((generation, edits.clone()));
+                    vec![Cmd::SaveConfig { generation, edits }]
                 }
                 Wake::Preview { .. } | Wake::Grid { .. } | Wake::Config { .. } => Vec::new(),
             }
@@ -1241,6 +1240,12 @@ fn config_saved(
     generation: u64,
     result: Result<crate::config::Config, String>,
 ) -> Vec<Cmd> {
+    let sent = m
+        .config_saving
+        .iter()
+        .position(|(g, _)| *g == generation)
+        .map(|i| m.config_saving.remove(i).1)
+        .unwrap_or_default();
     match result {
         Ok(config) => {
             // Newer edits are waiting: what the panel shows is newer.
@@ -1254,6 +1259,14 @@ fn config_saved(
             Vec::new()
         }
         Err(err) => {
+            // Still on screen, so still owed to the Config: queue them
+            // again unless a newer edit of the same thing is waiting. The
+            // next edit saves them; there is no retry loop.
+            for edit in sent.into_iter().rev() {
+                if m.config_edits.iter().all(|e| e.target() != edit.target()) {
+                    m.config_edits.insert(0, edit);
+                }
+            }
             toast(m, ToastKind::Error, err);
             Vec::new()
         }

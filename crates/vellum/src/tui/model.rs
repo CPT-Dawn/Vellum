@@ -71,6 +71,9 @@ pub struct Model {
     pub panel: Panel,
     /// Config edits waiting for the user to stop changing things.
     pub config_edits: Vec<Edit>,
+    /// Edits sent to be saved, by save generation; kept so a failed save
+    /// can put them back.
+    pub config_saving: Vec<(u64, Vec<Edit>)>,
     /// Bumped by every Config edit; a save of an older one does not
     /// overwrite what the panel shows.
     pub config_generation: u64,
@@ -143,6 +146,7 @@ impl Model {
             schedules: config.rotation.clone(),
             panel: Panel::default(),
             config_edits: Vec::new(),
+            config_saving: Vec::new(),
             config_generation: 0,
             welcome: Welcome::default(),
             preview_only: false,

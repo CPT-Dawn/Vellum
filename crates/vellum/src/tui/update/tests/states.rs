@@ -335,3 +335,36 @@ fn shift_r_reconnects_to_a_daemon_that_was_down() {
     h.run(cmds);
     assert!(h.screen().contains("● DP-1"));
 }
+
+#[test]
+fn a_failed_config_save_is_not_forgotten_by_the_next_edit() {
+    let mut h = panel(Fake::default());
+    go_to(&mut h, "Interval");
+    let wake = match h.update(Msg::Key(key("l"))).as_slice() {
+        [Cmd::After { wake, .. }] => *wake,
+        other => panic!("expected a save timer, got {other:?}"),
+    };
+    let generation = match h.update(Msg::Woke(wake)).as_slice() {
+        [Cmd::SaveConfig { generation, .. }] => *generation,
+        other => panic!("expected one save, got {other:?}"),
+    };
+    h.update(Msg::ConfigSaved {
+        generation,
+        result: Err("cannot write config: read-only".into()),
+    });
+    assert_eq!(h.model.toast.as_ref().unwrap().kind, ToastKind::Error);
+    go_to(&mut h, "Order");
+    let wake = match h.update(Msg::Key(key("l"))).as_slice() {
+        [Cmd::After { wake, .. }] => *wake,
+        other => panic!("expected a save timer, got {other:?}"),
+    };
+    match h.update(Msg::Woke(wake)).as_slice() {
+        [Cmd::SaveConfig { edits, .. }] => {
+            assert!(
+                edits.contains(&Edit::set(&["rotation"], "interval", "1h")),
+                "the interval still on screen must be saved again: {edits:?}"
+            );
+        }
+        other => panic!("expected one save, got {other:?}"),
+    }
+}
