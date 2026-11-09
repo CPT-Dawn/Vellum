@@ -182,10 +182,25 @@ fn report(why: String) {
     }
 }
 
+/// Whether failures go to a reporter (the TUI) rather than stderr.
+fn reporting() -> bool {
+    REPORTER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .0
+        .is_some()
+}
+
 fn run(job: &Job) {
     let program = &job.hook.words[0];
     let monitor = &job.monitor;
-    match job.hook.command(&job.path, monitor).status() {
+    let mut command = job.hook.command(&job.path, monitor);
+    if reporting() {
+        // Under the TUI the hook's output would land on its screen. Not a
+        // pipe either: a hook that backgrounds a program would keep it open.
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+    }
+    match command.status() {
         Ok(status) if status.success() => {}
         Ok(status) => {
             report(format!(

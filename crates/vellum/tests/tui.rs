@@ -55,6 +55,15 @@ enum Probe {
 /// `vellum` with no arguments in an 80x24 pseudo-terminal. Returns the
 /// process and its keyboard.
 fn open_tui(sway: &Sway, probe: Probe) -> (Tui, Arc<Mutex<ChildStdin>>) {
+    let (tui, keys, _) = open_tui_recorded(sway, probe);
+    (tui, keys)
+}
+
+/// Every byte the TUI wrote to its screen so far.
+type Screen = Arc<Mutex<Vec<u8>>>;
+
+/// [`open_tui`], also keeping every byte the TUI writes to its screen.
+fn open_tui_recorded(sway: &Sway, probe: Probe) -> (Tui, Arc<Mutex<ChildStdin>>, Screen) {
     let shell = format!(
         "stty cols 80 rows 24; exec '{}'",
         env!("CARGO_BIN_EXE_vellum")
@@ -74,6 +83,8 @@ fn open_tui(sway: &Sway, probe: Probe) -> (Tui, Arc<Mutex<ChildStdin>>) {
     // the probe: cell size, primary device attributes, status report.
     let mut screen = tui.stdout.take().unwrap();
     let terminal = Arc::clone(&keys);
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let record = Arc::clone(&recorded);
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         while let Ok(n) = screen.read(&mut buf) {
@@ -81,6 +92,7 @@ fn open_tui(sway: &Sway, probe: Probe) -> (Tui, Arc<Mutex<ChildStdin>>) {
                 break;
             }
             let chunk = &buf[..n];
+            record.lock().unwrap().extend_from_slice(chunk);
             if probe == Probe::Answer && chunk.windows(4).any(|w| w == b"\x1b[5n") {
                 let mut t = terminal.lock().unwrap();
                 let _ = t.write_all(b"\x1b[6;20;10t\x1b[?62;22c\x1b[0n");
@@ -91,7 +103,7 @@ fn open_tui(sway: &Sway, probe: Probe) -> (Tui, Arc<Mutex<ChildStdin>>) {
             }
         }
     });
-    (Tui(tui), keys)
+    (Tui(tui), keys, recorded)
 }
 
 fn press(keys: &Mutex<ChildStdin>, bytes: &[u8]) {
@@ -299,4 +311,41 @@ fn a_key_typed_while_a_silent_terminal_is_probed_still_counts() {
     press(&keys, b"q");
     let exit = wait_exit(&mut tui).expect("the q typed during the probe was lost");
     assert!(exit.success(), "{exit:?}");
+}
+
+#[test]
+fn a_chatty_on_change_hook_does_not_scribble_over_the_tui() {
+    let mut sway = Sway::start(&[Monitor {
+        width: 320,
+        height: 240,
+    }]);
+    sway.start_daemon();
+    let library = sway.dir().join("walls");
+    std::fs::create_dir_all(&library).unwrap();
+    RgbImage::from_pixel(320, 240, Rgb(RED))
+        .save(library.join("red.png"))
+        .unwrap();
+    let ran = sway.dir().join("hook-ran");
+    sway.write_config(&format!(
+        "library = [\"{}\"]\non_change = \"sh -c 'echo HOOK-OUT; echo HOOK-ERR >&2; sleep 20 & touch {}'\"\n\
+         [transition]\ntype = \"none\"\n",
+        library.display(),
+        ran.display()
+    ));
+
+    let (mut tui, keys, screen) = open_tui_recorded(&sway, Probe::Answer);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !ran.exists() {
+        press(&keys, b"\r");
+        assert!(Instant::now() < deadline, "the hook never ran");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    // The backgrounded `sleep` keeps the hook's outputs open; quitting
+    // must not wait for it.
+    press(&keys, b"q");
+    wait_exit(&mut tui).expect("q did not quit the TUI");
+    let screen = String::from_utf8_lossy(&screen.lock().unwrap()).into_owned();
+    for noise in ["HOOK-OUT", "HOOK-ERR"] {
+        assert!(!screen.contains(noise), "{noise} was drawn over the TUI");
+    }
 }
