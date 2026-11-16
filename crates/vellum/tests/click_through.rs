@@ -4,7 +4,7 @@
 
 mod support;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use support::*;
 
@@ -14,17 +14,20 @@ const SIZE: Monitor = Monitor {
 };
 
 /// Binds a right click anywhere to creating a marker file, clicks on the
-/// desktop and reports whether Sway saw the click.
-fn desktop_click_reaches_sway(sway: &Sway) -> bool {
+/// desktop at (`x`, 100) and reports whether Sway saw the click. The wait is
+/// generous: a pass costs nothing, and parallel headless Sways are slow to
+/// fork the `exec`.
+fn desktop_click_reaches_sway(sway: &Sway, x: u32) -> bool {
     let marker = sway.dir().join("clicked");
     sway.swaymsg(&format!(
         "bindsym --whole-window button3 exec touch {}",
         marker.display()
     ));
-    sway.swaymsg("seat - cursor set 100 100");
+    sway.swaymsg(&format!("seat - cursor set {x} 100"));
     sway.swaymsg("seat - cursor press button3");
     sway.swaymsg("seat - cursor release button3");
-    for _ in 0..50 {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
         if marker.exists() {
             return true;
         }
@@ -36,7 +39,7 @@ fn desktop_click_reaches_sway(sway: &Sway) -> bool {
 #[test]
 fn control_a_bare_desktop_click_reaches_sway() {
     let sway = Sway::start(&[SIZE]);
-    assert!(desktop_click_reaches_sway(&sway));
+    assert!(desktop_click_reaches_sway(&sway, 100));
 }
 
 fn wallpaper(sway: &Sway, color: [u8; 3]) -> String {
@@ -54,7 +57,7 @@ fn a_desktop_click_falls_through_the_wallpaper() {
     let path = wallpaper(&sway, RED);
     sway.vellum_ok(["set", &path, "--transition", "none"]);
     assert!(
-        desktop_click_reaches_sway(&sway),
+        desktop_click_reaches_sway(&sway, 100),
         "the wallpaper surface swallowed the click:\n{}",
         sway.daemon_log()
     );
@@ -68,8 +71,10 @@ fn a_desktop_click_falls_through_a_running_transition() {
     sway.vellum_ok(["set", &path, "--transition", "none"]);
     let path = wallpaper(&sway, GREEN);
     sway.vellum_ok(["set", &path, "--transition", "wipe", "--duration", "5000"]);
+    // A rightward wipe's subsurface starts as a strip at the left edge and
+    // creeps right slowly (ease-out over 5 s), so only x = 0 is surely on it.
     assert!(
-        desktop_click_reaches_sway(&sway),
+        desktop_click_reaches_sway(&sway, 0),
         "the transition surface swallowed the click:\n{}",
         sway.daemon_log()
     );
