@@ -107,3 +107,5 @@ and `malloc_trim` after Transitions weren't needed.
 
 Both budgets are deliberately above today's numbers. Tighten them as the
 Daemon's feature set settles.
+
+[Back to the README](../README.md)

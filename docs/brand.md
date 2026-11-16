@@ -88,3 +88,5 @@ imitated with extra characters.
 - Don't retype the wordmark in another font or weight; use the outlined SVG.
 - Rose, orange and green mean error, warning and success. Never use them decoratively.
 - The full Tokyo Midnight Bloom design document is the maintainer's and is not committed. This page is the condensed reference.
+
+[Back to the README](../README.md)

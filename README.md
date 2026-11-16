@@ -1,73 +1,71 @@
-<p align="center"><img src="assets/brand/banner.svg" alt="Vellum: Wallpapers, weightless." width="100%"></p>
+<div align="center">
 
-<h3 align="center">Wallpapers, weightless.</h3>
+<img src="assets/brand/icon.svg" width="96" alt="Vellum logo">
 
-<p align="center">
-A featherweight wallpaper Daemon for Wayland, with smooth Transitions, Rotation and a TUI you'll actually enjoy.
-</p>
+# Vellum
 
-<p align="center"><img src="assets/demo.gif" alt="vellum set with a Wipe, vellum status, then the TUI: browse, search, apply and start Rotation" width="100%"></p>
+**Wallpapers, weightless.**
 
-<p align="center">
-<img src="assets/screenshots/tui-grid.webp" alt="The Vellum TUI showing the Library as a thumbnail grid" width="49%">
-<img src="assets/screenshots/tui-list.webp" alt="The Vellum TUI showing the list and a large preview, with an Applied toast" width="49%">
-</p>
-<p align="center">
-<img src="assets/screenshots/monitors.webp" alt="Two Monitors, landscape and portrait, each with its own wallpaper" width="70%">
-</p>
+A wallpaper Daemon for Wayland that idles at 2.5 MiB with zero wakeups,<br>
+plus smooth Transitions, Rotation and a TUI for browsing your Library.
 
-- **Tiny Daemon.** `vellumd` is one thread, links no image decoders and keeps
-  no pixels. It idles at 2.5 MiB RSS with zero wakeups.
-- **Smooth Transitions.** Fade, Wipe and Slide, paced by your Monitor's own
-  refresh rate, with the blend done by the compositor where it can.
-- **Pin-sharp.** Every wallpaper is rendered at the Monitor's exact physical
-  resolution, fractional scaling included, in one of four Fit modes.
-- **Remembers.** Wallpapers come back after a reboot, a hotplug or a scale
-  change, without a flash of black.
+[![Release](https://img.shields.io/github/v/release/CPT-Dawn/Vellum?style=flat-square)](https://github.com/CPT-Dawn/Vellum/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/CPT-Dawn/Vellum/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/CPT-Dawn/Vellum/actions/workflows/ci.yml)
+[![AUR](https://img.shields.io/aur/version/vellum-bin?style=flat-square&label=AUR)](https://aur.archlinux.org/packages/vellum-bin)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue?style=flat-square)](#license)
+
+[Install](#install) · [Quick start](#quick-start) · [Documentation](docs/README.md) · [Contributing](CONTRIBUTING.md)
+
+<img src="assets/demo.gif" width="100%" alt="The Vellum TUI: the Library with a preview, the thumbnail grid, fuzzy search applying glacier.jpg to one monitor and a portrait wallpaper to the other, then starting Rotation">
+
+<sub><a href="assets/demo.mp4">Watch in full quality</a></sub>
+
+</div>
+
+## Why Vellum
+
+- **A Daemon you forget is running.** `vellumd` is one 485 KiB thread that
+  links no image decoders and keeps no pixels, so it stays at its idle
+  footprint after every Transition.
+- **Smooth Transitions.** Fade, Wipe and Slide advance on each Monitor's own
+  frame callbacks, and the compositor does the Fade's blend where it can.
+- **Pin-sharp, every time.** Each wallpaper is rendered at the Monitor's
+  exact physical resolution, fractional scaling included, and comes back
+  after a reboot, a hotplug or a scale change.
 - **Rotation and Favorites.** Shuffle or step through your Library or your
-  Favorites on a timer, with per-monitor Overrides.
-- **A real TUI.** Thumbnail grid, true-to-monitor previews, fuzzy search,
-  mouse support and remappable keys.
-- **Works without a Config.** Every setting has a default, and changes to
-  the Config apply live.
+  Favorites on a timer, with a different pace per Monitor.
+- **A TUI worth opening.** Thumbnail grid, true-to-Monitor previews, fuzzy
+  search, mouse support and remappable keys.
 
-Vellum is built for Hyprland, niri, Sway and the other Wayland compositors
-that support wlr-layer-shell. The screenshots are real, captured with grim
-from a headless Sway.
+| Daemon | Idle RSS | Wakeups/min idle | RSS after a Transition |
+|---|---|---|---|
+| **vellumd 2.0** | **2.5 MiB** | **0** | **2.5 MiB** |
+| awww 0.12.1 | 2.7 MiB | 0 | 26 MiB |
+| swaybg 1.2.2 | 17 MiB | 0 | n/a |
+| hyprpaper 0.8.4 | 239 MiB | 12 | n/a |
 
-## Footprint
-
-Measured on Hyprland with two real Monitors (2560x1600 at scale 1.667, and
-1920x1080) and a 3840x2160 wallpaper. [docs/benchmarks.md](docs/benchmarks.md)
-has a headless-Sway run too, plus the method and the script, so you can
-rerun it on your machine.
-
-| Daemon | Binary | Idle RSS | Idle private | Wakeups/min idle | RSS after a Transition | Threads |
-|---|---|---|---|---|---|---|
-| **vellumd 2.0** | 483 KiB | **2.5 MiB** | 0.6 MiB | **0** | **2.5 MiB** | 1 |
-| awww 0.12.1 | 436 KiB | 2.7 MiB | 0.5 MiB | 0 | 26 MiB | 1 |
-| swaybg 1.2.2 | 31 KiB | 17 MiB | 4.7 MiB | 0 | n/a | 7 |
-| hyprpaper 0.8.4 | 477 KiB | 239 MiB | 92 MiB | 12 | n/a | 2 |
-
-vellumd keeps no pixels, so it stays at its idle footprint after every
-Transition. awww idles about level, but holds ten times as much once it has
-played one.
+<sub>Hyprland, two Monitors, a 3840x2160 wallpaper. Method, script and a headless run in [docs/benchmarks.md](docs/benchmarks.md).</sub>
 
 ## Install
 
-**Arch Linux** (AUR), prebuilt or built from source:
-
 ```sh
-paru -S vellum-bin   # the release binaries, installs in seconds
-paru -S vellum       # builds from source
+paru -S vellum-bin
 ```
 
-**Prebuilt binaries** for x86_64 and aarch64 Linux are on
-[GitHub Releases](https://github.com/CPT-Dawn/Vellum/releases). Each tarball
-has `vellum`, `vellumd`, the systemd user unit, shell completions and man
-pages. Put the two binaries on your `PATH`.
+<details>
+<summary>Other ways to install</summary>
 
-**From source** with Rust 1.99 or newer:
+**AUR, built from source**
+
+```sh
+paru -S vellum
+```
+
+**Release tarballs** for x86_64 and aarch64 Linux are on
+[GitHub Releases](https://github.com/CPT-Dawn/Vellum/releases/latest), with
+the systemd user unit, completions and man pages.
+
+**From source** (needs Rust 1.99 or newer)
 
 ```sh
 git clone https://github.com/CPT-Dawn/Vellum && cd Vellum
@@ -75,13 +73,15 @@ cargo install --locked --path crates/vellumd
 cargo install --locked --path crates/vellum
 ```
 
-AVIF and JXL support are opt-in build features:
-`cargo install --locked --path crates/vellum --features avif,jxl` (AVIF
-needs the system `dav1d` library).
+</details>
+
+Vellum runs on Hyprland, niri, Sway and the other Wayland compositors with
+wlr-layer-shell. GNOME and X11 are not supported.
+[docs/installation.md](docs/installation.md) has AVIF and JXL support.
 
 ## Quick start
 
-1. **Start the Daemon with your session.** Pick the line for your setup:
+1. Start the Daemon with your session, using the line for your compositor:
 
    ```text
    exec-once = vellumd                      # Hyprland: hyprland.conf
@@ -90,142 +90,37 @@ needs the system `dav1d` library).
    systemctl --user enable --now vellumd    # systemd, any compositor
    ```
 
-   On Hyprland's Lua config (`hyprland.lua`), start it from the startup
-   event instead:
-
-   ```lua
-   hl.on("hyprland.start", function() hl.exec_cmd("vellumd") end)
-   ```
-
-   The systemd unit comes with the AUR package and the release tarballs.
-   It needs a compositor that starts `graphical-session.target` (Hyprland
-   through uwsm, niri, Sway with its systemd integration). You can skip
-   this step for now: any `vellum` command starts the Daemon when it isn't
-   running.
-
-2. **Set a wallpaper.**
+2. Set a wallpaper. Any `vellum` command starts the Daemon if it isn't running.
 
    ```sh
-   vellum set ~/Pictures/Wallpapers/dunes.jpg           # every monitor
-   vellum set dunes.jpg -m DP-1 --transition wipe       # a Library name, one monitor
+   vellum set ~/Pictures/Wallpapers/dunes.jpg
    ```
 
-3. **Browse your Library.** Run `vellum` with no command to open the TUI. It
-   looks in `~/Pictures/Wallpapers`, and asks for a folder if that doesn't
-   exist.
+3. Run `vellum` to open the TUI on `~/Pictures/Wallpapers`. Press
+   <kbd>Enter</kbd> to apply, <kbd>m</kbd> to target the next Monitor and
+   <kbd>s</kbd> to start Rotation.
 
-4. **Let it rotate.**
-
-   ```sh
-   vellum rotation start    # a new wallpaper every 30 minutes, across reboots
-   ```
-
-Your wallpapers come back at every login.
-
-## Commands
-
-| Command | Does |
-|---|---|
-| `vellum` | Open the TUI |
-| `vellum set <file> [-m NAME] [--fit MODE] [--transition KIND] [--direction DIR] [--duration MS]` | Put a wallpaper on every monitor, or on one |
-| `vellum next`, `prev`, `random` `[-m NAME]` | Step through wallpapers by the Rotation rules, now |
-| `vellum rotation start`, `stop`, `status` | Control Rotation |
-| `vellum fav add`, `remove` `[file]`, `vellum fav list` | Manage Favorites (no file: the wallpaper on screen) |
-| `vellum monitors` | List monitors with their size and scale |
-| `vellum status` | The Daemon, its memory, and each monitor's wallpaper |
-| `vellum reload` | Re-read the Config and report any mistake in it |
-| `vellum kill` | Stop the Daemon |
-| `vellum completions <bash\|zsh\|fish>` | Print a shell completion script |
-
-Fit modes are `fill` (the default), `fit`, `center` and `stretch`.
-Transitions are `fade` (the default, 600 ms), `wipe`, `slide` and `none`.
-`vellum help <command>` and `man vellum` have the details.
-
-## Config
-
-Optional, at `~/.config/vellum/config.toml`. Save it and the change applies
-at once. A mistake is reported with its line and key, and the last good
-Config stays in effect.
-
-```toml
-library = ["~/Pictures/Wallpapers", "~/Art"]
-fit = "fill"
-on_change = "matugen image {path}"   # recolor your desktop to match
-
-[transition]
-type = "slide"
-direction = "left"
-duration = 400
-
-[rotation]
-interval = "1h"
-source = "favorites"
-
-[rotation.monitor.DP-2]   # the portrait monitor keeps its own pace
-interval = "4h"
-```
-
-[docs/configuration.md](docs/configuration.md) documents every key.
-
-## Keys
-
-| Key | Does |
-|---|---|
-| `j` `k` / arrows | Move (`h` `l` between grid tiles) |
-| `enter` | Apply to the targeted monitor |
-| `a` | Apply to every monitor |
-| `m` | Target the next monitor |
-| `r` | Apply a random wallpaper |
-| `/` | Fuzzy search |
-| `f` / `F` | Favorite / show only Favorites |
-| `g` | Switch between the list and the thumbnail grid |
-| `s` | Rotation panel |
-| `:` or `ctrl-p` | Command palette |
-| `?` | Every key |
-| `q` | Quit |
-
-Every key can be remapped in the Config, and the mouse works too. See
-[Keys](docs/configuration.md#keys) for the full table.
-
-## FAQ
-
-**Does it work on GNOME?**
-No. GNOME's compositor, Mutter, doesn't implement wlr-layer-shell, the
-protocol Vellum uses to put a surface on the desktop background, and there
-is no other way for an app to draw the wallpaper there. Use GNOME's own
-background settings. X11 isn't supported either.
-
-**Can I use animated wallpapers or videos?**
-No, and that is on purpose. Animation needs per-frame decoding and constant
-wakeups, which would end the Daemon's zero-CPU idle
-([ADR 0002](docs/adr/0002-static-wallpapers-only.md)). For motion, use a
-dedicated tool such as [mpvpaper](https://github.com/GhostNaN/mpvpaper).
-
-**Can one image span several monitors?**
-Not yet. Each monitor shows its own wallpaper. Spanning can arrive later as
-another Fit mode without changing the design.
-
-**Where does Vellum keep things?**
-The Config in `~/.config/vellum/`, what's on screen and the Rotation
-position in `~/.local/state/vellum/`, Favorites in
-`~/.local/share/vellum/favorites`, and TUI thumbnails in
-`~/.cache/vellum/thumbs/`. The `XDG_*` variables move them.
-
-**How do I recolor my desktop when the wallpaper changes?**
-Set `on_change` in the Config. It runs after every new wallpaper, with
-`{path}` and `{monitor}` filled in, and works with matugen, pywal and
-wallust. See [Change hook](docs/configuration.md#change-hook).
+Your wallpapers now come back at every login. Press <kbd>?</kbd> in the TUI
+for every key, and run `vellum help` for every command.
 
 ## Documentation
 
-- [docs/configuration.md](docs/configuration.md): every Config key and TUI key
-- [docs/benchmarks.md](docs/benchmarks.md): how the footprint is measured
-- [ARCHITECTURE.md](ARCHITECTURE.md): how the Daemon, the CLI and the TUI fit together
-- [CONTRIBUTING.md](CONTRIBUTING.md): build, test and send a change
-- [CHANGELOG.md](CHANGELOG.md): what changed in each release
-- [docs/brand.md](docs/brand.md): the Midnight Bloom palette and logo
+| Guide | What it covers |
+| --- | --- |
+| [Installation](docs/installation.md) | Every channel, autostart per compositor, optional formats |
+| [Commands](docs/cli.md) | Every `vellum` command and flag |
+| [Configuration](docs/configuration.md) | Every Config key and its default, the change hook, the keymap |
+| [Troubleshooting](docs/troubleshooting.md) | GNOME, animated wallpapers, where files live, the log |
+| [Architecture](ARCHITECTURE.md) | How the Daemon, the CLI and the TUI fit together |
+| [Changelog](CHANGELOG.md) | What changed in each release |
+
+## Contributing
+
+Bug reports and patches are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) has
+the setup, the checks CI runs, a sandbox that never touches your desktop, and
+how the demo is recorded.
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
-[MIT license](LICENSE-MIT) at your option.
+Licensed under either of [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT)
+at your option. © CPT-Dawn

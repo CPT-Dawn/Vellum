@@ -1,0 +1,42 @@
+name: Bug report
+description: Something Vellum does wrong
+labels: [needs-triage]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `vellum --version`, and how you installed it (vellum-bin, vellum, tarball, source).
+      placeholder: vellum 2.0.3, AUR vellum-bin
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Compositor and Monitors
+      description: Your compositor and its version, and `vellum monitors`.
+      placeholder: Hyprland 0.57.0; eDP-1 2560x1600 at scale 1.667
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The commands or keys, in order.
+      placeholder: |
+        1. vellum set dusk.jpg -m DP-1 --transition wipe
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Daemon log
+      description: "`~/.local/state/vellum/vellumd.log`, or `journalctl --user -u vellumd` under systemd."
+      render: text

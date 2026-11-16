@@ -94,10 +94,19 @@ The README images are made from the sandbox, never from a real desktop:
 
 - `docs/demo/screenshots.sh` regenerates `assets/screenshots/` (needs grim,
   kitty and ImageMagick).
-- `vhs docs/demo/demo.tape` records `assets/demo.gif` with
-  [VHS](https://github.com/charmbracelet/vhs).
+- `vhs docs/demo/demo.tape` records the 2560x1600 master `assets/demo.mp4`
+  with [VHS](https://github.com/charmbracelet/vhs) (needs vhs, sway and
+  ImageMagick). Then turn it into the README GIF:
 
-Regenerate them when the TUI changes visibly.
+  ```sh
+  ffmpeg -i assets/demo.mp4 -vf "fps=25,scale='min(2560,iw)':-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=256:stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle" -loop 0 assets/demo.gif
+  ```
+
+- `assets/social-preview.png` is the repo's link card, built from the demo's
+  first frame. Upload it under Settings, Social preview.
+
+Regenerate them when the TUI changes visibly. Read the frames before you
+commit: every beat on screen, nothing from your own machine.
 
 ## Benchmarks
 
