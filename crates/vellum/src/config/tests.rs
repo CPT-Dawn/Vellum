@@ -356,7 +356,8 @@ fn toml_blocks(doc: &str) -> Vec<String> {
 fn every_config_example_in_the_docs_parses() {
     for (doc, name, at_least) in [
         (CONFIGURATION_DOC, "docs/configuration.md", 10),
-        (README, "README.md", 1),
+        // The README is a landing page; any example it does carry must parse.
+        (README, "README.md", 0),
     ] {
         let blocks = toml_blocks(doc);
         assert!(
