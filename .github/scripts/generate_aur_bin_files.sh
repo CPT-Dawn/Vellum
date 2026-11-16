@@ -63,7 +63,7 @@ cat > "$out/PKGBUILD" <<EOF
 pkgname=vellum-bin
 pkgver=${pkgver}
 pkgrel=${pkgrel}
-pkgdesc="Featherweight wallpaper manager for Wayland: a tiny daemon, CLI and TUI (prebuilt)"
+pkgdesc="Featherweight Wayland wallpaper daemon: 2.5 MiB idle, zero wakeups, smooth transitions, rotation and a TUI (prebuilt)"
 arch=('x86_64' 'aarch64')
 url="${url}"
 license=('MIT OR Apache-2.0')
