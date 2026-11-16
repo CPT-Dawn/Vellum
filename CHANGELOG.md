@@ -4,6 +4,14 @@ All notable changes to Vellum are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Vellum uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.3] - 2026-11-16
+
+### Fixed
+
+- Clicks on the desktop reach the compositor again, so desktop menus and
+  mouse bindings on the bare desktop work under Sway; the wallpaper, and a
+  running Transition, no longer swallow the pointer (#43).
+
 ## [2.0.2] - 2026-11-09
 
 ### Fixed
@@ -119,6 +127,7 @@ awww, and the license changes to MIT OR Apache-2.0
 Vellum 1.0.0 to 1.1.0 (April 2026) were a fork of awww under GPL-3.0. Their
 notes are on [GitHub Releases](https://github.com/CPT-Dawn/Vellum/releases).
 
+[2.0.3]: https://github.com/CPT-Dawn/Vellum/compare/v2.0.2...v2.0.3
 [2.0.2]: https://github.com/CPT-Dawn/Vellum/compare/v2.0.1...v2.0.2
 [2.0.1]: https://github.com/CPT-Dawn/Vellum/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/CPT-Dawn/Vellum/compare/v1.1.0...v2.0.0
