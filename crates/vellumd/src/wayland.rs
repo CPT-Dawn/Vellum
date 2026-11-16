@@ -39,6 +39,7 @@ enum Obj {
     ShmPool,
     Buffer,
     Surface,
+    Region,
     Output,
     LayerShell,
     LayerSurface,
@@ -269,6 +270,7 @@ impl Wayland {
                 Obj::ShmPool => wl_shm_pool::event(state, &mut msgs),
                 Obj::Buffer => wl_buffer::event(state, &mut msgs),
                 Obj::Surface => wl_surface::event(state, &mut msgs),
+                Obj::Region => wl_region::event(state, &mut msgs),
                 Obj::Output => wl_output::event(state, &mut msgs),
                 Obj::LayerShell => zwlr_layer_shell_v1::event(state, &mut msgs),
                 Obj::LayerSurface => zwlr_layer_surface_v1::event(state, &mut msgs),
@@ -511,6 +513,21 @@ impl State {
         wl_buffer::req::destroy(&mut self.backend, buffer)
     }
 
+    /// Makes `surface` invisible to the pointer, so clicks on the desktop
+    /// reach the compositor instead of the wallpaper. Takes effect on the
+    /// next commit.
+    fn pass_input_through(
+        backend: &mut Waybackend,
+        objects: &mut ObjectManager<Obj>,
+        compositor: ObjectId,
+        surface: ObjectId,
+    ) -> Result<(), rustix::io::Errno> {
+        let region = objects.create(Obj::Region);
+        wl_compositor::req::create_region(backend, compositor, region)?;
+        wl_surface::req::set_input_region(backend, surface, Some(region))?;
+        wl_region::req::destroy(backend, region)
+    }
+
     fn create_missing_surfaces(&mut self) -> Result<(), rustix::io::Errno> {
         let (Some(compositor), Some(layer_shell)) = (self.compositor, self.layer_shell) else {
             return Ok(());
@@ -521,6 +538,7 @@ impl State {
             }
             let surface = self.objects.create(Obj::Surface);
             wl_compositor::req::create_surface(&mut self.backend, compositor, surface)?;
+            Self::pass_input_through(&mut self.backend, &mut self.objects, compositor, surface)?;
             let layer = self.objects.create(Obj::LayerSurface);
             zwlr_layer_shell_v1::req::get_layer_surface(
                 &mut self.backend,
@@ -696,6 +714,7 @@ impl wl_callback::EvHandler for State {
 }
 
 impl wl_compositor::EvHandler for State {}
+impl wl_region::EvHandler for State {}
 impl wl_shm_pool::EvHandler for State {}
 impl zwlr_layer_shell_v1::EvHandler for State {}
 impl wp_viewporter::EvHandler for State {}

@@ -309,6 +309,7 @@ impl State {
 
         let surface = self.objects.create(Obj::Surface);
         wl_compositor::req::create_surface(&mut self.backend, compositor, surface)?;
+        Self::pass_input_through(&mut self.backend, &mut self.objects, compositor, surface)?;
         let subsurface = self.objects.create(Obj::Subsurface);
         wl_subcompositor::req::get_subsurface(
             &mut self.backend,
